@@ -24,7 +24,6 @@ import io.netty.handler.codec.http.HttpRequest;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.datanode.web.webhdfs.WebHdfsHandler;
 
-import java.io.IOException;
 import java.net.InetSocketAddress;
 
 import static org.apache.hadoop.hdfs.server.datanode.web.webhdfs.WebHdfsHandler.WEBHDFS_PREFIX;
@@ -43,7 +42,7 @@ class URLDispatcher extends SimpleChannelInboundHandler<HttpRequest> {
 
   @Override
   protected void channelRead0(ChannelHandlerContext ctx, HttpRequest req)
-    throws Exception {
+      throws Exception {
     String uri = req.getUri();
     ChannelPipeline p = ctx.pipeline();
     if (uri.startsWith(WEBHDFS_PREFIX)) {

@@ -18,15 +18,25 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import java.lang.management.ManagementFactory;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
+import com.google.common.base.Supplier;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.mortbay.util.ajax.JSON;
+
+import static org.junit.Assert.assertEquals;
 
 /**
  * Class for testing {@link DataNodeMXBean} implementation
@@ -70,6 +80,14 @@ public class TestDataNodeMXBean {
       int xceiverCount = (Integer)mbs.getAttribute(mxbeanName,
           "XceiverCount");
       Assert.assertEquals(datanode.getXceiverCount(), xceiverCount);
+      // Ensure mxbean's XmitsInProgress is same as the DataNode's
+      // live value.
+      int xmitsInProgress =
+          (Integer) mbs.getAttribute(mxbeanName, "XmitsInProgress");
+      Assert.assertEquals(datanode.getXmitsInProgress(), xmitsInProgress);
+      String bpActorInfo = (String)mbs.getAttribute(mxbeanName,
+          "BPServiceActorInfo");
+      Assert.assertEquals(datanode.getBPServiceActorInfo(), bpActorInfo);
     } finally {
       if (cluster != null) {cluster.shutdown();}
     }
@@ -77,5 +95,60 @@ public class TestDataNodeMXBean {
   
   private static String replaceDigits(final String s) {
     return s.replaceAll("[0-9]+", "_DIGITS_");
+  }
+
+  @Test
+  public void testDataNodeMXBeanBlockCount() throws Exception {
+    Configuration conf = new Configuration();
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+
+    try {
+      List<DataNode> datanodes = cluster.getDataNodes();
+      assertEquals(datanodes.size(), 1);
+
+      final MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      final ObjectName mxbeanName =
+              new ObjectName("Hadoop:service=DataNode,name=DataNodeInfo");
+      FileSystem fs = cluster.getFileSystem();
+      for (int i = 0; i < 5; i++) {
+        DFSTestUtil.createFile(fs, new Path("/tmp.txt" + i), 1024, (short) 1,
+                1L);
+      }
+      assertEquals("Before restart DN", 5, getTotalNumBlocks(mbs, mxbeanName));
+      cluster.restartDataNode(0);
+      cluster.waitActive();
+      assertEquals("After restart DN", 5, getTotalNumBlocks(mbs, mxbeanName));
+      fs.delete(new Path("/tmp.txt1"), true);
+      // The total numBlocks should be updated after one file is deleted
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          try {
+            return getTotalNumBlocks(mbs, mxbeanName) == 4;
+          } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+          }
+        }
+      }, 100, 30000);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private int getTotalNumBlocks(MBeanServer mbs, ObjectName mxbeanName)
+          throws Exception {
+    int totalBlocks = 0;
+    String volumeInfo = (String) mbs.getAttribute(mxbeanName, "VolumeInfo");
+    Map<?, ?> m = (Map<?, ?>) JSON.parse(volumeInfo);
+    Collection<Map<String, Long>> values =
+            (Collection<Map<String, Long>>) m.values();
+    for (Map<String, Long> volumeInfoMap : values) {
+      totalBlocks += volumeInfoMap.get("numBlocks");
+    }
+    return totalBlocks;
   }
 }

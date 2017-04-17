@@ -22,9 +22,9 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -32,10 +32,12 @@ import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
+import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.hdfs.DFSUtil;
 
 import com.google.common.annotations.VisibleForTesting;
+
 import org.slf4j.Logger;
 
 /**
@@ -47,7 +49,7 @@ import org.slf4j.Logger;
 class InvalidateBlocks {
   /** Mapping: DatanodeInfo -> Collection of Blocks */
   private final Map<DatanodeInfo, LightWeightHashSet<Block>> node2blocks =
-      new TreeMap<DatanodeInfo, LightWeightHashSet<Block>>();
+      new HashMap<DatanodeInfo, LightWeightHashSet<Block>>();
   /** The total number of blocks in the map. */
   private long numBlocks = 0L;
 
@@ -112,7 +114,7 @@ class InvalidateBlocks {
     if (set.add(block)) {
       numBlocks++;
       if (log) {
-        NameNode.blockStateChangeLog.info("BLOCK* {}: add {} to {}",
+        NameNode.blockStateChangeLog.debug("BLOCK* {}: add {} to {}",
             getClass().getSimpleName(), block, datanode);
       }
     }
@@ -150,7 +152,7 @@ class InvalidateBlocks {
       final LightWeightHashSet<Block> blocks = entry.getValue();
       if (blocks.size() > 0) {
         out.println(entry.getKey());
-        out.println(blocks);
+        out.println(StringUtils.join(',', blocks));
       }
     }
   }

@@ -31,7 +31,7 @@ import static org.junit.Assert.*;
 
 public class TestJobListCache {
 
-  @Test (timeout = 1000)
+  @Test (timeout = 5000)
   public void testAddExisting() {
     JobListCache cache = new JobListCache(2, 1000);
 
@@ -45,7 +45,7 @@ public class TestJobListCache {
         cache.values().size());
   }
 
-  @Test (timeout = 1000)
+  @Test (timeout = 5000)
   public void testEviction() throws InterruptedException {
     int maxSize = 2;
     JobListCache cache = new JobListCache(maxSize, 1000);

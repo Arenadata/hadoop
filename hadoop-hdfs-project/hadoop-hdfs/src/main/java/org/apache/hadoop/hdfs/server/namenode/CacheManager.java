@@ -49,7 +49,6 @@ import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedListEntries;
 import org.apache.hadoop.fs.CacheFlag;
 import org.apache.hadoop.fs.InvalidRequestException;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSUtil;
@@ -61,15 +60,18 @@ import org.apache.hadoop.hdfs.protocol.CacheDirectiveStats;
 import org.apache.hadoop.hdfs.protocol.CachePoolEntry;
 import org.apache.hadoop.hdfs.protocol.CachePoolInfo;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CacheDirectiveInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CachePoolInfoProto;
-import org.apache.hadoop.hdfs.protocolPB.PBHelper;
+import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.CacheReplicationMonitor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.CachedBlocksList;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.CachedBlocksList.Type;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.CacheManagerSection;
 import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
@@ -395,8 +397,7 @@ public final class CacheManager {
     if (pool.getLimit() == CachePoolInfo.LIMIT_UNLIMITED) {
       return;
     }
-    if (pool.getBytesNeeded() + (stats.getBytesNeeded() * replication) > pool
-        .getLimit()) {
+    if (pool.getBytesNeeded() + stats.getBytesNeeded() > pool.getLimit()) {
       throw new InvalidRequestException("Caching path " + path + " of size "
           + stats.getBytesNeeded() / replication + " bytes at replication "
           + replication + " would exceed pool " + pool.getPoolName()
@@ -416,9 +417,9 @@ public final class CacheManager {
     long requestedFiles = 0;
     CacheDirectiveStats.Builder builder = new CacheDirectiveStats.Builder();
     try {
-      node = fsDir.getINode(path);
-    } catch (UnresolvedLinkException e) {
-      // We don't cache through symlinks
+      node = fsDir.getINode(path, DirOp.READ);
+    } catch (IOException e) {
+      // We don't cache through invalid paths
       return builder.build();
     }
     if (node == null) {
@@ -440,7 +441,7 @@ public final class CacheManager {
       }
     }
     return new CacheDirectiveStats.Builder()
-        .setBytesNeeded(requestedBytes)
+        .setBytesNeeded(requestedBytes * replication)
         .setFilesCached(requestedFiles)
         .build();
   }
@@ -894,7 +895,16 @@ public final class CacheManager {
     return new BatchedListEntries<CachePoolEntry>(results, false);
   }
 
-  public void setCachedLocations(LocatedBlock block) {
+  public void setCachedLocations(LocatedBlocks locations) {
+    // don't attempt lookups if there are no cached blocks
+    if (cachedBlocks.size() > 0) {
+      for (LocatedBlock lb : locations.getLocatedBlocks()) {
+        setCachedLocations(lb);
+      }
+    }
+  }
+
+  private void setCachedLocations(LocatedBlock block) {
     CachedBlock cachedBlock =
         new CachedBlock(block.getBlock().getBlockId(),
             (short)0, false);
@@ -902,9 +912,26 @@ public final class CacheManager {
     if (cachedBlock == null) {
       return;
     }
-    List<DatanodeDescriptor> datanodes = cachedBlock.getDatanodes(Type.CACHED);
-    for (DatanodeDescriptor datanode : datanodes) {
-      block.addCachedLoc(datanode);
+    List<DatanodeDescriptor> cachedDNs = cachedBlock.getDatanodes(Type.CACHED);
+    for (DatanodeDescriptor datanode : cachedDNs) {
+      // Filter out cached blocks that do not have a backing replica.
+      //
+      // This should not happen since it means the CacheManager thinks
+      // something is cached that does not exist, but it's a safety
+      // measure.
+      boolean found = false;
+      for (DatanodeInfo loc : block.getLocations()) {
+        if (loc.equals(datanode)) {
+          block.addCachedLoc(loc);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        LOG.warn("Datanode {} is not a valid cache location for block {} "
+            + "because that node does not have a backing replica!",
+            datanode, block.getBlock().getBlockName());
+      }
     }
   }
 
@@ -916,7 +943,7 @@ public final class CacheManager {
     try {
       final DatanodeDescriptor datanode = 
           blockManager.getDatanodeManager().getDatanode(datanodeID);
-      if (datanode == null || !datanode.isAlive) {
+      if (datanode == null || !datanode.isRegistered()) {
         throw new IOException(
             "processCacheReport from dead or unregistered datanode: " +
             datanode);
@@ -924,7 +951,7 @@ public final class CacheManager {
       processCacheReportImpl(datanode, blockIds);
     } finally {
       endTime = Time.monotonicNow();
-      namesystem.writeUnlock();
+      namesystem.writeUnlock("processCacheReport");
     }
 
     // Log the block report processing stats from Namenode perspective
@@ -1030,7 +1057,7 @@ public final class CacheManager {
       Expiration expiry = info.getExpiration();
       if (expiry != null) {
         assert (!expiry.isRelative());
-        b.setExpiration(PBHelper.convert(expiry));
+        b.setExpiration(PBHelperClient.convert(expiry));
       }
 
       directives.add(b.build());

@@ -31,11 +31,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.SortedMap;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -43,33 +44,57 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogLoader.EditLogValidation;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
 import org.apache.log4j.Level;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 
 import com.google.common.collect.Maps;
 import com.google.common.io.Files;
 
+@RunWith(Parameterized.class)
 public class TestFSEditLogLoader {
-  
-  static {
-    ((Log4JLogger)FSImage.LOG).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger)FSEditLogLoader.LOG).getLogger().setLevel(Level.ALL);
+  @Parameters
+  public static Collection<Object[]> data() {
+    Collection<Object[]> params = new ArrayList<Object[]>();
+    params.add(new Object[]{ Boolean.FALSE });
+    params.add(new Object[]{ Boolean.TRUE });
+    return params;
   }
-  
+
+  private static boolean useAsyncEditLog;
+  public TestFSEditLogLoader(Boolean async) {
+    useAsyncEditLog = async;
+  }
+
+  private static Configuration getConf() {
+    Configuration conf = new HdfsConfiguration();
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_EDITS_ASYNC_LOGGING,
+        useAsyncEditLog);
+    return conf;
+  }
+
+  static {
+    GenericTestUtils.setLogLevel(FSImage.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(FSEditLogLoader.LOG, Level.ALL);
+  }
+
   private static final File TEST_DIR = PathUtils.getTestDir(TestFSEditLogLoader.class);
 
   private static final int NUM_DATA_NODES = 0;
-  
+
   @Test
   public void testDisplayRecentEditLogOpCodes() throws IOException {
-    // start a cluster 
-    Configuration conf = new HdfsConfiguration();
+    // start a cluster
+    Configuration conf = getConf();
     MiniDFSCluster cluster = null;
     FileSystem fileSys = null;
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(NUM_DATA_NODES)
@@ -119,7 +144,7 @@ public class TestFSEditLogLoader {
   @Test
   public void testReplicationAdjusted() throws Exception {
     // start a cluster 
-    Configuration conf = new HdfsConfiguration();
+    Configuration conf = getConf();
     // Replicate and heartbeat fast to shave a few seconds off test
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
@@ -285,7 +310,7 @@ public class TestFSEditLogLoader {
       // FSEditLog#endCurrentLogSegment.  For testing purposes, we
       // disable that here.
       doNothing().when(spyLog).endCurrentLogSegment(true);
-      spyLog.openForWrite();
+      spyLog.openForWrite(NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION);
       assertTrue("should exist: " + inProgressFile, inProgressFile.exists());
       
       for (int i = 0; i < numTx; i++) {
@@ -318,7 +343,8 @@ public class TestFSEditLogLoader {
     } finally {
       rwf.close();
     }
-    EditLogValidation validation = EditLogFileInputStream.validateEditLog(logFile);
+    EditLogValidation validation =
+        EditLogFileInputStream.scanEditLog(logFile, Long.MAX_VALUE, true);
     assertTrue(validation.hasCorruptHeader());
   }
 
@@ -333,7 +359,7 @@ public class TestFSEditLogLoader {
     File logFileBak = new File(testDir, logFile.getName() + ".bak");
     Files.copy(logFile, logFileBak);
     EditLogValidation validation =
-        EditLogFileInputStream.validateEditLog(logFile);
+        EditLogFileInputStream.scanEditLog(logFile, Long.MAX_VALUE, true);
     assertTrue(!validation.hasCorruptHeader());
     // We expect that there will be an OP_START_LOG_SEGMENT, followed by
     // NUM_TXNS opcodes, followed by an OP_END_LOG_SEGMENT.
@@ -346,7 +372,8 @@ public class TestFSEditLogLoader {
       // Restore backup, corrupt the txn opcode
       Files.copy(logFileBak, logFile);
       corruptByteInFile(logFile, txOffset);
-      validation = EditLogFileInputStream.validateEditLog(logFile);
+      validation = EditLogFileInputStream.scanEditLog(logFile,
+          Long.MAX_VALUE, true);
       long expectedEndTxId = (txId == (NUM_TXNS + 1)) ?
           NUM_TXNS : (NUM_TXNS + 1);
       assertEquals("Failed when corrupting txn opcode at " + txOffset,
@@ -363,9 +390,10 @@ public class TestFSEditLogLoader {
       // Restore backup, corrupt the txn opcode
       Files.copy(logFileBak, logFile);
       truncateFile(logFile, txOffset);
-      validation = EditLogFileInputStream.validateEditLog(logFile);
+      validation = EditLogFileInputStream.scanEditLog(logFile,
+          Long.MAX_VALUE, true);
       long expectedEndTxId = (txId == 0) ?
-          HdfsConstants.INVALID_TXID : (txId - 1);
+          HdfsServerConstants.INVALID_TXID : (txId - 1);
       assertEquals("Failed when corrupting txid " + txId + " txn opcode " +
         "at " + txOffset, expectedEndTxId, validation.getEndTxId());
       assertTrue(!validation.hasCorruptHeader());
@@ -381,9 +409,9 @@ public class TestFSEditLogLoader {
     // layout flags section.
     truncateFile(logFile, 8);
     EditLogValidation validation =
-        EditLogFileInputStream.validateEditLog(logFile);
+        EditLogFileInputStream.scanEditLog(logFile, Long.MAX_VALUE, true);
     assertTrue(!validation.hasCorruptHeader());
-    assertEquals(HdfsConstants.INVALID_TXID, validation.getEndTxId());
+    assertEquals(HdfsServerConstants.INVALID_TXID, validation.getEndTxId());
   }
 
   private static final Map<Byte, FSEditLogOpCodes> byteToEnum =

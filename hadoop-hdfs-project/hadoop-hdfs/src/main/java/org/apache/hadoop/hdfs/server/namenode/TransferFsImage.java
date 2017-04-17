@@ -43,8 +43,8 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.common.StorageErrorReporter;
@@ -77,6 +77,7 @@ public class TransferFsImage {
 
   private final static String CONTENT_TYPE = "Content-Type";
   private final static String CONTENT_TRANSFER_ENCODING = "Content-Transfer-Encoding";
+  private final static int IO_FILE_BUFFER_SIZE;
 
   @VisibleForTesting
   static int timeout = 0;
@@ -88,6 +89,7 @@ public class TransferFsImage {
     connectionFactory = URLConnectionFactory
         .newDefaultURLConnectionFactory(conf);
     isSpnegoEnabled = UserGroupInformation.isSecurityEnabled();
+    IO_FILE_BUFFER_SIZE = DFSUtilClient.getIoFileBufferSize(conf);
   }
 
   private static final Log LOG = LogFactory.getLog(TransferFsImage.class);
@@ -100,9 +102,10 @@ public class TransferFsImage {
   }
 
   public static MD5Hash downloadImageToStorage(URL fsName, long imageTxId,
-      Storage dstStorage, boolean needDigest) throws IOException {
+      Storage dstStorage, boolean needDigest, boolean isBootstrapStandby)
+      throws IOException {
     String fileid = ImageServlet.getParamStringForImage(null,
-        imageTxId, dstStorage);
+        imageTxId, dstStorage, isBootstrapStandby);
     String fileName = NNStorage.getCheckpointImageFileName(imageTxId);
     
     List<File> dstFiles = dstStorage.getFiles(
@@ -336,7 +339,7 @@ public class TransferFsImage {
   private static void copyFileToStream(OutputStream out, File localfile,
       FileInputStream infile, DataTransferThrottler throttler,
       Canceler canceler) throws IOException {
-    byte buf[] = new byte[HdfsConstants.IO_FILE_BUFFER_SIZE];
+    byte buf[] = new byte[IO_FILE_BUFFER_SIZE];
     try {
       CheckpointFaultInjector.getInstance()
           .aboutToSendFile(localfile);
@@ -345,7 +348,7 @@ public class TransferFsImage {
             shouldSendShortFile(localfile)) {
           // Test sending image shorter than localfile
           long len = localfile.length();
-          buf = new byte[(int)Math.min(len/2, HdfsConstants.IO_FILE_BUFFER_SIZE)];
+          buf = new byte[(int)Math.min(len/2, IO_FILE_BUFFER_SIZE)];
           // This will read at most half of the image
           // and the rest of the image will be sent over the wire
           infile.read(buf);
@@ -510,7 +513,7 @@ public class TransferFsImage {
       }
       
       int num = 1;
-      byte[] buf = new byte[HdfsConstants.IO_FILE_BUFFER_SIZE];
+      byte[] buf = new byte[IO_FILE_BUFFER_SIZE];
       while (num > 0) {
         num = stream.read(buf);
         if (num > 0) {

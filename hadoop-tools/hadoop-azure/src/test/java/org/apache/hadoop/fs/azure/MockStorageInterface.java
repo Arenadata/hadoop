@@ -32,11 +32,13 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.TimeZone;
-
-import org.apache.commons.httpclient.URIException;
-import org.apache.commons.httpclient.util.URIUtil;
+import java.util.List;
+import org.apache.commons.codec.DecoderException;
+import org.apache.commons.codec.net.URLCodec;
 import org.apache.commons.lang.NotImplementedException;
+import org.apache.http.client.utils.URIBuilder;
 
+import com.microsoft.azure.storage.AccessCondition;
 import com.microsoft.azure.storage.CloudStorageAccount;
 import com.microsoft.azure.storage.OperationContext;
 import com.microsoft.azure.storage.RetryPolicyFactory;
@@ -46,6 +48,8 @@ import com.microsoft.azure.storage.StorageUri;
 import com.microsoft.azure.storage.blob.BlobListingDetails;
 import com.microsoft.azure.storage.blob.BlobProperties;
 import com.microsoft.azure.storage.blob.BlobRequestOptions;
+import com.microsoft.azure.storage.blob.BlockEntry;
+import com.microsoft.azure.storage.blob.BlockListingFilter;
 import com.microsoft.azure.storage.blob.CloudBlob;
 import com.microsoft.azure.storage.blob.CloudBlobContainer;
 import com.microsoft.azure.storage.blob.CloudBlobDirectory;
@@ -65,6 +69,7 @@ public class MockStorageInterface extends StorageInterface {
   private final ArrayList<PreExistingContainer> preExistingContainers =
       new ArrayList<MockStorageInterface.PreExistingContainer>();
   private String baseUriString;
+  private static final URLCodec codec = new URLCodec();
 
   public InMemoryBlockBlobStore getBackingStore() {
     return backingStore;
@@ -123,21 +128,16 @@ public class MockStorageInterface extends StorageInterface {
    */
   private static String convertUriToDecodedString(URI uri) {
     try {
-      String result = URIUtil.decode(uri.toString());
-      return result;
-    } catch (URIException e) {
+      return codec.decode(uri.toString());
+    } catch (DecoderException e) {
       throw new AssertionError("Failed to decode URI: " + uri.toString());
     }
   }
 
   private static URI convertKeyToEncodedUri(String key) {
     try {
-      String encodedKey = URIUtil.encodePath(key);
-      URI uri = new URI(encodedKey);
-      return uri;
+      return new URIBuilder().setPath(key).build();
     } catch (URISyntaxException e) {
-      throw new AssertionError("Failed to encode key: " + key);
-    } catch (URIException e) {
       throw new AssertionError("Failed to encode key: " + key);
     }
   }
@@ -146,11 +146,8 @@ public class MockStorageInterface extends StorageInterface {
   public CloudBlobContainerWrapper getContainerReference(String name)
       throws URISyntaxException, StorageException {
     String fullUri;
-    try {
-      fullUri = baseUriString + "/" + URIUtil.encodePath(name);
-    } catch (URIException e) {
-      throw new RuntimeException("problem encoding fullUri", e);
-    }
+    URIBuilder builder = new URIBuilder(baseUriString);
+    fullUri = builder.setPath(builder.getPath() + "/" + name).toString();
 
     MockCloudBlobContainerWrapper container = new MockCloudBlobContainerWrapper(
         fullUri, name);
@@ -240,8 +237,6 @@ public class MockStorageInterface extends StorageInterface {
     // helper to create full URIs for directory and blob.
     // use withTrailingSlash=true to get a good path for a directory.
     private String fullUriString(String relativePath, boolean withTrailingSlash) {
-      String fullUri;
-
       String baseUri = this.baseUri;
       if (!baseUri.endsWith("/")) {
         baseUri += "/";
@@ -252,12 +247,11 @@ public class MockStorageInterface extends StorageInterface {
       }
 
       try {
-        fullUri = baseUri + URIUtil.encodePath(relativePath);
-      } catch (URIException e) {
+        URIBuilder builder = new URIBuilder(baseUri);
+        return builder.setPath(builder.getPath() + relativePath).toString();
+      } catch (URISyntaxException e) {
         throw new RuntimeException("problem encoding fullUri", e);
       }
-
-      return fullUri;
     }
   }
 
@@ -429,9 +423,9 @@ public class MockStorageInterface extends StorageInterface {
     }
 
     @Override
-    public void startCopyFromBlob(URI source, BlobRequestOptions options,
+    public void startCopyFromBlob(CloudBlobWrapper sourceBlob, BlobRequestOptions options,
         OperationContext opContext) throws StorageException, URISyntaxException {
-      backingStore.copy(convertUriToDecodedString(source), convertUriToDecodedString(uri));
+      backingStore.copy(convertUriToDecodedString(sourceBlob.getUri()), convertUriToDecodedString(uri));
       //TODO: set the backingStore.properties.CopyState and
       //      update azureNativeFileSystemStore.waitForCopyToComplete
     }
@@ -524,6 +518,30 @@ public class MockStorageInterface extends StorageInterface {
     public CloudBlob getBlob() {
       return null;
     }
+
+    @Override
+    public List<BlockEntry> downloadBlockList(BlockListingFilter filter, BlobRequestOptions options,
+        OperationContext opContext) throws IOException, StorageException {
+
+      throw new UnsupportedOperationException("downloadBlockList not used in Mock Tests");
+    }
+    @Override
+    public void uploadBlock(String blockId, InputStream sourceStream,
+        long length, BlobRequestOptions options,
+        OperationContext opContext) throws IOException, StorageException {
+      throw new UnsupportedOperationException("uploadBlock not used in Mock Tests");
+    }
+
+    @Override
+    public void commitBlockList(List<BlockEntry> blockList, AccessCondition accessCondition,
+        BlobRequestOptions options, OperationContext opContext) throws IOException, StorageException {
+      throw new UnsupportedOperationException("commitBlockList not used in Mock Tests");
+    }
+
+    public void uploadMetadata(AccessCondition accessCondition, BlobRequestOptions options,
+        OperationContext opContext) throws StorageException {
+      throw new UnsupportedOperationException("uploadMetadata not used in Mock Tests");
+    }
   }
 
   class MockCloudPageBlobWrapper extends MockCloudBlobWrapper
@@ -579,6 +597,11 @@ public class MockStorageInterface extends StorageInterface {
     @Override
     public CloudBlob getBlob() {
       return null;
+    }
+
+    public void uploadMetadata(AccessCondition accessCondition, BlobRequestOptions options,
+        OperationContext opContext) throws StorageException {
+      throw new UnsupportedOperationException("uploadMetadata not used in Mock Tests");
     }
   }
 }

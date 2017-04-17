@@ -21,6 +21,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.hdfs.security.token.delegation.DelegationUtilsClient;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeHttpServer;
 import org.apache.hadoop.hdfs.web.resources.DoAsParam;
 import org.apache.hadoop.hdfs.web.resources.UserParam;
@@ -93,7 +94,7 @@ public class TestJspHelper {
     Token<DelegationTokenIdentifier> token = new Token<DelegationTokenIdentifier>(
         dtId, new DummySecretManager(0, 0, 0, 0));
     String tokenString = token.encodeToUrlString();
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     when(request.getRemoteUser()).thenReturn(user);
 
@@ -108,6 +109,7 @@ public class TestJspHelper {
     
     //Test attribute name.node.address 
     //Set the nnaddr url parameter to null.
+    token.decodeIdentifier().clearCache();
     when(request.getParameter(JspHelper.NAMENODE_ADDRESS)).thenReturn(null);
     InetSocketAddress addr = new InetSocketAddress("localhost", 2222);
     when(context.getAttribute(NameNodeHttpServer.NAMENODE_ADDRESS_ATTRIBUTE_KEY))
@@ -115,13 +117,18 @@ public class TestJspHelper {
     verifyServiceInToken(context, request, addr.getAddress().getHostAddress()
         + ":2222");
     
-    //Test service already set in the token
+    //Test service already set in the token and DN doesn't change service
+    //when it doesn't know the NN service addr
+    userText = new Text(user+"2");
+    dtId = new DelegationTokenIdentifier(userText, userText, null);
+    token = new Token<DelegationTokenIdentifier>(
+        dtId, new DummySecretManager(0, 0, 0, 0));
     token.setService(new Text("3.3.3.3:3333"));
     tokenString = token.encodeToUrlString();
     //Set the name.node.address attribute in Servlet context to null
     when(context.getAttribute(NameNodeHttpServer.NAMENODE_ADDRESS_ATTRIBUTE_KEY))
         .thenReturn(null);
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     verifyServiceInToken(context, request, "3.3.3.3:3333");
   }
@@ -155,7 +162,7 @@ public class TestJspHelper {
     
     // token with no auth-ed user
     request = getMockRequest(null, null, null);
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     ugi = JspHelper.getUGI(context, request, conf);
     Assert.assertNotNull(ugi.getRealUser());
@@ -165,7 +172,7 @@ public class TestJspHelper {
     
     // token with auth-ed user
     request = getMockRequest(realUser, null, null);
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     ugi = JspHelper.getUGI(context, request, conf);
     Assert.assertNotNull(ugi.getRealUser());
@@ -175,7 +182,7 @@ public class TestJspHelper {
     
     // completely different user, token trumps auth
     request = getMockRequest("rogue", null, null);
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     ugi = JspHelper.getUGI(context, request, conf);
     Assert.assertNotNull(ugi.getRealUser());
@@ -185,7 +192,7 @@ public class TestJspHelper {
     
     // expected case
     request = getMockRequest(null, user, null);
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     ugi = JspHelper.getUGI(context, request, conf);
     Assert.assertNotNull(ugi.getRealUser());
@@ -195,7 +202,7 @@ public class TestJspHelper {
     
     // can't proxy with a token!
     request = getMockRequest(null, null, "rogue");
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     try {
       JspHelper.getUGI(context, request, conf);
@@ -208,7 +215,7 @@ public class TestJspHelper {
     
     // can't proxy with a token!
     request = getMockRequest(null, user, "rogue");
-    when(request.getParameter(JspHelper.DELEGATION_PARAMETER_NAME)).thenReturn(
+    when(request.getParameter(DelegationUtilsClient.DELEGATION_PARAMETER_NAME)).thenReturn(
         tokenString);
     try {
       JspHelper.getUGI(context, request, conf);

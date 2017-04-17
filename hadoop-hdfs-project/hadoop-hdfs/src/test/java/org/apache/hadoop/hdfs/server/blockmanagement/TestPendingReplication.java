@@ -18,6 +18,8 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
@@ -38,6 +40,7 @@ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
@@ -53,6 +56,12 @@ public class TestPendingReplication {
   private static final int DFS_REPLICATION_INTERVAL = 1;
   // Number of datanodes in the cluster
   private static final int DATANODE_COUNT = 5;
+
+  private BlockInfo genBlockInfo(long id, long length, long gs) {
+    return new BlockInfoContiguous(new Block(id, length, gs),
+        (short) DATANODE_COUNT);
+  }
+
   @Test
   public void testPendingReplication() {
     PendingReplicationBlocks pendingReplications;
@@ -63,7 +72,7 @@ public class TestPendingReplication {
     //
     DatanodeStorageInfo[] storages = DFSTestUtil.createDatanodeStorageInfos(10);
     for (int i = 0; i < storages.length; i++) {
-      Block block = new Block(i, i, 0);
+      BlockInfo block = genBlockInfo(i, i, 0);
       DatanodeStorageInfo[] targets = new DatanodeStorageInfo[i];
       System.arraycopy(storages, 0, targets, 0, i);
       pendingReplications.increment(block,
@@ -74,12 +83,19 @@ public class TestPendingReplication {
 
 
     //
-    // remove one item and reinsert it
+    // remove one item
     //
-    Block blk = new Block(8, 8, 0);
+    BlockInfo blk = genBlockInfo(8, 8, 0);
     pendingReplications.decrement(blk, storages[7].getDatanodeDescriptor()); // removes one replica
     assertEquals("pendingReplications.getNumReplicas ",
                  7, pendingReplications.getNumReplicas(blk));
+
+    //
+    // insert the same item twice should be counted as once
+    //
+    pendingReplications.increment(blk, storages[0].getDatanodeDescriptor());
+    assertEquals("pendingReplications.getNumReplicas ",
+        7, pendingReplications.getNumReplicas(blk));
 
     for (int i = 0; i < 7; i++) {
       // removes all replicas
@@ -96,7 +112,7 @@ public class TestPendingReplication {
     // are sane.
     //
     for (int i = 0; i < 10; i++) {
-      Block block = new Block(i, i, 0);
+      BlockInfo block = genBlockInfo(i, i, 0);
       int numReplicas = pendingReplications.getNumReplicas(block);
       assertTrue(numReplicas == i);
     }
@@ -104,23 +120,25 @@ public class TestPendingReplication {
     //
     // verify that nothing has timed out so far
     //
-    assertTrue(pendingReplications.getTimedOutBlocks() == null);
+    assertNull(pendingReplications.getTimedOutBlocks());
+    assertEquals(0L, pendingReplications.getNumTimedOuts());
 
     //
     // Wait for one second and then insert some more items.
     //
     try {
       Thread.sleep(1000);
-    } catch (Exception e) {
+    } catch (Exception ignored) {
     }
 
     for (int i = 10; i < 15; i++) {
-      Block block = new Block(i, i, 0);
+      BlockInfo block = genBlockInfo(i, i, 0);
       pendingReplications.increment(block,
           DatanodeStorageInfo.toDatanodeDescriptors(
               DFSTestUtil.createDatanodeStorageInfos(i)));
     }
-    assertTrue(pendingReplications.size() == 15);
+    assertEquals(15, pendingReplications.size());
+    assertEquals(0L, pendingReplications.getNumTimedOuts());
 
     //
     // Wait for everything to timeout.
@@ -140,10 +158,14 @@ public class TestPendingReplication {
     // Verify that everything has timed out.
     //
     assertEquals("Size of pendingReplications ", 0, pendingReplications.size());
+    assertEquals(15L, pendingReplications.getNumTimedOuts());
     Block[] timedOut = pendingReplications.getTimedOutBlocks();
-    assertTrue(timedOut != null && timedOut.length == 15);
-    for (int i = 0; i < timedOut.length; i++) {
-      assertTrue(timedOut[i].getBlockId() < 15);
+    assertNotNull(timedOut);
+    assertEquals(15, timedOut.length);
+    // Verify the number is not reset
+    assertEquals(15L, pendingReplications.getNumTimedOuts());
+    for (Block block : timedOut) {
+      assertTrue(block.getBlockId() < 15);
     }
     pendingReplications.stop();
   }
@@ -159,7 +181,7 @@ public class TestPendingReplication {
         DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, TIMEOUT);
     MiniDFSCluster cluster = null;
     Block block;
-    BlockInfoContiguous blockInfo;
+    BlockInfo blockInfo;
     try {
       cluster =
           new MiniDFSCluster.Builder(conf).numDataNodes(DATANODE_COUNT).build();
@@ -180,11 +202,10 @@ public class TestPendingReplication {
       block = new Block(1, 1, 0);
       blockInfo = new BlockInfoContiguous(block, (short) 3);
 
-      pendingReplications.increment(block,
+      pendingReplications.increment(blockInfo,
           DatanodeStorageInfo.toDatanodeDescriptors(
               DFSTestUtil.createDatanodeStorageInfos(1)));
       BlockCollection bc = Mockito.mock(BlockCollection.class);
-      Mockito.doReturn((short) 3).when(bc).getBlockReplication();
       // Place into blocksmap with GenerationStamp = 1
       blockInfo.setGenerationStamp(1);
       blocksMap.addBlockCollection(blockInfo, bc);
@@ -195,7 +216,8 @@ public class TestPendingReplication {
       // Add a second block to pendingReplications that has no
       // corresponding entry in blocksmap
       block = new Block(2, 2, 0);
-      pendingReplications.increment(block,
+      blockInfo = new BlockInfoContiguous(block, (short) 3);
+      pendingReplications.increment(blockInfo,
           DatanodeStorageInfo.toDatanodeDescriptors(
               DFSTestUtil.createDatanodeStorageInfos(1)));
 
@@ -275,7 +297,7 @@ public class TestPendingReplication {
 
       assertEquals(1, blkManager.pendingReplications.size());
       INodeFile fileNode = fsn.getFSDirectory().getINode4Write(file).asFile();
-      Block[] blocks = fileNode.getBlocks();
+      BlockInfo[] blocks = fileNode.getBlocks();
       assertEquals(DATANODE_COUNT - 1,
           blkManager.pendingReplications.getNumReplicas(blocks[0]));
 
@@ -290,15 +312,17 @@ public class TestPendingReplication {
         if (!datanodes.get(i).getDatanodeId().equals(existingDn)) {
           DatanodeRegistration dnR = datanodes.get(i).getDNRegistrationForBP(
               poolId);
-          StorageReceivedDeletedBlocks[] report = { 
-              new StorageReceivedDeletedBlocks("Fake-storage-ID-Ignored",
+          StorageReceivedDeletedBlocks[] report = {
+              new StorageReceivedDeletedBlocks(
+                  new DatanodeStorage("Fake-storage-ID-Ignored"),
               new ReceivedDeletedBlockInfo[] { new ReceivedDeletedBlockInfo(
                   blocks[0], BlockStatus.RECEIVED_BLOCK, "") }) };
           cluster.getNameNodeRpc().blockReceivedAndDeleted(dnR, poolId, report);
           reportDnNum++;
         }
       }
-
+      // IBRs are async, make sure the NN processes all of them.
+      cluster.getNamesystem().getBlockManager().flushBlockOps();
       assertEquals(DATANODE_COUNT - 3,
           blkManager.pendingReplications.getNumReplicas(blocks[0]));
 
@@ -307,15 +331,18 @@ public class TestPendingReplication {
         if (!datanodes.get(i).getDatanodeId().equals(existingDn)) {
           DatanodeRegistration dnR = datanodes.get(i).getDNRegistrationForBP(
               poolId);
-          StorageReceivedDeletedBlocks[] report = 
-            { new StorageReceivedDeletedBlocks("Fake-storage-ID-Ignored",
-              new ReceivedDeletedBlockInfo[] { new ReceivedDeletedBlockInfo(
-                  blocks[0], BlockStatus.RECEIVED_BLOCK, "") }) };
+          StorageReceivedDeletedBlocks[] report =
+            { new StorageReceivedDeletedBlocks(
+                new DatanodeStorage("Fake-storage-ID-Ignored"),
+                new ReceivedDeletedBlockInfo[] {
+                  new ReceivedDeletedBlockInfo(
+                      blocks[0], BlockStatus.RECEIVED_BLOCK, "")}) };
           cluster.getNameNodeRpc().blockReceivedAndDeleted(dnR, poolId, report);
           reportDnNum++;
         }
       }
 
+      cluster.getNamesystem().getBlockManager().flushBlockOps();
       assertEquals(DATANODE_COUNT - 3,
           blkManager.pendingReplications.getNumReplicas(blocks[0]));
 
@@ -381,9 +408,9 @@ public class TestPendingReplication {
       BlockManagerTestUtil.computeAllPendingWork(bm);
       BlockManagerTestUtil.updateState(bm);
       assertEquals(bm.getPendingReplicationBlocksCount(), 1L);
-      assertEquals(bm.pendingReplications.getNumReplicas(block.getBlock()
-          .getLocalBlock()), 2);
-      
+      BlockInfo storedBlock = bm.getStoredBlock(block.getBlock().getLocalBlock());
+      assertEquals(bm.pendingReplications.getNumReplicas(storedBlock), 2);
+
       // 4. delete the file
       fs.delete(filePath, true);
       // retry at most 10 times, each time sleep for 1s. Note that 10s is much

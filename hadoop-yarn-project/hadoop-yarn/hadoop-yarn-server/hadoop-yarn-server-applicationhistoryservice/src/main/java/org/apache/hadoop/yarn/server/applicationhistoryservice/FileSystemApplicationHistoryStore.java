@@ -204,7 +204,7 @@ public class FileSystemApplicationHistoryStore extends AbstractService
     FileStatus[] files = fs.listStatus(rootDirPath);
     for (FileStatus file : files) {
       ApplicationId appId =
-          ConverterUtils.toApplicationId(file.getPath().getName());
+          ApplicationId.fromString(file.getPath().getName());
       try {
         ApplicationHistoryData historyData = getApplication(appId);
         if (historyData != null) {
@@ -231,8 +231,8 @@ public class FileSystemApplicationHistoryStore extends AbstractService
         HistoryFileReader.Entry entry = hfReader.next();
         if (entry.key.id.startsWith(
             ConverterUtils.APPLICATION_ATTEMPT_PREFIX)) {
-          ApplicationAttemptId appAttemptId = 
-              ConverterUtils.toApplicationAttemptId(entry.key.id);
+          ApplicationAttemptId appAttemptId = ApplicationAttemptId.fromString(
+              entry.key.id);
           if (appAttemptId.getApplicationId().equals(appId)) {
             ApplicationAttemptHistoryData historyData = 
                 historyDataMap.get(appAttemptId);
@@ -385,7 +385,7 @@ public class FileSystemApplicationHistoryStore extends AbstractService
         HistoryFileReader.Entry entry = hfReader.next();
         if (entry.key.id.startsWith(ConverterUtils.CONTAINER_PREFIX)) {
           ContainerId containerId =
-              ConverterUtils.toContainerId(entry.key.id);
+              ContainerId.fromString(entry.key.id);
           if (containerId.getApplicationAttemptId().equals(appAttemptId)) {
             ContainerHistoryData historyData =
                 historyDataMap.get(containerId);
@@ -734,12 +734,17 @@ public class FileSystemApplicationHistoryStore extends AbstractService
       } else {
         fsdos = fs.create(historyFile);
       }
-      fs.setPermission(historyFile, HISTORY_FILE_UMASK);
-      writer =
-          new TFile.Writer(fsdos, MIN_BLOCK_SIZE, getConfig().get(
-            YarnConfiguration.FS_APPLICATION_HISTORY_STORE_COMPRESSION_TYPE,
-            YarnConfiguration.DEFAULT_FS_APPLICATION_HISTORY_STORE_COMPRESSION_TYPE), null,
-            getConfig());
+      try {
+        fs.setPermission(historyFile, HISTORY_FILE_UMASK);
+        writer =
+            new TFile.Writer(fsdos, MIN_BLOCK_SIZE, getConfig().get(
+                YarnConfiguration.FS_APPLICATION_HISTORY_STORE_COMPRESSION_TYPE,
+                YarnConfiguration.DEFAULT_FS_APPLICATION_HISTORY_STORE_COMPRESSION_TYPE), null,
+                getConfig());
+      } catch (IOException e) {
+        IOUtils.cleanup(LOG, fsdos);
+        throw e;
+      }
     }
 
     public synchronized void close() {

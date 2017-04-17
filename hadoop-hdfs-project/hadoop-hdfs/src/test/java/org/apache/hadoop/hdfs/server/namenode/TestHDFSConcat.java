@@ -84,10 +84,12 @@ public class TestHDFSConcat {
   public void shutDownCluster() throws IOException {
     if(dfs != null) {
       dfs.close();
+      dfs = null;
     }
     if(cluster != null) {
       cluster.shutdownDataNodes();
       cluster.shutdown();
+      cluster = null;
     }
   }
   
@@ -111,18 +113,21 @@ public class TestHDFSConcat {
     long trgBlocks = nn.getBlockLocations(trg, 0, trgLen).locatedBlockCount();
        
     Path [] files = new Path[numFiles];
-    byte [] [] bytes = new byte [numFiles][(int)fileLen];
+    byte[][] bytes = new byte[numFiles + 1][(int) fileLen];
     LocatedBlocks [] lblocks = new LocatedBlocks[numFiles];
     long [] lens = new long [numFiles];
     
-    
+    stm = dfs.open(trgPath);
+    stm.readFully(0, bytes[0]);
+    stm.close();
     int i;
     for(i=0; i<files.length; i++) {
       files[i] = new Path("/file"+i);
       Path path = files[i];
       System.out.println("Creating file " + path);
-      DFSTestUtil.createFile(dfs, path, fileLen, REPL_FACTOR, 1);
-    
+
+      // make files with different content
+      DFSTestUtil.createFile(dfs, path, fileLen, REPL_FACTOR, i);
       fStatus = nn.getFileInfo(path.toUri().getPath());
       lens[i] = fStatus.getLen();
       assertEquals(trgLen, lens[i]); // file of the same length.
@@ -131,7 +136,7 @@ public class TestHDFSConcat {
       
       //read the file
       stm = dfs.open(path);
-      stm.readFully(0, bytes[i]);
+      stm.readFully(0, bytes[i + 1]);
       //bytes[i][10] = 10;
       stm.close();
     }
@@ -153,6 +158,17 @@ public class TestHDFSConcat {
     // check count update
     ContentSummary cBefore = dfs.getContentSummary(trgPath.getParent());
     
+    // resort file array, make INode id not sorted.
+    for (int j = 0; j < files.length / 2; j++) {
+      Path tempPath = files[j];
+      files[j] = files[files.length - 1 - j];
+      files[files.length - 1 - j] = tempPath;
+
+      byte[] tempBytes = bytes[1 + j];
+      bytes[1 + j] = bytes[files.length - 1 - j + 1];
+      bytes[files.length - 1 - j + 1] = tempBytes;
+    }
+
     // now concatenate
     dfs.concat(trgPath, files);
     
@@ -475,5 +491,37 @@ public class TestHDFSConcat {
     Assert.assertEquals(1, summary.getFileCount());
     Assert.assertEquals(blockSize * repl * (srcNum + 1),
         summary.getSpaceConsumed());
+  }
+
+  @Test
+  public void testConcatRelativeTargetPath() throws IOException {
+    Path dir = new Path("/dir");
+    Path trg = new Path("trg");
+    Path src = new Path(dir, "src");
+    dfs.setWorkingDirectory(dir);
+    DFSTestUtil.createFile(dfs, trg, blockSize, REPL_FACTOR, 1);
+    DFSTestUtil.createFile(dfs, src, blockSize, REPL_FACTOR, 1);
+    dfs.concat(trg, new Path[]{src});
+    assertEquals(blockSize * 2, dfs.getFileStatus(trg).getLen());
+    assertFalse(dfs.exists(src));
+  }
+
+  @Test(timeout = 30000)
+  public void testConcatReservedRelativePaths() throws IOException {
+    String testPathDir = "/.reserved/raw/ezone";
+    Path dir = new Path(testPathDir);
+    dfs.mkdirs(dir);
+    Path trg = new Path(testPathDir, "trg");
+    Path src = new Path(testPathDir, "src");
+    DFSTestUtil.createFile(dfs, trg, blockSize, REPL_FACTOR, 1);
+    DFSTestUtil.createFile(dfs, src, blockSize, REPL_FACTOR, 1);
+    try {
+      dfs.concat(trg, new Path[] { src });
+      Assert.fail("Must throw Exception!");
+    } catch (IOException e) {
+      String errMsg = "Concat operation doesn't support "
+          + FSDirectory.DOT_RESERVED_STRING + " relative path : " + trg;
+      GenericTestUtils.assertExceptionContains(errMsg, e);
+    }
   }
 }

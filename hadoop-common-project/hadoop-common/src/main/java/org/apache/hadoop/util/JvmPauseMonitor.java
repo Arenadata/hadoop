@@ -78,24 +78,30 @@ public class JvmPauseMonitor {
     Preconditions.checkState(monitorThread == null,
         "Already started");
     monitorThread = new Daemon(new Monitor());
-    monitorThread.start();
+    if (shouldRun) {
+      monitorThread.start();
+    } else {
+      LOG.warn("stop() was called before start() completed");
+    }
   }
   
   public void stop() {
     shouldRun = false;
-    monitorThread.interrupt();
-    try {
-      monitorThread.join();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
+    if (isStarted()) {
+      monitorThread.interrupt();
+      try {
+        monitorThread.join();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
   public boolean isStarted() {
     return monitorThread != null;
   }
-  
-  public long getNumGcWarnThreadholdExceeded() {
+
+  public long getNumGcWarnThresholdExceeded() {
     return numGcWarnThresholdExceeded;
   }
   
@@ -174,6 +180,7 @@ public class JvmPauseMonitor {
     public void run() {
       StopWatch sw = new StopWatch();
       Map<String, GcTimes> gcTimesBeforeSleep = getGcTimes();
+      LOG.info("Starting JVM pause monitor");
       while (shouldRun) {
         sw.reset().start();
         try {

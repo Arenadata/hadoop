@@ -24,6 +24,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 
+import com.google.common.base.Supplier;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -45,6 +46,7 @@ import org.apache.hadoop.mapreduce.v2.util.MRWebAppUtil;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.service.Service;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.JarFinder;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
@@ -74,7 +76,7 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
   public MiniMRYarnCluster(String testName, int noOfNMs) {
     this(testName, noOfNMs, false);
   }
-
+  @Deprecated
   public MiniMRYarnCluster(String testName, int noOfNMs, boolean enableAHS) {
     super(testName, 1, noOfNMs, 4, 4, enableAHS);
     historyServerWrapper = new JobHistoryServerWrapper();
@@ -190,6 +192,7 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
     public JobHistoryServerWrapper() {
       super(JobHistoryServerWrapper.class.getName());
     }
+    private volatile boolean jhsStarted = false;
 
     @Override
     public synchronized void serviceStart() throws Exception {
@@ -211,13 +214,17 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
         new Thread() {
           public void run() {
             historyServer.start();
+            jhsStarted = true;
           };
         }.start();
-        while (historyServer.getServiceState() == STATE.INITED) {
-          LOG.info("Waiting for HistoryServer to start...");
-          Thread.sleep(1500);
-        }
-        //TODO Add a timeout. State.STOPPED check ?
+
+        GenericTestUtils.waitFor(new Supplier<Boolean>() {
+          @Override
+          public Boolean get() {
+            return jhsStarted;
+          }
+        }, 1500, 60_000);
+
         if (historyServer.getServiceState() != STATE.STARTED) {
           throw new IOException("HistoryServer failed to start");
         }

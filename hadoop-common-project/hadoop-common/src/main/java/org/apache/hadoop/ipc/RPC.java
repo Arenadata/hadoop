@@ -40,6 +40,7 @@ import javax.net.SocketFactory;
 import org.apache.commons.logging.*;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.io.*;
 import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.ipc.Client.ConnectionId;
@@ -51,6 +52,8 @@ import org.apache.hadoop.security.SaslRpcServer;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.TokenIdentifier;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.*;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.Time;
@@ -75,6 +78,8 @@ import com.google.protobuf.BlockingService;
  * All methods in the protocol should throw only IOException.  No field data of
  * the protocol instance is transmitted.
  */
+@InterfaceAudience.LimitedPrivate(value = { "Common", "HDFS", "MapReduce", "Yarn" })
+@InterfaceStability.Evolving
 public class RPC {
   final static int RPC_SERVICE_CLASS_DEFAULT = 0;
   public enum RpcKind {
@@ -343,7 +348,8 @@ public class RPC {
                              long clientVersion,
                              InetSocketAddress addr, Configuration conf,
                              long connTimeout) throws IOException { 
-    return waitForProtocolProxy(protocol, clientVersion, addr, conf, 0, null, connTimeout);
+    return waitForProtocolProxy(protocol, clientVersion, addr, conf,
+        getRpcTimeout(conf), null, connTimeout);
   }
   
   /**
@@ -487,8 +493,8 @@ public class RPC {
                                 UserGroupInformation ticket,
                                 Configuration conf,
                                 SocketFactory factory) throws IOException {
-    return getProtocolProxy(
-        protocol, clientVersion, addr, ticket, conf, factory, 0, null);
+    return getProtocolProxy(protocol, clientVersion, addr, ticket, conf,
+        factory, getRpcTimeout(conf), null);
   }
   
   /**
@@ -682,6 +688,17 @@ public class RPC {
             + "does not provide closeable invocation handler "
             + proxy.getClass());
   }
+  /**
+   * Get the RPC time from configuration;
+   * If not set in the configuration, return the default value.
+   *
+   * @param conf Configuration
+   * @return the RPC timeout (ms)
+   */
+  public static int getRpcTimeout(Configuration conf) {
+    return conf.getInt(CommonConfigurationKeys.IPC_CLIENT_RPC_TIMEOUT_KEY,
+        CommonConfigurationKeys.IPC_CLIENT_RPC_TIMEOUT_DEFAULT);
+  }
 
   /**
    * Class to construct instances of RPC server with specific options.
@@ -872,9 +889,12 @@ public class RPC {
 
      getProtocolImplMap(rpcKind).put(new ProtoNameVer(protocolName, version),
          new ProtoClassProtoImpl(protocolClass, protocolImpl)); 
-     LOG.debug("RpcKind = " + rpcKind + " Protocol Name = " + protocolName +  " version=" + version +
-         " ProtocolImpl=" + protocolImpl.getClass().getName() + 
-         " protocolClass=" + protocolClass.getName());
+     if (LOG.isDebugEnabled()) {
+       LOG.debug("RpcKind = " + rpcKind + " Protocol Name = " + protocolName +
+           " version=" + version +
+           " ProtocolImpl=" + protocolImpl.getClass().getName() +
+           " protocolClass=" + protocolClass.getName());
+     }
    }
    
    static class VerProtocolImpl {

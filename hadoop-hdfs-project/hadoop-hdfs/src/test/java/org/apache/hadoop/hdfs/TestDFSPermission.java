@@ -22,6 +22,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
@@ -40,6 +41,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.permission.FsAction;
+import org.apache.hadoop.fs.Trash;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Time;
@@ -122,6 +124,7 @@ public class TestDFSPermission {
   public void tearDown() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
   
@@ -194,22 +197,35 @@ public class TestDFSPermission {
     return fs.getFileStatus(path).getPermission().toShort();
   }
 
-  /* create a file/directory with the default umask and permission */
   private void create(OpType op, Path name) throws IOException {
-    create(op, name, DEFAULT_UMASK, new FsPermission(DEFAULT_PERMISSION));
+    create(fs, conf, op, name);
+  }
+
+  /* create a file/directory with the default umask and permission */
+  static void create(final FileSystem fs, final Configuration fsConf,
+      OpType op, Path name) throws IOException {
+    create(fs, fsConf, op, name, DEFAULT_UMASK, new FsPermission(
+        DEFAULT_PERMISSION));
+  }
+
+  private void create(OpType op, Path name, short umask,
+      FsPermission permission)
+      throws IOException {
+    create(fs, conf, op, name, umask, permission);
   }
 
   /* create a file/directory with the given umask and permission */
-  private void create(OpType op, Path name, short umask, 
-      FsPermission permission) throws IOException {
+  static void create(final FileSystem fs, final Configuration fsConf,
+      OpType op, Path name, short umask, FsPermission permission)
+      throws IOException {
     // set umask in configuration, converting to padded octal
-    conf.set(FsPermission.UMASK_LABEL, String.format("%1$03o", umask));
+    fsConf.set(FsPermission.UMASK_LABEL, String.format("%1$03o", umask));
 
     // create the file/directory
     switch (op) {
     case CREATE:
       FSDataOutputStream out = fs.create(name, permission, true, 
-          conf.getInt(CommonConfigurationKeys.IO_FILE_BUFFER_SIZE_KEY, 4096),
+          fsConf.getInt(CommonConfigurationKeys.IO_FILE_BUFFER_SIZE_KEY, 4096),
           fs.getDefaultReplication(name), fs.getDefaultBlockSize(name), null);
       out.close();
       break;
@@ -272,7 +288,7 @@ public class TestDFSPermission {
     fs.setPermission(new Path("/"),
         FsPermission.createImmutable((short)0777));
   }
-  
+
   /* check if the ownership of a file/directory is set correctly */
   @Test
   public void testOwnership() throws Exception {
@@ -309,7 +325,7 @@ public class TestDFSPermission {
     setOwner(FILE_DIR_PATH, USER1.getShortUserName(), GROUP3_NAME, false);
 
     // case 3: user1 changes FILE_DIR_PATH's owner to be user2
-    login(USER1);
+    fs = DFSTestUtil.login(fs, conf, USER1);
     setOwner(FILE_DIR_PATH, USER2.getShortUserName(), null, true);
 
     // case 4: user1 changes FILE_DIR_PATH's group to be group1 which it belongs
@@ -321,14 +337,14 @@ public class TestDFSPermission {
     setOwner(FILE_DIR_PATH, null, GROUP3_NAME, true);
 
     // case 6: user2 (non-owner) changes FILE_DIR_PATH's group to be group3
-    login(USER2);
+    fs = DFSTestUtil.login(fs, conf, USER2);
     setOwner(FILE_DIR_PATH, null, GROUP3_NAME, true);
 
     // case 7: user2 (non-owner) changes FILE_DIR_PATH's user to be user2
     setOwner(FILE_DIR_PATH, USER2.getShortUserName(), null, true);
 
     // delete the file/directory
-    login(SUPERUSER);
+    fs = DFSTestUtil.login(fs, conf, SUPERUSER);
     fs.delete(FILE_DIR_PATH, true);
   }
 
@@ -357,7 +373,7 @@ public class TestDFSPermission {
   final static private String DIR_NAME = "dir";
   final static private String FILE_DIR_NAME = "filedir";
 
-  private enum OpType {CREATE, MKDIRS, OPEN, SET_REPLICATION,
+  enum OpType {CREATE, MKDIRS, OPEN, SET_REPLICATION,
     GET_FILEINFO, IS_DIR, EXISTS, GET_CONTENT_LENGTH, LIST, RENAME, DELETE
   };
 
@@ -510,8 +526,59 @@ public class TestDFSPermission {
     }
   }
 
-  /* Check if namenode performs permission checking correctly 
-   * for the given user for operations mkdir, open, setReplication, 
+  @Test
+  public void testPermissionMessageOnNonDirAncestor()
+      throws IOException, InterruptedException {
+    FileSystem rootFs = FileSystem.get(conf);
+    Path p4 = new Path("/p4");
+    rootFs.mkdirs(p4);
+    rootFs.setOwner(p4, USER1_NAME, GROUP1_NAME);
+
+    final Path fpath = new Path("/p4/file");
+    DataOutputStream out = rootFs.create(fpath);
+    out.writeBytes("dhruba: " + fpath);
+    out.close();
+    rootFs.setOwner(fpath, USER1_NAME, GROUP1_NAME);
+    assertTrue(rootFs.exists(fpath));
+
+    fs = USER1.doAs(new PrivilegedExceptionAction<FileSystem>() {
+      @Override
+      public FileSystem run() throws Exception {
+        return FileSystem.get(conf);
+      }
+    });
+
+    final Path nfpath = new Path("/p4/file/nonexisting");
+    assertFalse(rootFs.exists(nfpath));
+
+    try {
+      fs.exists(nfpath);
+      fail("The exists call should have failed.");
+    } catch (AccessControlException e) {
+      assertTrue("Permission denied messages must carry file path",
+          e.getMessage().contains(fpath.getName()));
+      assertTrue("Permission denied messages must specify existing_file is not "
+              + "a directory, when checked on /existing_file/non_existing_name",
+          e.getMessage().contains("is not a directory"));
+    }
+
+    rootFs.setPermission(p4, new FsPermission("600"));
+    try {
+      fs.exists(nfpath);
+      fail("The exists call should have failed.");
+    } catch (AccessControlException e) {
+      assertFalse("Permission denied messages must not carry full file path,"
+              + "since the user does not have permission on /p4: "
+              + e.getMessage(),
+          e.getMessage().contains(fpath.getName()));
+      assertFalse("Permission denied messages must not specify /p4"
+          + " is not a directory: " + e.getMessage(),
+          e.getMessage().contains("is not a directory"));
+    }
+  }
+
+  /* Check if namenode performs permission checking correctly
+   * for the given user for operations mkdir, open, setReplication,
    * getFileInfo, isDirectory, exists, getContentLength, list, rename,
    * and delete */
   private void testPermissionCheckingPerUser(UserGroupInformation ugi,
@@ -519,7 +586,7 @@ public class TestDFSPermission {
       short[] filePermission, Path[] parentDirs, Path[] files, Path[] dirs)
       throws Exception {
     boolean[] isDirEmpty = new boolean[NUM_TEST_PERMISSIONS];
-    login(SUPERUSER);
+    fs = DFSTestUtil.login(fs, conf, SUPERUSER);
     for (int i = 0; i < NUM_TEST_PERMISSIONS; i++) {
       create(OpType.CREATE, files[i]);
       create(OpType.MKDIRS, dirs[i]);
@@ -535,7 +602,7 @@ public class TestDFSPermission {
       isDirEmpty[i] = (fs.listStatus(dirs[i]).length == 0);
     }
 
-    login(ugi);
+    fs = DFSTestUtil.login(fs, conf, ugi);
     for (int i = 0; i < NUM_TEST_PERMISSIONS; i++) {
       testCreateMkdirs(ugi, new Path(parentDirs[i], FILE_DIR_NAME),
           ancestorPermission[i], parentPermission[i]);
@@ -563,7 +630,7 @@ public class TestDFSPermission {
   /* A random permission generator that guarantees that each permission
    * value is generated only once.
    */
-  static private class PermissionGenerator {
+  static class PermissionGenerator {
     private final Random r;
     private final short[] permissions = new short[MAX_PERMISSION + 1];
     private int numLeft = MAX_PERMISSION + 1;
@@ -1088,16 +1155,6 @@ public class TestDFSPermission {
     ddpv.set(path, ancestorPermission, parentPermission, permission,
         childPermissions);
     ddpv.verifyPermission(ugi);
-  }
-
-  /* log into dfs as the given user */
-  private void login(UserGroupInformation ugi) throws IOException,
-      InterruptedException {
-    if (fs != null) {
-      fs.close();
-    }
-
-    fs = DFSTestUtil.getFileSystemAs(ugi, conf);
   }
 
   /* test non-existent file */

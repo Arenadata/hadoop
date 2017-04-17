@@ -93,11 +93,15 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
   
   Set<CompressAwarePath> onDiskMapOutputs = new TreeSet<CompressAwarePath>();
   private final OnDiskMerger onDiskMerger;
-  
-  private final long memoryLimit;
+
+  @VisibleForTesting
+  final long memoryLimit;
+
   private long usedMemory;
   private long commitMemory;
-  private final long maxSingleShuffleLimit;
+
+  @VisibleForTesting
+  final long maxSingleShuffleLimit;
   
   private final int memToMemMergeOutputsThreshold; 
   private final long mergeThreshold;
@@ -167,11 +171,10 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
     }
 
     // Allow unit tests to fix Runtime memory
-    this.memoryLimit = 
-      (long)(jobConf.getLong(MRJobConfig.REDUCE_MEMORY_TOTAL_BYTES,
-          Math.min(Runtime.getRuntime().maxMemory(), Integer.MAX_VALUE))
-        * maxInMemCopyUse);
- 
+    this.memoryLimit = (long)(jobConf.getLong(
+        MRJobConfig.REDUCE_MEMORY_TOTAL_BYTES,
+        Runtime.getRuntime().maxMemory()) * maxInMemCopyUse);
+
     this.ioSortFactor = jobConf.getInt(MRJobConfig.IO_SORT_FACTOR, 100);
 
     final float singleShuffleMemoryLimitPercent =
@@ -186,13 +189,20 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
 
     usedMemory = 0L;
     commitMemory = 0L;
-    this.maxSingleShuffleLimit = 
-      (long)(memoryLimit * singleShuffleMemoryLimitPercent);
-    this.memToMemMergeOutputsThreshold = 
-            jobConf.getInt(MRJobConfig.REDUCE_MEMTOMEM_THRESHOLD, ioSortFactor);
+    long maxSingleShuffleLimitConfiged =
+        (long)(memoryLimit * singleShuffleMemoryLimitPercent);
+    if(maxSingleShuffleLimitConfiged > Integer.MAX_VALUE) {
+      maxSingleShuffleLimitConfiged = Integer.MAX_VALUE;
+      LOG.info("The max number of bytes for a single in-memory shuffle cannot" +
+          " be larger than Integer.MAX_VALUE. Setting it to Integer.MAX_VALUE");
+    }
+    this.maxSingleShuffleLimit = maxSingleShuffleLimitConfiged;
+    this.memToMemMergeOutputsThreshold =
+        jobConf.getInt(MRJobConfig.REDUCE_MEMTOMEM_THRESHOLD, ioSortFactor);
     this.mergeThreshold = (long)(this.memoryLimit * 
-                          jobConf.getFloat(MRJobConfig.SHUFFLE_MERGE_PERCENT, 
-                                           0.90f));
+                          jobConf.getFloat(
+                            MRJobConfig.SHUFFLE_MERGE_PERCENT,
+                            MRJobConfig.DEFAULT_SHUFFLE_MERGE_PERCENT));
     LOG.info("MergerManager: memoryLimit=" + memoryLimit + ", " +
              "maxSingleShuffleLimit=" + maxSingleShuffleLimit + ", " +
              "mergeThreshold=" + mergeThreshold + ", " + 
@@ -201,7 +211,7 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
 
     if (this.maxSingleShuffleLimit >= this.mergeThreshold) {
       throw new RuntimeException("Invalid configuration: "
-          + "maxSingleShuffleLimit should be less than mergeThreshold"
+          + "maxSingleShuffleLimit should be less than mergeThreshold "
           + "maxSingleShuffleLimit: " + this.maxSingleShuffleLimit
           + "mergeThreshold: " + this.mergeThreshold);
     }
@@ -247,22 +257,19 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
   public void waitForResource() throws InterruptedException {
     inMemoryMerger.waitForMerge();
   }
-  
-  private boolean canShuffleToMemory(long requestedSize) {
-    return (requestedSize < maxSingleShuffleLimit); 
-  }
-  
+
   @Override
   public synchronized MapOutput<K,V> reserve(TaskAttemptID mapId, 
                                              long requestedSize,
                                              int fetcher
                                              ) throws IOException {
-    if (!canShuffleToMemory(requestedSize)) {
+    if (requestedSize > maxSingleShuffleLimit) {
       LOG.info(mapId + ": Shuffling to disk since " + requestedSize + 
                " is greater than maxSingleShuffleLimit (" + 
                maxSingleShuffleLimit + ")");
-      return new OnDiskMapOutput<K,V>(mapId, reduceId, this, requestedSize,
-                                      jobConf, mapOutputFile, fetcher, true);
+      return new OnDiskMapOutput<K,V>(mapId, this, requestedSize, jobConf,
+         fetcher, true, FileSystem.getLocal(jobConf).getRaw(),
+         mapOutputFile.getInputFileForWrite(mapId.getTaskID(), requestedSize));
     }
     
     // Stall shuffle if we are above the memory limit
@@ -667,24 +674,26 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
     }
   }
 
+  @VisibleForTesting
+  final long getMaxInMemReduceLimit() {
+    final float maxRedPer =
+        jobConf.getFloat(MRJobConfig.REDUCE_INPUT_BUFFER_PERCENT, 0f);
+    if (maxRedPer > 1.0 || maxRedPer < 0.0) {
+      throw new RuntimeException(maxRedPer + ": "
+          + MRJobConfig.REDUCE_INPUT_BUFFER_PERCENT
+          + " must be a float between 0 and 1.0");
+    }
+    return (long)(memoryLimit * maxRedPer);
+  }
+
   private RawKeyValueIterator finalMerge(JobConf job, FileSystem fs,
                                        List<InMemoryMapOutput<K,V>> inMemoryMapOutputs,
                                        List<CompressAwarePath> onDiskMapOutputs
                                        ) throws IOException {
-    LOG.info("finalMerge called with " + 
-             inMemoryMapOutputs.size() + " in-memory map-outputs and " + 
-             onDiskMapOutputs.size() + " on-disk map-outputs");
-    
-    final float maxRedPer =
-      job.getFloat(MRJobConfig.REDUCE_INPUT_BUFFER_PERCENT, 0f);
-    if (maxRedPer > 1.0 || maxRedPer < 0.0) {
-      throw new IOException(MRJobConfig.REDUCE_INPUT_BUFFER_PERCENT +
-                            maxRedPer);
-    }
-    int maxInMemReduce = (int)Math.min(
-        Runtime.getRuntime().maxMemory() * maxRedPer, Integer.MAX_VALUE);
-    
-
+    LOG.info("finalMerge called with " +
+        inMemoryMapOutputs.size() + " in-memory map-outputs and " +
+        onDiskMapOutputs.size() + " on-disk map-outputs");
+    final long maxInMemReduce = getMaxInMemReduceLimit();
     // merge config params
     Class<K> keyClass = (Class<K>)job.getMapOutputKeyClass();
     Class<V> valueClass = (Class<V>)job.getMapOutputValueClass();

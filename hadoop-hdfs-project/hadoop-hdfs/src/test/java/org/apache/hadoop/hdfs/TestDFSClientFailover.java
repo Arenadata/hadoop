@@ -17,18 +17,17 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketAddress;
-import java.lang.reflect.Field;
-import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.List;
@@ -42,13 +41,13 @@ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.HAUtil;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
-import org.apache.hadoop.hdfs.server.namenode.ha.IPFailoverProxyProvider;
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
+import org.apache.hadoop.hdfs.server.namenode.ha.IPFailoverProxyProvider;
+import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.io.retry.DefaultFailoverProxyProvider;
 import org.apache.hadoop.io.retry.FailoverProxyProvider;
 import org.apache.hadoop.net.ConnectTimeoutException;
 import org.apache.hadoop.net.StandardSocketFactory;
@@ -87,7 +86,10 @@ public class TestDFSClientFailover {
   
   @After
   public void tearDownCluster() throws IOException {
-    cluster.shutdown();
+    if (cluster != null) {
+      cluster.shutdown();
+      cluster = null;
+    }
   }
 
   @After
@@ -115,7 +117,8 @@ public class TestDFSClientFailover {
     // to include a port number.
     Path withPort = new Path("hdfs://" +
         HATestUtil.getLogicalHostname(cluster) + ":" +
-        NameNode.DEFAULT_PORT + "/" + TEST_FILE.toUri().getPath());
+        HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT + "/" +
+        TEST_FILE.toUri().getPath());
     FileSystem fs2 = withPort.getFileSystem(fs.getConf());
     assertTrue(fs2.exists(withPort));
 
@@ -206,7 +209,7 @@ public class TestDFSClientFailover {
   public void testFailureWithMisconfiguredHaNNs() throws Exception {
     String logicalHost = "misconfigured-ha-uri";
     Configuration conf = new Configuration();
-    conf.set(DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX + "." + logicalHost,
+    conf.set(HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." + logicalHost,
         ConfiguredFailoverProxyProvider.class.getName());
     
     URI uri = new URI("hdfs://" + logicalHost + "/test");
@@ -290,6 +293,40 @@ public class TestDFSClientFailover {
     Mockito.verify(spyNS, Mockito.never()).lookupAllHostAddr(Mockito.eq(logicalHost));
   }
 
+  /**
+   * Test that creating proxy doesn't ever try to DNS-resolve the logical URI.
+   * Regression test for HDFS-9364.
+   */
+  @Test(timeout=60000)
+  public void testCreateProxyDoesntDnsResolveLogicalURI() throws IOException {
+    final NameService spyNS = spyOnNameService();
+    final Configuration conf = new HdfsConfiguration();
+    final String service = "nameservice1";
+    final String namenode = "namenode113";
+    conf.set(DFSConfigKeys.DFS_NAMESERVICES, service);
+    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://" + service);
+    conf.set(
+        HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." + service,
+        "org.apache.hadoop.hdfs.server.namenode.ha."
+        + "ConfiguredFailoverProxyProvider");
+    conf.set(DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX + "." + service,
+        namenode);
+    conf.set(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY + "." + service + "."
+        + namenode, "localhost:8020");
+
+    // call createProxy implicitly and explicitly
+    Path p = new Path("/");
+    p.getFileSystem(conf);
+    NameNodeProxiesClient.createProxyWithClientProtocol(conf,
+        FileSystem.getDefaultUri(conf), null);
+    NameNodeProxies.createProxy(conf, FileSystem.getDefaultUri(conf),
+        NamenodeProtocol.class, null);
+
+    // Ensure that the logical hostname was never resolved.
+    Mockito.verify(spyNS, Mockito.never()).lookupAllHostAddr(
+        Mockito.eq(service));
+  }
+
   /** Dummy implementation of plain FailoverProxyProvider */
   public static class DummyLegacyFailoverProxyProvider<T>
       implements FailoverProxyProvider<T> {
@@ -299,7 +336,7 @@ public class TestDFSClientFailover {
         Class<T> xface) {
       try {
         this.proxy = NameNodeProxies.createNonHAProxy(conf,
-            NameNode.getAddress(uri), xface,
+            DFSUtilClient.getNNAddress(uri), xface,
             UserGroupInformation.getCurrentUser(), false).getProxy();
         this.xface = xface;
       } catch (IOException ioe) {
@@ -334,7 +371,7 @@ public class TestDFSClientFailover {
     Configuration config = new HdfsConfiguration(conf);
     String logicalName = HATestUtil.getLogicalHostname(cluster);
     HATestUtil.setFailoverConfigurations(cluster, config, logicalName);
-    config.set(DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX + "." + logicalName,
+    config.set(HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." + logicalName,
         DummyLegacyFailoverProxyProvider.class.getName());
     Path p = new Path("hdfs://" + logicalName + "/");
 
@@ -354,7 +391,7 @@ public class TestDFSClientFailover {
     // setup the config with the IP failover proxy provider class
     Configuration config = new HdfsConfiguration(conf);
     URI nnUri = cluster.getURI(0);
-    config.set(DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX + "." +
+    config.set(HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." +
         nnUri.getHost(),
         IPFailoverProxyProvider.class.getName());
 

@@ -64,7 +64,15 @@ public class BlockScanner {
   /**
    * The scanner configuration.
    */
-  private final Conf conf;
+  private Conf conf;
+
+  @VisibleForTesting
+  void setConf(Conf conf) {
+    this.conf = conf;
+    for (Entry<String, VolumeScanner> entry : scanners.entrySet()) {
+      entry.getValue().setConf(conf);
+    }
+  }
 
   /**
    * The cached scanner configuration.
@@ -317,7 +325,7 @@ public class BlockScanner {
    */
   synchronized void markSuspectBlock(String storageId, ExtendedBlock block) {
     if (!isEnabled()) {
-      LOG.info("Not scanning suspicious block {} on {}, because the block " +
+      LOG.debug("Not scanning suspicious block {} on {}, because the block " +
           "scanner is disabled.", block, storageId);
       return;
     }

@@ -51,14 +51,18 @@ import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.io.IOUtils;
@@ -83,13 +87,22 @@ public class TestINodeFile {
   private short replication;
   private long preferredBlockSize = 1024;
 
+  static public INodeFile createINodeFile(long id) {
+    return new INodeFile(id, ("file" + id).getBytes(), perm, 0L, 0L, null,
+        (short)3, 1024L);
+  }
+
+  static void toCompleteFile(INodeFile file) {
+    file.toCompleteFile(Time.now(), 0, (short)1);
+  }
+
   INodeFile createINodeFile(short replication, long preferredBlockSize) {
-    return new INodeFile(INodeId.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
+    return new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
         null, replication, preferredBlockSize, (byte)0);
   }
 
   private static INodeFile createINodeFile(byte storagePolicyID) {
-    return new INodeFile(INodeId.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
+    return new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
         null, (short)3, 1024L, storagePolicyID);
   }
 
@@ -192,9 +205,9 @@ public class TestINodeFile {
     INodeFile inf = createINodeFile(replication, preferredBlockSize);
     inf.setLocalName(DFSUtil.string2Bytes("f"));
 
-    INodeDirectory root = new INodeDirectory(INodeId.GRANDFATHER_INODE_ID,
+    INodeDirectory root = new INodeDirectory(HdfsConstants.GRANDFATHER_INODE_ID,
         INodeDirectory.ROOT_NAME, perm, 0L);
-    INodeDirectory dir = new INodeDirectory(INodeId.GRANDFATHER_INODE_ID,
+    INodeDirectory dir = new INodeDirectory(HdfsConstants.GRANDFATHER_INODE_ID,
         DFSUtil.string2Bytes("d"), perm, 0L);
 
     assertEquals("f", inf.getFullPathName());
@@ -267,8 +280,9 @@ public class TestINodeFile {
     INodeFile origFile = createINodeFiles(1, "origfile")[0];
     assertEquals("Number of blocks didn't match", origFile.numBlocks(), 1L);
 
-    INodeFile[] appendFiles =   createINodeFiles(4, "appendfile");
-    origFile.concatBlocks(appendFiles);
+    INodeFile[] appendFiles = createINodeFiles(4, "appendfile");
+    BlockManager bm = Mockito.mock(BlockManager.class);
+    origFile.concatBlocks(appendFiles, bm);
     assertEquals("Number of blocks didn't match", origFile.numBlocks(), 5L);
   }
   
@@ -288,7 +302,7 @@ public class TestINodeFile {
       iNodes[i] = new INodeFile(i, null, perm, 0L, 0L, null, replication,
           preferredBlockSize, (byte)0);
       iNodes[i].setLocalName(DFSUtil.string2Bytes(fileNamePrefix + i));
-      BlockInfoContiguous newblock = new BlockInfoContiguous(replication);
+      BlockInfo newblock = new BlockInfoContiguous(replication);
       iNodes[i].addBlock(newblock);
     }
     
@@ -343,7 +357,7 @@ public class TestINodeFile {
 
     {//cast from INodeFileUnderConstruction
       final INode from = new INodeFile(
-          INodeId.GRANDFATHER_INODE_ID, null, perm, 0L, 0L, null, replication,
+          HdfsConstants.GRANDFATHER_INODE_ID, null, perm, 0L, 0L, null, replication,
           1024L, (byte)0);
       from.asFile().toUnderConstruction("client", "machine");
     
@@ -361,7 +375,7 @@ public class TestINodeFile {
     }
 
     {//cast from INodeDirectory
-      final INode from = new INodeDirectory(INodeId.GRANDFATHER_INODE_ID, null,
+      final INode from = new INodeDirectory(HdfsConstants.GRANDFATHER_INODE_ID, null,
           perm, 0L);
 
       //cast to INodeFile, should fail
@@ -842,9 +856,9 @@ public class TestINodeFile {
     byte[][] actual = FSDirectory.getPathComponents(inode);
     DFSTestUtil.checkComponentsEquals(expected, actual);
   }
-  
+
   /**
-   * Tests for {@link FSDirectory#resolvePath(String, byte[][], FSDirectory)}
+   * Tests for {@link FSDirectory#resolvePath(String, FSDirectory)}
    */
   @Test
   public void testInodePath() throws IOException {
@@ -854,54 +868,47 @@ public class TestINodeFile {
     // For an any inode look up return inode corresponding to "c" from /a/b/c
     FSDirectory fsd = Mockito.mock(FSDirectory.class);
     Mockito.doReturn(inode).when(fsd).getInode(Mockito.anyLong());
-    
-    // Null components
-    assertEquals("/test", FSDirectory.resolvePath("/test", null, fsd));
-    
+
     // Tests for FSDirectory#resolvePath()
     // Non inode regular path
-    byte[][] components = INode.getPathComponents(path);
-    String resolvedPath = FSDirectory.resolvePath(path, components, fsd);
+    String resolvedPath = FSDirectory.resolvePath(path, fsd);
     assertEquals(path, resolvedPath);
-    
+
     // Inode path with no trailing separator
-    components = INode.getPathComponents("/.reserved/.inodes/1");
-    resolvedPath = FSDirectory.resolvePath(path, components, fsd);
+    String testPath = "/.reserved/.inodes/1";
+    resolvedPath = FSDirectory.resolvePath(testPath, fsd);
     assertEquals(path, resolvedPath);
-    
+
     // Inode path with trailing separator
-    components = INode.getPathComponents("/.reserved/.inodes/1/");
+    testPath = "/.reserved/.inodes/1/";
+    resolvedPath = FSDirectory.resolvePath(testPath, fsd);
     assertEquals(path, resolvedPath);
-    
+
     // Inode relative path
-    components = INode.getPathComponents("/.reserved/.inodes/1/d/e/f");
-    resolvedPath = FSDirectory.resolvePath(path, components, fsd);
+    testPath = "/.reserved/.inodes/1/d/e/f";
+    resolvedPath = FSDirectory.resolvePath(testPath, fsd);
     assertEquals("/a/b/c/d/e/f", resolvedPath);
-    
+
     // A path with just .inodes  returns the path as is
-    String testPath = "/.reserved/.inodes";
-    components = INode.getPathComponents(testPath);
-    resolvedPath = FSDirectory.resolvePath(testPath, components, fsd);
+    testPath = "/.reserved/.inodes";
+    resolvedPath = FSDirectory.resolvePath(testPath, fsd);
     assertEquals(testPath, resolvedPath);
-    
+
     // Root inode path
     testPath = "/.reserved/.inodes/" + INodeId.ROOT_INODE_ID;
-    components = INode.getPathComponents(testPath);
-    resolvedPath = FSDirectory.resolvePath(testPath, components, fsd);
+    resolvedPath = FSDirectory.resolvePath(testPath, fsd);
     assertEquals("/", resolvedPath);
-    
+
     // An invalid inode path should remain unresolved
     testPath = "/.invalid/.inodes/1";
-    components = INode.getPathComponents(testPath);
-    resolvedPath = FSDirectory.resolvePath(testPath, components, fsd);
+    resolvedPath = FSDirectory.resolvePath(testPath, fsd);
     assertEquals(testPath, resolvedPath);
-    
+
     // Test path with nonexistent(deleted or wrong id) inode
     Mockito.doReturn(null).when(fsd).getInode(Mockito.anyLong());
     testPath = "/.reserved/.inodes/1234";
-    components = INode.getPathComponents(testPath);
     try {
-      String realPath = FSDirectory.resolvePath(testPath, components, fsd);
+      String realPath = FSDirectory.resolvePath(testPath, fsd);
       fail("Path should not be resolved:" + realPath);
     } catch (IOException e) {
       assertTrue(e instanceof FileNotFoundException);
@@ -931,7 +938,7 @@ public class TestINodeFile {
       long parentId = fsdir.getINode("/").getId();
       String testPath = "/.reserved/.inodes/" + dirId + "/..";
 
-      client = new DFSClient(NameNode.getAddress(conf), conf);
+      client = new DFSClient(DFSUtilClient.getNNAddress(conf), conf);
       HdfsFileStatus status = client.getFileInfo(testPath);
       assertTrue(parentId == status.getFileId());
       
@@ -1067,7 +1074,7 @@ public class TestINodeFile {
   @Test
   public void testFileUnderConstruction() {
     replication = 3;
-    final INodeFile file = new INodeFile(INodeId.GRANDFATHER_INODE_ID, null,
+    final INodeFile file = new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID, null,
         perm, 0L, 0L, null, replication, 1024L, (byte)0);
     assertFalse(file.isUnderConstruction());
 
@@ -1079,7 +1086,7 @@ public class TestINodeFile {
     assertEquals(clientName, uc.getClientName());
     assertEquals(clientMachine, uc.getClientMachine());
 
-    file.toCompleteFile(Time.now());
+    toCompleteFile(file);
     assertFalse(file.isUnderConstruction());
   }
 
@@ -1099,5 +1106,13 @@ public class TestINodeFile {
     inf.removeXAttrFeature();
     f1 = inf.getXAttrFeature();
     assertEquals(f1, null);
+  }
+
+  @Test
+  public void testClearBlocks() {
+    INodeFile toBeCleared = createINodeFiles(1, "toBeCleared")[0];
+    assertEquals(1, toBeCleared.getBlocks().length);
+    toBeCleared.clearBlocks();
+    assertTrue(toBeCleared.getBlocks().length == 0);
   }
 }

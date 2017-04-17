@@ -17,84 +17,96 @@
  */
 package org.apache.hadoop.tracing;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Map;
 import org.apache.commons.lang.RandomStringUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FsTracer;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.htrace.HTraceConfiguration;
-import org.apache.htrace.Sampler;
-import org.apache.htrace.Span;
-import org.apache.htrace.SpanReceiver;
-import org.apache.htrace.Trace;
-import org.apache.htrace.TraceScope;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.apache.htrace.core.Sampler;
+import org.apache.htrace.core.Span;
+import org.apache.htrace.core.TraceScope;
+import org.apache.htrace.core.Tracer;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeoutException;
-
-import com.google.common.base.Supplier;
-
 public class TestTracing {
-
-  private static Configuration conf;
   private static MiniDFSCluster cluster;
   private static DistributedFileSystem dfs;
+
+  private Tracer prevTracer;
+
+  private final static Configuration TRACING_CONF;
+  private final static Configuration NO_TRACING_CONF;
+
+  static {
+    NO_TRACING_CONF = new Configuration();
+    NO_TRACING_CONF.setLong("dfs.blocksize", 100 * 1024);
+
+    TRACING_CONF = new Configuration(NO_TRACING_CONF);
+    TRACING_CONF.set(CommonConfigurationKeys.FS_CLIENT_HTRACE_PREFIX +
+        Tracer.SPAN_RECEIVER_CLASSES_KEY,
+        SetSpanReceiver.class.getName());
+    TRACING_CONF.set(CommonConfigurationKeys.FS_CLIENT_HTRACE_PREFIX +
+        Tracer.SAMPLER_CLASSES_KEY, "AlwaysSampler");
+  }
 
   @Test
   public void testTracing() throws Exception {
     // write and read without tracing started
     String fileName = "testTracingDisabled.dat";
     writeTestFile(fileName);
-    Assert.assertTrue(SetSpanReceiver.SetHolder.size() == 0);
+    Assert.assertEquals(0, SetSpanReceiver.size());
     readTestFile(fileName);
-    Assert.assertTrue(SetSpanReceiver.SetHolder.size() == 0);
+    Assert.assertEquals(0, SetSpanReceiver.size());
 
-    writeWithTracing();
-    readWithTracing();
+    writeTestFile("testReadTraceHooks.dat");
+
+    FsTracer.clear();
+    Tracer tracer = FsTracer.get(TRACING_CONF);
+    writeWithTracing(tracer);
+    readWithTracing(tracer);
   }
 
-  public void writeWithTracing() throws Exception {
+  private void writeWithTracing(Tracer tracer) throws Exception {
     long startTime = System.currentTimeMillis();
-    TraceScope ts = Trace.startSpan("testWriteTraceHooks", Sampler.ALWAYS);
+    TraceScope ts = tracer.newScope("testWriteTraceHooks");
     writeTestFile("testWriteTraceHooks.dat");
     long endTime = System.currentTimeMillis();
     ts.close();
 
     String[] expectedSpanNames = {
       "testWriteTraceHooks",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.create",
+      "ClientProtocol#create",
       "ClientNamenodeProtocol#create",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.fsync",
+      "ClientProtocol#fsync",
       "ClientNamenodeProtocol#fsync",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.complete",
+      "ClientProtocol#complete",
       "ClientNamenodeProtocol#complete",
       "newStreamForCreate",
-      "DFSOutputStream#writeChunk",
+      "DFSOutputStream#write",
       "DFSOutputStream#close",
       "dataStreamer",
       "OpWriteBlockProto",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.addBlock",
+      "ClientProtocol#addBlock",
       "ClientNamenodeProtocol#addBlock"
     };
-    assertSpanNamesFound(expectedSpanNames);
+    SetSpanReceiver.assertSpanNamesFound(expectedSpanNames);
 
     // The trace should last about the same amount of time as the test
-    Map<String, List<Span>> map = SetSpanReceiver.SetHolder.getMap();
+    Map<String, List<Span>> map = SetSpanReceiver.getMap();
     Span s = map.get("testWriteTraceHooks").get(0);
     Assert.assertNotNull(s);
     long spanStart = s.getStartTimeMillis();
@@ -105,43 +117,49 @@ public class TestTracing {
     // and children of them are exception.
     String[] spansInTopTrace = {
       "testWriteTraceHooks",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.create",
+      "ClientProtocol#create",
       "ClientNamenodeProtocol#create",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.fsync",
+      "ClientProtocol#fsync",
       "ClientNamenodeProtocol#fsync",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.complete",
+      "ClientProtocol#complete",
       "ClientNamenodeProtocol#complete",
       "newStreamForCreate",
-      "DFSOutputStream#writeChunk",
+      "DFSOutputStream#write",
       "DFSOutputStream#close",
     };
     for (String desc : spansInTopTrace) {
       for (Span span : map.get(desc)) {
-        Assert.assertEquals(ts.getSpan().getTraceId(), span.getTraceId());
+        Assert.assertEquals(ts.getSpan().getSpanId().getHigh(),
+                            span.getSpanId().getHigh());
       }
     }
-    SetSpanReceiver.SetHolder.spans.clear();
+
+    // test for timeline annotation added by HADOOP-11242
+    Assert.assertEquals("called",
+        map.get("ClientProtocol#create")
+           .get(0).getTimelineAnnotations()
+           .get(0).getMessage());
+
+    SetSpanReceiver.clear();
   }
 
-  public void readWithTracing() throws Exception {
-    String fileName = "testReadTraceHooks.dat";
-    writeTestFile(fileName);
+  private void readWithTracing(Tracer tracer) throws Exception {
     long startTime = System.currentTimeMillis();
-    TraceScope ts = Trace.startSpan("testReadTraceHooks", Sampler.ALWAYS);
-    readTestFile(fileName);
+    TraceScope ts = tracer.newScope("testReadTraceHooks");
+    readTestFile("testReadTraceHooks.dat");
     ts.close();
     long endTime = System.currentTimeMillis();
 
     String[] expectedSpanNames = {
       "testReadTraceHooks",
-      "org.apache.hadoop.hdfs.protocol.ClientProtocol.getBlockLocations",
+      "ClientProtocol#getBlockLocations",
       "ClientNamenodeProtocol#getBlockLocations",
       "OpReadBlockProto"
     };
-    assertSpanNamesFound(expectedSpanNames);
+    SetSpanReceiver.assertSpanNamesFound(expectedSpanNames);
 
     // The trace should last about the same amount of time as the test
-    Map<String, List<Span>> map = SetSpanReceiver.SetHolder.getMap();
+    Map<String, List<Span>> map = SetSpanReceiver.getMap();
     Span s = map.get("testReadTraceHooks").get(0);
     Assert.assertNotNull(s);
 
@@ -152,10 +170,14 @@ public class TestTracing {
 
     // There should only be one trace id as it should all be homed in the
     // top trace.
-    for (Span span : SetSpanReceiver.SetHolder.spans.values()) {
-      Assert.assertEquals(ts.getSpan().getTraceId(), span.getTraceId());
+    for (Span span : SetSpanReceiver.getSpans()) {
+      System.out.println(span.toJson());
     }
-    SetSpanReceiver.SetHolder.spans.clear();
+    for (Span span : SetSpanReceiver.getSpans()) {
+      Assert.assertEquals(ts.getSpan().getSpanId().getHigh(),
+                          span.getSpanId().getHigh());
+    }
+    SetSpanReceiver.clear();
   }
 
   private void writeTestFile(String testFileName) throws Exception {
@@ -188,92 +210,22 @@ public class TestTracing {
     }
   }
 
-  @BeforeClass
-  public static void setup() throws IOException {
-    conf = new Configuration();
-    conf.setLong("dfs.blocksize", 100 * 1024);
-    conf.set(DFSConfigKeys.DFS_CLIENT_HTRACE_PREFIX +
-        SpanReceiverHost.SPAN_RECEIVERS_CONF_SUFFIX,
-        SetSpanReceiver.class.getName());
-  }
-
   @Before
   public void startCluster() throws IOException {
-    cluster = new MiniDFSCluster.Builder(conf)
+    cluster = new MiniDFSCluster.Builder(NO_TRACING_CONF)
         .numDataNodes(3)
         .build();
     cluster.waitActive();
     dfs = cluster.getFileSystem();
-    SetSpanReceiver.SetHolder.spans.clear();
+    SetSpanReceiver.clear();
   }
 
   @After
   public void shutDown() throws IOException {
-    cluster.shutdown();
-  }
-
-  static void assertSpanNamesFound(final String[] expectedSpanNames) {
-    try {
-      GenericTestUtils.waitFor(new Supplier<Boolean>() {
-        @Override
-        public Boolean get() {
-          Map<String, List<Span>> map = SetSpanReceiver.SetHolder.getMap();
-          for (String spanName : expectedSpanNames) {
-            if (!map.containsKey(spanName)) {
-              return false;
-            }
-          }
-          return true;
-        }
-      }, 100, 1000);
-    } catch (TimeoutException e) {
-      Assert.fail("timed out to get expected spans: " + e.getMessage());
-    } catch (InterruptedException e) {
-      Assert.fail("interrupted while waiting spans: " + e.getMessage());
+    if (cluster != null) {
+      cluster.shutdown();
+      cluster = null;
     }
-  }
-
-  /**
-   * Span receiver that puts all spans into a single set.
-   * This is useful for testing.
-   * <p/>
-   * We're not using HTrace's POJOReceiver here so as that doesn't
-   * push all the metrics to a static place, and would make testing
-   * SpanReceiverHost harder.
-   */
-  public static class SetSpanReceiver implements SpanReceiver {
-
-    public SetSpanReceiver(HTraceConfiguration conf) {
-    }
-
-    public void receiveSpan(Span span) {
-      SetHolder.spans.put(span.getSpanId(), span);
-    }
-
-    public void close() {
-    }
-
-    public static class SetHolder {
-      public static ConcurrentHashMap<Long, Span> spans = 
-          new ConcurrentHashMap<Long, Span>();
-          
-      public static int size() {
-        return spans.size();
-      }
-
-      public static Map<String, List<Span>> getMap() {
-        Map<String, List<Span>> map = new HashMap<String, List<Span>>();
-
-        for (Span s : spans.values()) {
-          List<Span> l = map.get(s.getDescription());
-          if (l == null) {
-            l = new LinkedList<Span>();
-            map.put(s.getDescription(), l);
-          }
-          l.add(s);
-        }
-        return map;
-      }
-    }
+    FsTracer.clear();
   }
 }

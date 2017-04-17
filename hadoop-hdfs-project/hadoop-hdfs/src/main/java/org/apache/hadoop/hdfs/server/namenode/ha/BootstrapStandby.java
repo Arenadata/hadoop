@@ -38,9 +38,10 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HAUtil;
 import org.apache.hadoop.hdfs.NameNodeProxies;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
@@ -51,6 +52,7 @@ import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
+import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.TransferFsImage;
@@ -103,7 +105,7 @@ public class BootstrapStandby implements Tool, Configurable {
     parseConfAndFindOtherNN();
     NameNode.checkAllowFormat(conf);
 
-    InetSocketAddress myAddr = NameNode.getAddress(conf);
+    InetSocketAddress myAddr = DFSUtilClient.getNNAddress(conf);
     SecurityUtil.login(conf, DFS_NAMENODE_KEYTAB_FILE_KEY,
         DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, myAddr.getHostName());
 
@@ -136,8 +138,14 @@ public class BootstrapStandby implements Tool, Configurable {
   }
 
   private void printUsage() {
-    System.err.println("Usage: " + this.getClass().getSimpleName() +
-        " [-force] [-nonInteractive] [-skipSharedEditsCheck]");
+    System.out.println("Usage: " + this.getClass().getSimpleName() +
+        " [-force] [-nonInteractive] [-skipSharedEditsCheck]\n"
+        + "\t-force: formats if the name directory exists.\n"
+        + "\t-nonInteractive: formats aborts if the name directory exists,\n"
+        + "\tunless -force option is specified.\n"
+        + "\t-skipSharedEditsCheck: skips edits check which ensures that\n"
+        + "\twe have enough edits already in the shared directory to start\n"
+        + "\tup from the last checkpoint on the active.");
   }
   
   private NamenodeProtocol createNNProtocolProxy()
@@ -167,7 +175,7 @@ public class BootstrapStandby implements Tool, Configurable {
     if (!checkLayoutVersion(nsInfo)) {
       LOG.fatal("Layout version on remote node (" + nsInfo.getLayoutVersion()
           + ") does not match " + "this node's layout version ("
-          + HdfsConstants.NAMENODE_LAYOUT_VERSION + ")");
+          + HdfsServerConstants.NAMENODE_LAYOUT_VERSION + ")");
       return ERR_CODE_INVALID_VERSION;
     }
 
@@ -312,16 +320,18 @@ public class BootstrapStandby implements Tool, Configurable {
         return ERR_CODE_LOGS_UNAVAILABLE;
       }
 
-      image.getStorage().writeTransactionIdFileToStorage(curTxId);
-
       // Download that checkpoint into our storage directories.
       MD5Hash hash = TransferFsImage.downloadImageToStorage(
-          otherHttpAddr, imageTxId, storage, true);
+          otherHttpAddr, imageTxId, storage, true, true);
       image.saveDigestAndRenameCheckpointImage(NameNodeFile.IMAGE, imageTxId,
           hash);
+
+      // Write seen_txid to the formatted image directories.
+      storage.writeTransactionIdFileToStorage(imageTxId, NameNodeDirType.IMAGE);
     } catch (IOException ioe) {
-      image.close();
       throw ioe;
+    } finally {
+      image.close();
     }
     return 0;
   }
@@ -356,17 +366,14 @@ public class BootstrapStandby implements Tool, Configurable {
           "Please copy these logs into the shared edits storage " + 
           "or call saveNamespace on the active node.\n" +
           "Error: " + e.getLocalizedMessage();
-      if (LOG.isDebugEnabled()) {
-        LOG.fatal(msg, e);
-      } else {
-        LOG.fatal(msg);
-      }
+      LOG.fatal(msg, e);
+
       return false;
     }
   }
 
   private boolean checkLayoutVersion(NamespaceInfo nsInfo) throws IOException {
-    return (nsInfo.getLayoutVersion() == HdfsConstants.NAMENODE_LAYOUT_VERSION);
+    return (nsInfo.getLayoutVersion() == HdfsServerConstants.NAMENODE_LAYOUT_VERSION);
   }
   
   private void parseConfAndFindOtherNN() throws IOException {

@@ -26,7 +26,10 @@ import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.util.VersionInfo;
+import org.apache.hadoop.yarn.api.records.timeline.TimelineAbout;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.util.YarnVersionInfo;
 import org.apache.hadoop.yarn.webapp.YarnJacksonJaxbJsonProvider;
 import org.codehaus.jackson.JsonGenerationException;
 import org.codehaus.jackson.map.JsonMappingException;
@@ -81,6 +84,52 @@ public class TimelineUtils {
     } else {
       return mapper.writeValueAsString(o);
     }
+  }
+
+  /**
+   * Returns whether the timeline service is enabled via configuration.
+   *
+   * @param conf the configuration
+   * @return whether the timeline service is enabled.
+   */
+  public static boolean timelineServiceEnabled(Configuration conf) {
+    return conf.getBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED,
+        YarnConfiguration.DEFAULT_TIMELINE_SERVICE_ENABLED);
+  }
+
+  /**
+   * Returns the timeline service version. It does not check whether the
+   * timeline service itself is enabled.
+   *
+   * @param conf the configuration
+   * @return the timeline service version as a float.
+   */
+  public static float getTimelineServiceVersion(Configuration conf) {
+    return conf.getFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION,
+        YarnConfiguration.DEFAULT_TIMELINE_SERVICE_VERSION);
+  }
+
+  /**
+   * Returns whether the timeline service v.1.5 is enabled via configuration.
+   *
+   * @param conf the configuration
+   * @return whether the timeline service v.1.5 is enabled. V.1.5 refers to a
+   * version equal to 1.5.
+   */
+  public static boolean timelineServiceV1_5Enabled(Configuration conf) {
+    return timelineServiceEnabled(conf) &&
+        Math.abs(getTimelineServiceVersion(conf) - 1.5) < 0.00001;
+  }
+
+  public static TimelineAbout createTimelineAbout(String about) {
+    TimelineAbout tsInfo = new TimelineAbout(about);
+    tsInfo.setHadoopBuildVersion(VersionInfo.getBuildVersion());
+    tsInfo.setHadoopVersion(VersionInfo.getVersion());
+    tsInfo.setHadoopVersionBuiltOn(VersionInfo.getDate());
+    tsInfo.setTimelineServiceBuildVersion(YarnVersionInfo.getBuildVersion());
+    tsInfo.setTimelineServiceVersion(YarnVersionInfo.getVersion());
+    tsInfo.setTimelineServiceVersionBuiltOn(YarnVersionInfo.getDate());
+    return tsInfo;
   }
 
   public static InetSocketAddress getTimelineTokenServiceAddress(

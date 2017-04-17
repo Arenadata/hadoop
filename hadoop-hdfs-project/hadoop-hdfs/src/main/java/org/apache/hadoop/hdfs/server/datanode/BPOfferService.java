@@ -22,16 +22,18 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.RollingUpgradeStatus;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
+
+import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -51,8 +53,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 @InterfaceAudience.Private
 class BPOfferService {
-  static final Log LOG = DataNode.LOG;
-
+  static final Logger LOG = DataNode.LOG;
+  
   /**
    * Information about the namespace that this service
    * is registering with. This is assigned after
@@ -116,17 +118,22 @@ class BPOfferService {
     mWriteLock.unlock();
   }
 
-  BPOfferService(List<InetSocketAddress> nnAddrs, DataNode dn) {
+  BPOfferService(List<InetSocketAddress> nnAddrs,
+      List<InetSocketAddress> lifelineNnAddrs, DataNode dn) {
     Preconditions.checkArgument(!nnAddrs.isEmpty(),
         "Must pass at least one NN.");
+    Preconditions.checkArgument(nnAddrs.size() == lifelineNnAddrs.size(),
+        "Must pass same number of NN addresses and lifeline addresses.");
     this.dn = dn;
 
-    for (InetSocketAddress addr : nnAddrs) {
-      this.bpServices.add(new BPServiceActor(addr, this));
+    for (int i = 0; i < nnAddrs.size(); ++i) {
+      this.bpServices.add(new BPServiceActor(nnAddrs.get(i),
+          lifelineNnAddrs.get(i), this));
     }
   }
 
-  void refreshNNList(ArrayList<InetSocketAddress> addrs) throws IOException {
+  void refreshNNList(ArrayList<InetSocketAddress> addrs,
+      ArrayList<InetSocketAddress> lifelineAddrs) throws IOException {
     Set<InetSocketAddress> oldAddrs = Sets.newHashSet();
     for (BPServiceActor actor : bpServices) {
       oldAddrs.add(actor.getNNSocketAddress());
@@ -229,16 +236,32 @@ class BPOfferService {
    * till namenode is informed before responding with success to the
    * client? For now we don't.
    */
-  void notifyNamenodeReceivedBlock(
-      ExtendedBlock block, String delHint, String storageUuid) {
+  void notifyNamenodeReceivedBlock(ExtendedBlock block, String delHint,
+      String storageUuid, boolean isOnTransientStorage) {
+    notifyNamenodeBlock(block, BlockStatus.RECEIVED_BLOCK, delHint,
+        storageUuid, isOnTransientStorage);
+  }
+
+  void notifyNamenodeReceivingBlock(ExtendedBlock block, String storageUuid) {
+    notifyNamenodeBlock(block, BlockStatus.RECEIVING_BLOCK, null, storageUuid,
+        false);
+  }
+
+  void notifyNamenodeDeletedBlock(ExtendedBlock block, String storageUuid) {
+    notifyNamenodeBlock(block, BlockStatus.DELETED_BLOCK, null, storageUuid,
+        false);
+  }
+
+  private void notifyNamenodeBlock(ExtendedBlock block, BlockStatus status,
+      String delHint, String storageUuid, boolean isOnTransientStorage) {
     checkBlock(block);
-    ReceivedDeletedBlockInfo bInfo = new ReceivedDeletedBlockInfo(
-        block.getLocalBlock(),
-        ReceivedDeletedBlockInfo.BlockStatus.RECEIVED_BLOCK,
-        delHint);
+    final ReceivedDeletedBlockInfo info = new ReceivedDeletedBlockInfo(
+        block.getLocalBlock(), status, delHint);
+    final DatanodeStorage storage = dn.getFSDataset().getStorage(storageUuid);
 
     for (BPServiceActor actor : bpServices) {
-      actor.notifyNamenodeBlock(bInfo, storageUuid, true);
+      actor.getIbrManager().notifyNamenodeBlock(info, storage,
+          isOnTransientStorage);
     }
   }
 
@@ -248,26 +271,6 @@ class BPOfferService {
     Preconditions.checkArgument(block.getBlockPoolId().equals(getBlockPoolId()),
         "block belongs to BP %s instead of BP %s",
         block.getBlockPoolId(), getBlockPoolId());
-  }
-  
-  void notifyNamenodeDeletedBlock(ExtendedBlock block, String storageUuid) {
-    checkBlock(block);
-    ReceivedDeletedBlockInfo bInfo = new ReceivedDeletedBlockInfo(
-       block.getLocalBlock(), BlockStatus.DELETED_BLOCK, null);
-    
-    for (BPServiceActor actor : bpServices) {
-      actor.notifyNamenodeDeletedBlock(bInfo, storageUuid);
-    }
-  }
-  
-  void notifyNamenodeReceivingBlock(ExtendedBlock block, String storageUuid) {
-    checkBlock(block);
-    ReceivedDeletedBlockInfo bInfo = new ReceivedDeletedBlockInfo(
-       block.getLocalBlock(), BlockStatus.RECEIVING_BLOCK, null);
-    
-    for (BPServiceActor actor : bpServices) {
-      actor.notifyNamenodeBlock(bInfo, storageUuid, false);
-    }
   }
 
   //This must be called only by blockPoolManager
@@ -302,8 +305,16 @@ class BPOfferService {
    * verifies that this namespace matches (eg to prevent a misconfiguration
    * where a StandbyNode from a different cluster is specified)
    */
-  void verifyAndSetNamespaceInfo(NamespaceInfo nsInfo) throws IOException {
+  void verifyAndSetNamespaceInfo(BPServiceActor actor, NamespaceInfo nsInfo)
+    throws IOException {
     writeLock();
+
+    if(nsInfo.getState() == HAServiceState.ACTIVE
+        && bpServiceToActive == null) {
+      LOG.info("Acknowledging ACTIVE Namenode during handshake" + actor);
+      bpServiceToActive = actor;
+    }
+
     try {
       if (this.bpNSInfo == null) {
         this.bpNSInfo = nsInfo;
@@ -350,9 +361,8 @@ class BPOfferService {
             reg.getStorageInfo().getNamespaceID(), "namespace ID");
         checkNSEquality(bpRegistration.getStorageInfo().getClusterID(),
             reg.getStorageInfo().getClusterID(), "cluster ID");
-      } else {
-        bpRegistration = reg;
       }
+      bpRegistration = reg;
 
       dn.bpRegistrationSucceeded(bpRegistration, getBlockPoolId());
       // Add the initial block token secret keys to the DN's secret manager.
@@ -471,15 +481,19 @@ class BPOfferService {
   
   /**
    * Signal the current rolling upgrade status as indicated by the NN.
-   * @param inProgress true if a rolling upgrade is in progress
+   * @param rollingUpgradeStatus rolling upgrade status
    */
-  void signalRollingUpgrade(boolean inProgress) throws IOException {
+  void signalRollingUpgrade(RollingUpgradeStatus rollingUpgradeStatus)
+      throws IOException {
+    if (rollingUpgradeStatus == null) {
+      return;
+    }
     String bpid = getBlockPoolId();
-    if (inProgress) {
+    if (!rollingUpgradeStatus.isFinalized()) {
       dn.getFSDataset().enableTrash(bpid);
       dn.getFSDataset().setRollingUpgradeMarker(bpid);
     } else {
-      dn.getFSDataset().restoreTrash(bpid);
+      dn.getFSDataset().clearTrash(bpid);
       dn.getFSDataset().clearRollingUpgradeMarker(bpid);
     }
   }
@@ -572,7 +586,7 @@ class BPOfferService {
   @VisibleForTesting
   void triggerDeletionReportForTests() throws IOException {
     for (BPServiceActor actor : bpServices) {
-      actor.triggerDeletionReportForTests();
+      actor.getIbrManager().triggerDeletionReportForTests();
     }
   }
 
@@ -652,7 +666,6 @@ class BPOfferService {
       // Send a copy of a block to another datanode
       dn.transferBlocks(bcmd.getBlockPoolId(), bcmd.getBlocks(),
           bcmd.getTargets(), bcmd.getTargetStorageTypes());
-      dn.metrics.incrBlocksReplicated(bcmd.getBlocks().length);
       break;
     case DatanodeProtocol.DNA_INVALIDATE:
       //
@@ -696,7 +709,8 @@ class BPOfferService {
       break;
     case DatanodeProtocol.DNA_RECOVERBLOCK:
       String who = "NameNode at " + actor.getNNSocketAddress();
-      dn.recoverBlocks(who, ((BlockRecoveryCommand)cmd).getRecoveringBlocks());
+      dn.getBlockRecoveryWorker().recoverBlocks(who,
+          ((BlockRecoveryCommand)cmd).getRecoveringBlocks());
       break;
     case DatanodeProtocol.DNA_ACCESSKEYUPDATE:
       LOG.info("DatanodeCommand action: DNA_ACCESSKEYUPDATE");

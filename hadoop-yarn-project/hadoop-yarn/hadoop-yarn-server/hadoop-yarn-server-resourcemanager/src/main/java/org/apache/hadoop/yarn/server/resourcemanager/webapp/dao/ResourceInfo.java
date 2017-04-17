@@ -27,18 +27,18 @@ import org.apache.hadoop.yarn.api.records.Resource;
 @XmlRootElement
 @XmlAccessorType(XmlAccessType.FIELD)
 public class ResourceInfo {
-  int memory;
+  long memory;
   int vCores;
   
   public ResourceInfo() {
   }
 
   public ResourceInfo(Resource res) {
-    memory = res.getMemory();
+    memory = res.getMemorySize();
     vCores = res.getVirtualCores();
   }
 
-  public int getMemory() {
+  public long getMemorySize() {
     return memory;
   }
 

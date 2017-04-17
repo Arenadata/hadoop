@@ -29,6 +29,8 @@ import static org.junit.Assert.assertFalse;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -76,7 +78,7 @@ import org.mockito.Mockito;
  *     @AfterClass    public static void ClusterShutdownAtEnd()
  * </p>
  */
-public class ViewFsBaseTest {
+abstract public class ViewFsBaseTest {
   FileContext fcView; // the view file system - the mounts are here
   FileContext fcTarget; // the target file system - the mount will point here
   Path targetTestRoot;
@@ -776,5 +778,46 @@ public class ViewFsBaseTest {
   @Test(expected=AccessControlException.class)
   public void testInternalRemoveXAttr() throws IOException {
     fcView.removeXAttr(new Path("/internalDir"), "xattrName");
+  }
+
+  @Test(expected = AccessControlException.class)
+  public void testInternalCreateSnapshot1() throws IOException {
+    fcView.createSnapshot(new Path("/internalDir"));
+  }
+
+  @Test(expected = AccessControlException.class)
+  public void testInternalCreateSnapshot2() throws IOException {
+    fcView.createSnapshot(new Path("/internalDir"), "snap1");
+  }
+
+  @Test(expected = AccessControlException.class)
+  public void testInternalRenameSnapshot() throws IOException {
+    fcView.renameSnapshot(new Path("/internalDir"), "snapOldName",
+        "snapNewName");
+  }
+
+  @Test(expected = AccessControlException.class)
+  public void testInternalDeleteSnapshot() throws IOException {
+    fcView.deleteSnapshot(new Path("/internalDir"), "snap1");
+  }
+
+  @Test
+  public void testOwnerForInternalDir()
+      throws IOException, InterruptedException, URISyntaxException {
+    final UserGroupInformation userUgi = UserGroupInformation
+        .createUserForTesting("user@HADOOP.COM", new String[]{"hadoop"});
+    userUgi.doAs(new PrivilegedExceptionAction<Object>() {
+      @Override
+      public Object run() throws IOException, URISyntaxException {
+        UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+        String doAsUserName = ugi.getUserName();
+        assertEquals(doAsUserName, "user@HADOOP.COM");
+        FileContext
+            viewFS = FileContext.getFileContext(FsConstants.VIEWFS_URI, conf);
+        FileStatus stat = viewFS.getFileStatus(new Path("/internalDir"));
+        assertEquals(userUgi.getShortUserName(), stat.getOwner());
+        return null;
+      }
+    });
   }
 }

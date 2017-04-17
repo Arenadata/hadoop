@@ -20,17 +20,17 @@ package org.apache.hadoop.hdfs.server.namenode.top.window;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.Stack;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
-import com.google.common.primitives.Ints;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.metrics2.util.Metrics2Util.NameValuePair;
+import org.apache.hadoop.metrics2.util.Metrics2Util.TopN;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -173,7 +173,8 @@ public class RollingWindowManager {
    * @param user the user that updated the metric
    * @param delta the amount of change in the metric, e.g., +1
    */
-  public void recordMetric(long time, String command, String user, long delta) {
+  public void recordMetric(long time, String command,
+      String user, long delta) {
     RollingWindow window = getRollingWindow(command, user);
     window.incAt(time, delta);
   }
@@ -187,11 +188,9 @@ public class RollingWindowManager {
    */
   public TopWindow snapshot(long time) {
     TopWindow window = new TopWindow(windowLenMs);
-    if (LOG.isDebugEnabled()) {
-      Set<String> metricNames = metricMap.keySet();
-      LOG.debug("iterating in reported metrics, size={} values={}",
-          metricNames.size(), metricNames);
-    }
+    Set<String> metricNames = metricMap.keySet();
+    LOG.debug("iterating in reported metrics, size={} values={}",
+        metricNames.size(), metricNames);
     for (Map.Entry<String, RollingWindowMap> entry : metricMap.entrySet()) {
       String metricName = entry.getKey();
       RollingWindowMap rollingWindows = entry.getValue();
@@ -210,7 +209,7 @@ public class RollingWindowManager {
       }
       for (int i = 0; i < size; i++) {
         NameValuePair userEntry = reverse.pop();
-        User user = new User(userEntry.name, Long.valueOf(userEntry.value));
+        User user = new User(userEntry.getName(), userEntry.getValue());
         op.addUser(user);
       }
     }
@@ -245,7 +244,8 @@ public class RollingWindowManager {
           metricName, userName, windowSum);
       topN.offer(new NameValuePair(userName, windowSum));
     }
-    LOG.info("topN size for command {} is: {}", metricName, topN.size());
+    LOG.debug("topN users size for command {} is: {}",
+        metricName, topN.size());
     return topN;
   }
 
@@ -275,72 +275,5 @@ public class RollingWindowManager {
       window = prevWindow;
     }
     return window;
-  }
-
-  /**
-   * A pair of a name and its corresponding value. Defines a custom 
-   * comparator so the TopN PriorityQueue sorts based on the count.
-   */
-  static private class NameValuePair implements Comparable<NameValuePair> {
-    String name;
-    long value;
-
-    public NameValuePair(String metricName, long value) {
-      this.name = metricName;
-      this.value = value;
-    }
-
-    @Override
-    public int compareTo(NameValuePair other) {
-      return (int) (value - other.value);
-    }
-
-    @Override
-    public boolean equals(Object other) {
-      if (other instanceof NameValuePair) {
-        return compareTo((NameValuePair)other) == 0;
-      }
-      return false;
-    }
-
-    @Override
-    public int hashCode() {
-      return Long.valueOf(value).hashCode();
-    }
-  }
-
-  /**
-   * A fixed-size priority queue, used to retrieve top-n of offered entries.
-   */
-  static private class TopN extends PriorityQueue<NameValuePair> {
-    private static final long serialVersionUID = 5134028249611535803L;
-    int n; // > 0
-    private long total = 0;
-
-    TopN(int n) {
-      super(n);
-      this.n = n;
-    }
-
-    @Override
-    public boolean offer(NameValuePair entry) {
-      updateTotal(entry.value);
-      if (size() == n) {
-        NameValuePair smallest = peek();
-        if (smallest.value >= entry.value) {
-          return false;
-        }
-        poll(); // remove smallest
-      }
-      return super.offer(entry);
-    }
-
-    private void updateTotal(long value) {
-      total += value;
-    }
-
-    public long getTotal() {
-      return total;
-    }
   }
 }

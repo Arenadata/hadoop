@@ -46,11 +46,13 @@ import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.StorageBlock
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.StorageReceivedDeletedBlocksProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.DatanodeIDProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlockProto;
-import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.VersionRequestProto;
-import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.VersionResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.RollingUpgradeStatusProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.VersionRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.VersionResponseProto;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
@@ -67,6 +69,8 @@ public class DatanodeProtocolServerSideTranslatorPB implements
     DatanodeProtocolPB {
 
   private final DatanodeProtocol impl;
+  private final int maxDataLength;
+
   private static final ErrorReportResponseProto
       VOID_ERROR_REPORT_RESPONSE_PROTO = 
           ErrorReportResponseProto.newBuilder().build();
@@ -80,8 +84,10 @@ public class DatanodeProtocolServerSideTranslatorPB implements
       VOID_COMMIT_BLOCK_SYNCHRONIZATION_RESPONSE_PROTO =
           CommitBlockSynchronizationResponseProto.newBuilder().build();
 
-  public DatanodeProtocolServerSideTranslatorPB(DatanodeProtocol impl) {
+  public DatanodeProtocolServerSideTranslatorPB(DatanodeProtocol impl,
+      int maxDataLength) {
     this.impl = impl;
+    this.maxDataLength = maxDataLength;
   }
 
   @Override
@@ -105,7 +111,7 @@ public class DatanodeProtocolServerSideTranslatorPB implements
       HeartbeatRequestProto request) throws ServiceException {
     HeartbeatResponse response;
     try {
-      final StorageReport[] report = PBHelper.convertStorageReports(
+      final StorageReport[] report = PBHelperClient.convertStorageReports(
           request.getReportsList());
       VolumeFailureSummary volumeFailureSummary =
           request.hasVolumeFailureSummary() ? PBHelper.convertVolumeFailureSummary(
@@ -114,7 +120,7 @@ public class DatanodeProtocolServerSideTranslatorPB implements
           report, request.getCacheCapacity(), request.getCacheUsed(),
           request.getXmitsInProgress(),
           request.getXceiverCount(), request.getFailedVolumes(),
-          volumeFailureSummary);
+          volumeFailureSummary, request.getRequestFullBlockReportLease());
     } catch (IOException e) {
       throw new ServiceException(e);
     }
@@ -132,9 +138,18 @@ public class DatanodeProtocolServerSideTranslatorPB implements
     RollingUpgradeStatus rollingUpdateStatus = response
         .getRollingUpdateStatus();
     if (rollingUpdateStatus != null) {
-      builder.setRollingUpgradeStatus(PBHelper
-          .convertRollingUpgradeStatus(rollingUpdateStatus));
+      // V2 is always set for newer datanodes.
+      // To be compatible with older datanodes, V1 is set to null
+      //  if the RU was finalized.
+      RollingUpgradeStatusProto rus = PBHelperClient.
+          convertRollingUpgradeStatus(rollingUpdateStatus);
+      builder.setRollingUpgradeStatusV2(rus);
+      if (!rollingUpdateStatus.isFinalized()) {
+        builder.setRollingUpgradeStatus(rus);
+      }
     }
+
+    builder.setFullBlockReportLeaseId(response.getFullBlockReportLeaseId());
     return builder.build();
   }
 
@@ -152,11 +167,12 @@ public class DatanodeProtocolServerSideTranslatorPB implements
         int num = (int)s.getNumberOfBlocks();
         Preconditions.checkState(s.getBlocksCount() == 0,
             "cannot send both blocks list and buffers");
-        blocks = BlockListAsLongs.decodeBuffers(num, s.getBlocksBuffersList());
+        blocks = BlockListAsLongs.decodeBuffers(num, s.getBlocksBuffersList(),
+            maxDataLength);
       } else {
-        blocks = BlockListAsLongs.decodeLongs(s.getBlocksList());
+        blocks = BlockListAsLongs.decodeLongs(s.getBlocksList(), maxDataLength);
       }
-      report[index++] = new StorageBlockReport(PBHelper.convert(s.getStorage()),
+      report[index++] = new StorageBlockReport(PBHelperClient.convert(s.getStorage()),
           blocks);
     }
     try {
@@ -213,9 +229,10 @@ public class DatanodeProtocolServerSideTranslatorPB implements
       }
       if (sBlock.hasStorage()) {
         info[i] = new StorageReceivedDeletedBlocks(
-            PBHelper.convert(sBlock.getStorage()), rdBlocks);
+            PBHelperClient.convert(sBlock.getStorage()), rdBlocks);
       } else {
-        info[i] = new StorageReceivedDeletedBlocks(sBlock.getStorageUuid(), rdBlocks);
+        info[i] = new StorageReceivedDeletedBlocks(
+            new DatanodeStorage(sBlock.getStorageUuid()), rdBlocks);
       }
     }
     try {
@@ -258,7 +275,7 @@ public class DatanodeProtocolServerSideTranslatorPB implements
     List<LocatedBlockProto> lbps = request.getBlocksList();
     LocatedBlock [] blocks = new LocatedBlock [lbps.size()];
     for(int i=0; i<lbps.size(); i++) {
-      blocks[i] = PBHelper.convert(lbps.get(i));
+      blocks[i] = PBHelperClient.convert(lbps.get(i));
     }
     try {
       impl.reportBadBlocks(blocks);
@@ -275,12 +292,12 @@ public class DatanodeProtocolServerSideTranslatorPB implements
     List<DatanodeIDProto> dnprotos = request.getNewTaragetsList();
     DatanodeID[] dns = new DatanodeID[dnprotos.size()];
     for (int i = 0; i < dnprotos.size(); i++) {
-      dns[i] = PBHelper.convert(dnprotos.get(i));
+      dns[i] = PBHelperClient.convert(dnprotos.get(i));
     }
     final List<String> sidprotos = request.getNewTargetStoragesList();
     final String[] storageIDs = sidprotos.toArray(new String[sidprotos.size()]);
     try {
-      impl.commitBlockSynchronization(PBHelper.convert(request.getBlock()),
+      impl.commitBlockSynchronization(PBHelperClient.convert(request.getBlock()),
           request.getNewGenStamp(), request.getNewLength(),
           request.getCloseFile(), request.getDeleteBlock(), dns, storageIDs);
     } catch (IOException e) {

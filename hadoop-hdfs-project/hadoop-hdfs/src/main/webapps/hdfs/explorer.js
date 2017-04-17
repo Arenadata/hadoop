@@ -22,6 +22,7 @@
   // in the preview.
   var TAIL_CHUNK_SIZE = 32768;
 
+  //This stores the current directory which is being browsed
   var current_directory = "";
 
   function show_err_msg(msg) {
@@ -78,6 +79,73 @@
     return data.RemoteException !== undefined ? data.RemoteException.message : "";
   }
 
+  function delete_path(inode_name, absolute_file_path) {
+    $('#delete-modal-title').text("Delete - " + inode_name);
+    $('#delete-prompt').text("Are you sure you want to delete " + inode_name
+      + " ?");
+
+    $('#delete-button').click(function() {
+      // DELETE /webhdfs/v1/<path>?op=DELETE&recursive=<true|false>
+      var url = '/webhdfs/v1' + encode_path(absolute_file_path) +
+        '?op=DELETE' + '&recursive=true';
+
+      $.ajax(url,
+        { type: 'DELETE'
+        }).done(function(data) {
+          browse_directory(current_directory);
+        }).error(network_error_handler(url)
+         ).complete(function() {
+           $('#delete-modal').modal('hide');
+           $('#delete-button').button('reset');
+        });
+    })
+    $('#delete-modal').modal();
+  }
+
+  /* This method loads the checkboxes on the permission info modal. It accepts
+   * the octal permissions, eg. '644' or '755' and infers the checkboxes that
+   * should be true and false
+   */
+  function view_perm_details(e, filename, abs_path, perms) {
+    $('.explorer-perm-links').popover('destroy');
+    e.popover({html: true, content: $('#explorer-popover-perm-info').html(), trigger: 'focus'})
+      .on('shown.bs.popover', function(e) {
+        var popover = $(this), parent = popover.parent();
+        //Convert octal to binary permissions
+        var bin_perms = parseInt(perms, 8).toString(2);
+        bin_perms = bin_perms.length == 9 ? "0" + bin_perms : bin_perms;
+        parent.find('#explorer-perm-cancel').on('click', function() { popover.popover('destroy'); });
+        parent.find('#explorer-set-perm-button').off().click(function() { set_permissions(abs_path); });
+        parent.find('input[type=checkbox]').each(function(idx, element) {
+          var e = $(element);
+          e.prop('checked', bin_perms.charAt(9 - e.attr('data-bit')) == '1');
+        });
+      })
+      .popover('show');
+  }
+
+  // Use WebHDFS to set permissions on an absolute path
+  function set_permissions(abs_path) {
+    var p = 0;
+    $.each($('.popover .explorer-popover-perm-body input:checked'), function(idx, e) {
+      p |= 1 << (+$(e).attr('data-bit'));
+    });
+
+    var permission_mask = p.toString(8);
+
+    // PUT /webhdfs/v1/<path>?op=SETPERMISSION&permission=<permission>
+    var url = '/webhdfs/v1' + encode_path(abs_path) +
+      '?op=SETPERMISSION' + '&permission=' + permission_mask;
+
+    $.ajax(url, { type: 'PUT'
+      }).done(function(data) {
+        browse_directory(current_directory);
+      }).error(network_error_handler(url))
+      .complete(function() {
+        $('.explorer-perm-links').popover('destroy');
+      });
+  }
+
   function encode_path(abs_path) {
     abs_path = encodeURIComponent(abs_path);
     var re = /%2F/g;
@@ -110,7 +178,8 @@
 
     abs_path = encode_path(abs_path);
     var url = '/webhdfs/v1' + abs_path + '?op=GET_BLOCK_LOCATIONS';
-    $.get(url).done(function(data) {
+    $.ajax({url: url, dataType: 'text'}).done(function(data_text) {
+      var data = JSONParseBigNum(data_text);
       var d = get_response(data, "LocatedBlocks");
       if (d === null) {
         show_err_msg(get_response_err_msg(data));
@@ -142,11 +211,59 @@
     }).error(network_error_handler(url));
   }
 
+  /**Use X-editable to make fields editable with a nice UI.
+   * elementType is the class of element(s) you want to make editable
+   * op is the WebHDFS operation that will be triggered
+   * parameter is (currently the 1) parameter which will be passed along with
+   *   the value entered by the user
+   */
+  function makeEditable(elementType, op, parameter) {
+    $(elementType).each(function(index, value) {
+      $(this).editable({
+        url: function(params) {
+          var inode_name = $(this).closest('tr').attr('inode-path');
+          var absolute_file_path = append_path(current_directory, inode_name);
+          var url = '/webhdfs/v1' + encode_path(absolute_file_path) + '?op=' +
+            op + '&' + parameter + '=' + encodeURIComponent(params.value);
+
+          return $.ajax(url, { type: 'PUT', })
+            .error(network_error_handler(url))
+            .success(function() {
+                browse_directory(current_directory);
+             });
+        },
+        error: function(response, newValue) {return "";}
+      });
+    });
+  }
+
+  function func_size_render(data, type, row, meta) {
+    if(type == 'display') {
+      return dust.filters.fmt_bytes(data);
+    }
+    else return data;
+  }
+
+  // Change the format of date-time depending on how old the
+  // the timestamp is. If older than 6 months, no need to be
+  // show exact time.
+  function func_time_render(data, type, row, meta) {
+    if(type == 'display') {
+      var cutoff = moment().subtract(6, 'months').unix() * 1000;
+      if(data < cutoff) {
+        return moment(Number(data)).format('MMM DD YYYY');
+      } else {
+        return moment(Number(data)).format('MMM DD HH:mm');
+      }
+    }
+    return data;
+  }
+
   function browse_directory(dir) {
     var HELPERS = {
       'helper_date_tostring' : function (chunk, ctx, bodies, params) {
         var value = dust.helpers.tap(params.value, chunk, ctx);
-        return chunk.write('' + new Date(Number(value)).toLocaleString());
+        return chunk.write('' + moment(Number(value)).format('ddd MMM DD HH:mm:ss ZZ YYYY'));
       }
     };
     var url = '/webhdfs/v1' + encode_path(dir) + '?op=LISTSTATUS';
@@ -164,9 +281,10 @@
       dust.render('explorer', base.push(d), function(err, out) {
         $('#panel').html(out);
 
+
         $('.explorer-browse-links').click(function() {
           var type = $(this).attr('inode-type');
-          var path = $(this).attr('inode-path');
+          var path = $(this).closest('tr').attr('inode-path');
           var abs_path = append_path(current_directory, path);
           if (type == 'DIRECTORY') {
             browse_directory(abs_path);
@@ -174,6 +292,40 @@
             view_file_details(path, abs_path);
           }
         });
+
+        //Set the handler for changing permissions
+        $('.explorer-perm-links').click(function() {
+          var filename = $(this).closest('tr').attr('inode-path');
+          var abs_path = append_path(current_directory, filename);
+          var perms = $(this).closest('tr').attr('data-permission');
+          view_perm_details($(this), filename, abs_path, perms);
+        });
+
+        makeEditable('.explorer-owner-links', 'SETOWNER', 'owner');
+        makeEditable('.explorer-group-links', 'SETOWNER', 'group');
+        makeEditable('.explorer-replication-links', 'SETREPLICATION', 'replication');
+
+        $('.explorer-entry .glyphicon-trash').click(function() {
+          var inode_name = $(this).closest('tr').attr('inode-path');
+          var absolute_file_path = append_path(current_directory, inode_name);
+          delete_path(inode_name, absolute_file_path);
+        });
+          
+          $('#table-explorer').dataTable( {
+              'lengthMenu': [ [25, 50, 100, -1], [25, 50, 100, "All"] ],
+              'columns': [
+                  {'searchable': false }, //Permissions
+                  null, //Owner
+                  null, //Group
+                  { 'searchable': false, 'render': func_size_render}, //Size
+                  { 'searchable': false, 'render': func_time_render}, //Last Modified
+                  { 'searchable': false }, //Replication
+                  null, //Block Size
+                  null, //Name
+                  { 'sortable' : false } //Trash
+              ],
+              "deferRender": true
+          });
       });
     }).error(network_error_handler(url));
   }
@@ -192,6 +344,27 @@
       browse_directory(dir);
     }
   }
+
+  $('#btn-create-directory').on('show.bs.modal', function(event) {
+    $('#new_directory_pwd').text(current_directory);
+  });
+
+  $('#btn-create-directory-send').click(function () {
+    $(this).prop('disabled', true);
+    $(this).button('complete');
+
+    var url = '/webhdfs/v1' + encode_path(append_path(current_directory,
+      $('#new_directory').val())) + '?op=MKDIRS';
+
+    $.ajax(url, { type: 'PUT' }
+    ).done(function(data) {
+      browse_directory(current_directory);
+    }).error(network_error_handler(url)
+     ).complete(function() {
+       $('#btn-create-directory').modal('hide');
+       $('#btn-create-directory-send').button('reset');
+    });
+  })
 
   init();
 })();

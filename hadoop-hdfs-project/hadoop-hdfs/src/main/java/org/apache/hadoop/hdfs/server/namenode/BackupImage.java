@@ -83,6 +83,8 @@ public class BackupImage extends FSImage {
   
   private FSNamesystem namesystem;
 
+  private int quotaInitThreads;
+
   /**
    * Construct a backup image.
    * @param conf Configuration
@@ -211,7 +213,7 @@ public class BackupImage extends FSImage {
     assert backupInputStream.length() == 0 : "backup input stream is not empty";
     try {
       if (LOG.isTraceEnabled()) {
-        LOG.debug("data:" + StringUtils.byteToHexString(data));
+        LOG.trace("data:" + StringUtils.byteToHexString(data));
       }
 
       FSEditLogLoader logLoader =
@@ -229,9 +231,7 @@ public class BackupImage extends FSImage {
       }
       lastAppliedTxId = logLoader.getLastAppliedTxId();
 
-      FSImage.updateCountForQuota(
-          getNamesystem().dir.getBlockStoragePolicySuite(),
-          getNamesystem().dir.rootDir); // inefficient!
+      getNamesystem().dir.updateCountForQuota();
     } finally {
       backupInputStream.clear();
     }
@@ -366,7 +366,8 @@ public class BackupImage extends FSImage {
       }
     }
     editLog.setNextTxId(txid);
-    editLog.startLogSegment(txid, false);
+    editLog.startLogSegment(txid, false,
+        namesystem.getEffectiveLayoutVersion());
     if (bnState == BNState.DROP_UNTIL_NEXT_ROLL) {
       setState(BNState.JOURNAL_ONLY);
     }

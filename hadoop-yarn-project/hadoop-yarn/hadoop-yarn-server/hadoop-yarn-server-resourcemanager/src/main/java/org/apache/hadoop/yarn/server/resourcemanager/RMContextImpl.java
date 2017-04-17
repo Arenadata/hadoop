@@ -34,6 +34,8 @@ import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.server.resourcemanager.ahs.RMApplicationHistoryWriter;
 import org.apache.hadoop.yarn.server.resourcemanager.metrics.SystemMetricsPublisher;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMDelegatedNodeLabelsUpdater;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystem;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
@@ -68,12 +70,17 @@ public class RMContextImpl implements RMContext {
 
   private Configuration yarnConfiguration;
 
+  private RMApplicationHistoryWriter rmApplicationHistoryWriter;
+  private SystemMetricsPublisher systemMetricsPublisher;
+  private EmbeddedElector elector;
+
+  private final Object haServiceStateLock = new Object();
+
   /**
    * Default constructor. To be used in conjunction with setter methods for
    * individual fields.
    */
   public RMContextImpl() {
-
   }
 
   @VisibleForTesting
@@ -87,7 +94,6 @@ public class RMContextImpl implements RMContext {
       RMContainerTokenSecretManager containerTokenSecretManager,
       NMTokenSecretManagerInRM nmTokenSecretManager,
       ClientToAMTokenSecretManagerInRM clientToAMTokenSecretManager,
-      RMApplicationHistoryWriter rmApplicationHistoryWriter,
       ResourceScheduler scheduler) {
     this();
     this.setDispatcher(rmDispatcher);
@@ -95,7 +101,7 @@ public class RMContextImpl implements RMContext {
         containerAllocationExpirer, amLivelinessMonitor, amFinishingMonitor,
         delegationTokenRenewer, appTokenSecretManager,
         containerTokenSecretManager, nmTokenSecretManager,
-        clientToAMTokenSecretManager, rmApplicationHistoryWriter,
+        clientToAMTokenSecretManager,
         scheduler));
 
     ConfigurationProvider provider = new LocalConfigurationProvider();
@@ -112,8 +118,7 @@ public class RMContextImpl implements RMContext {
       AMRMTokenSecretManager appTokenSecretManager,
       RMContainerTokenSecretManager containerTokenSecretManager,
       NMTokenSecretManagerInRM nmTokenSecretManager,
-      ClientToAMTokenSecretManagerInRM clientToAMTokenSecretManager,
-      RMApplicationHistoryWriter rmApplicationHistoryWriter) {
+      ClientToAMTokenSecretManagerInRM clientToAMTokenSecretManager) {
     this(
       rmDispatcher,
       containerAllocationExpirer,
@@ -123,14 +128,22 @@ public class RMContextImpl implements RMContext {
       appTokenSecretManager,
       containerTokenSecretManager,
       nmTokenSecretManager,
-      clientToAMTokenSecretManager,
-      rmApplicationHistoryWriter,
-      null);
+      clientToAMTokenSecretManager, null);
   }
 
   @Override
   public Dispatcher getDispatcher() {
     return this.rmDispatcher;
+  }
+
+  @Override
+  public void setLeaderElectorService(EmbeddedElector elector) {
+    this.elector = elector;
+  }
+
+  @Override
+  public EmbeddedElector getLeaderElectorService() {
+    return this.elector;
   }
 
   @Override
@@ -149,7 +162,7 @@ public class RMContextImpl implements RMContext {
   }
 
   @Override
-  public ConcurrentMap<String, RMNode> getInactiveRMNodes() {
+  public ConcurrentMap<NodeId, RMNode> getInactiveRMNodes() {
     return activeServiceContext.getInactiveRMNodes();
   }
 
@@ -237,9 +250,9 @@ public class RMContextImpl implements RMContext {
     this.isHAEnabled = isHAEnabled;
   }
 
-  void setHAServiceState(HAServiceState haServiceState) {
-    synchronized (haServiceState) {
-      this.haServiceState = haServiceState;
+  void setHAServiceState(HAServiceState serviceState) {
+    synchronized (haServiceStateLock) {
+      this.haServiceState = serviceState;
     }
   }
 
@@ -292,7 +305,8 @@ public class RMContextImpl implements RMContext {
     activeServiceContext.setNMTokenSecretManager(nmTokenSecretManager);
   }
 
-  void setScheduler(ResourceScheduler scheduler) {
+  @VisibleForTesting
+  public void setScheduler(ResourceScheduler scheduler) {
     activeServiceContext.setScheduler(scheduler);
   }
 
@@ -334,7 +348,7 @@ public class RMContextImpl implements RMContext {
 
   @Override
   public HAServiceState getHAServiceState() {
-    synchronized (haServiceState) {
+    synchronized (haServiceStateLock) {
       return haServiceState;
     }
   }
@@ -350,25 +364,25 @@ public class RMContextImpl implements RMContext {
 
   @Override
   public RMApplicationHistoryWriter getRMApplicationHistoryWriter() {
-    return activeServiceContext.getRMApplicationHistoryWriter();
+    return this.rmApplicationHistoryWriter;
   }
 
   @Override
   public void setSystemMetricsPublisher(
       SystemMetricsPublisher systemMetricsPublisher) {
-    activeServiceContext.setSystemMetricsPublisher(systemMetricsPublisher);
+    this.systemMetricsPublisher = systemMetricsPublisher;
   }
 
   @Override
   public SystemMetricsPublisher getSystemMetricsPublisher() {
-    return activeServiceContext.getSystemMetricsPublisher();
+    return this.systemMetricsPublisher;
   }
 
   @Override
   public void setRMApplicationHistoryWriter(
       RMApplicationHistoryWriter rmApplicationHistoryWriter) {
-    activeServiceContext
-        .setRMApplicationHistoryWriter(rmApplicationHistoryWriter);
+    this.rmApplicationHistoryWriter = rmApplicationHistoryWriter;
+
   }
 
   @Override
@@ -398,6 +412,18 @@ public class RMContextImpl implements RMContext {
   @Override
   public void setNodeLabelManager(RMNodeLabelsManager mgr) {
     activeServiceContext.setNodeLabelManager(mgr);
+  }
+
+  @Override
+  public RMDelegatedNodeLabelsUpdater getRMDelegatedNodeLabelsUpdater() {
+    return activeServiceContext.getRMDelegatedNodeLabelsUpdater();
+  }
+
+  @Override
+  public void setRMDelegatedNodeLabelsUpdater(
+      RMDelegatedNodeLabelsUpdater delegatedNodeLabelsUpdater) {
+    activeServiceContext.setRMDelegatedNodeLabelsUpdater(
+        delegatedNodeLabelsUpdater);
   }
 
   public void setSchedulerRecoveryStartAndWaitTime(long waitTime) {
@@ -437,5 +463,24 @@ public class RMContextImpl implements RMContext {
 
   public void setYarnConfiguration(Configuration yarnConfiguration) {
     this.yarnConfiguration=yarnConfiguration;
+  }
+
+  @Override
+  public PlacementManager getQueuePlacementManager() {
+    return this.activeServiceContext.getQueuePlacementManager();
+  }
+  
+  @Override
+  public void setQueuePlacementManager(PlacementManager placementMgr) {
+    this.activeServiceContext.setQueuePlacementManager(placementMgr);
+  }
+
+  public String getHAZookeeperConnectionState() {
+    if (elector == null) {
+      return "Could not find leader elector. Verify both HA and automatic " +
+          "failover are enabled.";
+    } else {
+      return elector.getZookeeperConnectionState();
+    }
   }
 }

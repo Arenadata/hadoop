@@ -22,9 +22,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -41,10 +41,11 @@ import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
-import org.apache.hadoop.hdfs.protocolPB.PBHelper;
+import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguousUnderConstruction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.LoaderContext;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.SaverContext;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.FileSummary;
@@ -57,6 +58,10 @@ import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.XAttrFea
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.QuotaByStorageTypeEntryProto;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.QuotaByStorageTypeFeatureProto;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+import org.apache.hadoop.hdfs.server.namenode.startupprogress.Phase;
+import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
+import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress.Counter;
+import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
 import org.apache.hadoop.hdfs.util.EnumCounters;
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
 
@@ -71,11 +76,11 @@ public final class FSImageFormatPBINode {
   private final static int GROUP_STRID_OFFSET = 16;
   private static final Log LOG = LogFactory.getLog(FSImageFormatPBINode.class);
 
-  private static final int ACL_ENTRY_NAME_MASK = (1 << 24) - 1;
-  private static final int ACL_ENTRY_NAME_OFFSET = 6;
-  private static final int ACL_ENTRY_TYPE_OFFSET = 3;
-  private static final int ACL_ENTRY_SCOPE_OFFSET = 5;
-  private static final int ACL_ENTRY_PERM_MASK = 7;
+  public static final int ACL_ENTRY_NAME_MASK = (1 << 24) - 1;
+  public static final int ACL_ENTRY_NAME_OFFSET = 6;
+  public static final int ACL_ENTRY_TYPE_OFFSET = 3;
+  public static final int ACL_ENTRY_SCOPE_OFFSET = 5;
+  public static final int ACL_ENTRY_PERM_MASK = 7;
   private static final int ACL_ENTRY_TYPE_MASK = 3;
   private static final int ACL_ENTRY_SCOPE_MASK = 1;
   private static final FsAction[] FSACTION_VALUES = FsAction.values();
@@ -84,14 +89,14 @@ public final class FSImageFormatPBINode {
   private static final AclEntryType[] ACL_ENTRY_TYPE_VALUES = AclEntryType
       .values();
   
-  private static final int XATTR_NAMESPACE_MASK = 3;
-  private static final int XATTR_NAMESPACE_OFFSET = 30;
-  private static final int XATTR_NAME_MASK = (1 << 24) - 1;
-  private static final int XATTR_NAME_OFFSET = 6;
+  public static final int XATTR_NAMESPACE_MASK = 3;
+  public static final int XATTR_NAMESPACE_OFFSET = 30;
+  public static final int XATTR_NAME_MASK = (1 << 24) - 1;
+  public static final int XATTR_NAME_OFFSET = 6;
 
   /* See the comments in fsimage.proto for an explanation of the following. */
-  private static final int XATTR_NAMESPACE_EXT_OFFSET = 5;
-  private static final int XATTR_NAMESPACE_EXT_MASK = 1;
+  public static final int XATTR_NAMESPACE_EXT_OFFSET = 5;
+  public static final int XATTR_NAMESPACE_EXT_MASK = 1;
 
   private static final XAttr.NameSpace[] XATTR_NAMESPACE_VALUES =
       XAttr.NameSpace.values();
@@ -124,9 +129,9 @@ public final class FSImageFormatPBINode {
       return b.build();
     }
     
-    public static ImmutableList<XAttr> loadXAttrs(
+    public static List<XAttr> loadXAttrs(
         XAttrFeatureProto proto, final String[] stringTable) {
-      ImmutableList.Builder<XAttr> b = ImmutableList.builder();
+      List<XAttr> b = new ArrayList<>();
       for (XAttrCompactProto xAttrCompactProto : proto.getXAttrsList()) {
         int v = xAttrCompactProto.getName();
         int nid = (v >> XATTR_NAME_OFFSET) & XATTR_NAME_MASK;
@@ -142,14 +147,14 @@ public final class FSImageFormatPBINode {
             .setName(name).setValue(value).build());
       }
       
-      return b.build();
+      return b;
     }
 
     public static ImmutableList<QuotaByStorageTypeEntry> loadQuotaByStorageTypeEntries(
       QuotaByStorageTypeFeatureProto proto) {
       ImmutableList.Builder<QuotaByStorageTypeEntry> b = ImmutableList.builder();
       for (QuotaByStorageTypeEntryProto quotaEntry : proto.getQuotasList()) {
-        StorageType type = PBHelper.convertStorageType(quotaEntry.getStorageType());
+        StorageType type = PBHelperClient.convertStorageType(quotaEntry.getStorageType());
         long quota = quotaEntry.getQuota();
         b.add(new QuotaByStorageTypeEntry.Builder().setStorageType(type)
             .setQuota(quota).build());
@@ -209,7 +214,7 @@ public final class FSImageFormatPBINode {
 
     public static void updateBlocksMap(INodeFile file, BlockManager bm) {
       // Add file->block mapping
-      final BlockInfoContiguous[] blocks = file.getBlocks();
+      final BlockInfo[] blocks = file.getBlocks();
       if (blocks != null) {
         for (int i = 0; i < blocks.length; i++) {
           file.setBlock(i, bm.addBlockCollection(blocks[i], file));
@@ -249,11 +254,15 @@ public final class FSImageFormatPBINode {
       }
     }
 
-    void loadINodeSection(InputStream in) throws IOException {
+    void loadINodeSection(InputStream in, StartupProgress prog,
+        Step currentStep) throws IOException {
       INodeSection s = INodeSection.parseDelimitedFrom(in);
       fsn.dir.resetLastInodeId(s.getLastInodeId());
-      LOG.info("Loading " + s.getNumInodes() + " INodes.");
-      for (int i = 0; i < s.getNumInodes(); ++i) {
+      long numInodes = s.getNumInodes();
+      LOG.info("Loading " + numInodes + " INodes.");
+      prog.setTotal(Phase.LOADING_FSIMAGE, currentStep, numInodes);
+      Counter counter = prog.getCounter(Phase.LOADING_FSIMAGE, currentStep);
+      for (int i = 0; i < numInodes; ++i) {
         INodeSection.INode p = INodeSection.INode.parseDelimitedFrom(in);
         if (p.getId() == INodeId.ROOT_INODE_ID) {
           loadRootINode(p);
@@ -261,6 +270,7 @@ public final class FSImageFormatPBINode {
           INode n = loadINode(p);
           dir.addToInodeMap(n);
         }
+        counter.increment();
       }
     }
 
@@ -268,17 +278,14 @@ public final class FSImageFormatPBINode {
      * Load the under-construction files section, and update the lease map
      */
     void loadFilesUnderConstructionSection(InputStream in) throws IOException {
+      // Leases are added when the inode section is loaded. This section is
+      // still read in for compatibility reasons.
       while (true) {
         FileUnderConstructionEntry entry = FileUnderConstructionEntry
             .parseDelimitedFrom(in);
         if (entry == null) {
           break;
         }
-        // update the lease manager
-        INodeFile file = dir.getInode(entry.getInodeId()).asFile();
-        FileUnderConstructionFeature uc = file.getFileUnderConstructionFeature();
-        Preconditions.checkState(uc != null); // file must be under-construction
-        fsn.leaseManager.addLease(uc.getClientName(), entry.getFullPath());
       }
     }
 
@@ -321,9 +328,10 @@ public final class FSImageFormatPBINode {
       short replication = (short) f.getReplication();
       LoaderContext state = parent.getLoaderContext();
 
-      BlockInfoContiguous[] blocks = new BlockInfoContiguous[bp.size()];
+      BlockInfo[] blocks = new BlockInfo[bp.size()];
       for (int i = 0, e = bp.size(); i < e; ++i) {
-        blocks[i] = new BlockInfoContiguous(PBHelper.convert(bp.get(i)), replication);
+        blocks[i] =
+            new BlockInfoContiguous(PBHelperClient.convert(bp.get(i)), replication);
       }
       final PermissionStatus permissions = loadPermission(f.getPermission(),
           parent.getLoaderContext().getStringTable());
@@ -348,11 +356,12 @@ public final class FSImageFormatPBINode {
       if (f.hasFileUC()) {
         INodeSection.FileUnderConstructionFeature uc = f.getFileUC();
         file.toUnderConstruction(uc.getClientName(), uc.getClientMachine());
+        // update the lease manager
+        fsn.leaseManager.addLease(uc.getClientName(), file.getId());
         if (blocks.length > 0) {
-          BlockInfoContiguous lastBlk = file.getLastBlock();
-          // replace the last block of file
-          file.setBlock(file.numBlocks() - 1, new BlockInfoContiguousUnderConstruction(
-              lastBlk, replication));
+          BlockInfo lastBlk = file.getLastBlock();
+          lastBlk.convertToBlockUnderConstruction(
+              HdfsServerConstants.BlockUCState.UNDER_CONSTRUCTION, null);
         }
       }
       return file;
@@ -384,11 +393,16 @@ public final class FSImageFormatPBINode {
       }
       dir.rootDir.cloneModificationTime(root);
       dir.rootDir.clonePermissionStatus(root);
+      final AclFeature af = root.getFeature(AclFeature.class);
+      if (af != null) {
+        dir.rootDir.addAclFeature(af);
+      }
       // root dir supports having extended attributes according to POSIX
       final XAttrFeature f = root.getXAttrFeature();
       if (f != null) {
         dir.rootDir.addXAttrFeature(f);
       }
+      dir.addRootDirToEncryptionZone(f);
     }
   }
 
@@ -432,7 +446,7 @@ public final class FSImageFormatPBINode {
             XATTR_NAMESPACE_EXT_OFFSET);
         xAttrCompactBuilder.setName(v);
         if (a.getValue() != null) {
-          xAttrCompactBuilder.setValue(PBHelper.getByteString(a.getValue()));
+          xAttrCompactBuilder.setValue(PBHelperClient.getByteString(a.getValue()));
         }
         b.addXAttrs(xAttrCompactBuilder.build());
       }
@@ -448,7 +462,7 @@ public final class FSImageFormatPBINode {
         if (q.getTypeSpace(t) >= 0) {
           QuotaByStorageTypeEntryProto.Builder eb =
               QuotaByStorageTypeEntryProto.newBuilder().
-              setStorageType(PBHelper.convertStorageType(t)).
+              setStorageType(PBHelperClient.convertStorageType(t)).
               setQuota(q.getTypeSpace(t));
           b.addQuotas(eb);
         }
@@ -573,10 +587,21 @@ public final class FSImageFormatPBINode {
     }
 
     void serializeFilesUCSection(OutputStream out) throws IOException {
-      Map<String, INodeFile> ucMap = fsn.getFilesUnderConstruction();
-      for (Map.Entry<String, INodeFile> entry : ucMap.entrySet()) {
-        String path = entry.getKey();
-        INodeFile file = entry.getValue();
+      Collection<Long> filesWithUC = fsn.getLeaseManager()
+              .getINodeIdWithLeases();
+      for (Long id : filesWithUC) {
+        INode inode = fsn.getFSDirectory().getInode(id);
+        if (inode == null) {
+          LOG.warn("Fail to find inode " + id + " when saving the leases.");
+          continue;
+        }
+        INodeFile file = inode.asFile();
+        if (!file.isUnderConstruction()) {
+          LOG.warn("Fail to save the lease for inode id " + id
+                       + " as the file is not under construction");
+          continue;
+        }
+        String path = file.getFullPathName();
         FileUnderConstructionEntry.Builder b = FileUnderConstructionEntry
             .newBuilder().setInodeId(file.getId()).setFullPath(path);
         FileUnderConstructionEntry e = b.build();
@@ -610,7 +635,7 @@ public final class FSImageFormatPBINode {
 
       if (n.getBlocks() != null) {
         for (Block block : n.getBlocks()) {
-          b.addBlocks(PBHelper.convert(block));
+          b.addBlocks(PBHelperClient.convert(block));
         }
       }
 

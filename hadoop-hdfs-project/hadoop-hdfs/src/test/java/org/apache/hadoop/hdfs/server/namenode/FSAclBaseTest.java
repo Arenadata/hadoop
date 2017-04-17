@@ -43,6 +43,7 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.AclException;
 import org.apache.hadoop.hdfs.protocol.FsPermissionExtension;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -861,8 +862,8 @@ public abstract class FSAclBaseTest {
     fs.setPermission(path,
       new FsPermissionExtension(FsPermission.
           createImmutable((short)0755), true, true));
-    INode inode = cluster.getNamesystem().getFSDirectory().getINode(
-        path.toUri().getPath(), false);
+    INode inode = cluster.getNamesystem().getFSDirectory()
+        .getINode(path.toUri().getPath(), DirOp.READ_LINK);
     assertNotNull(inode);
     FsPermission perm = inode.getFsPermission();
     assertNotNull(perm);
@@ -1637,17 +1638,23 @@ public abstract class FSAclBaseTest {
     assertAclFeature(path, expectAclFeature);
   }
 
+  private static void assertAclFeature(Path pathToCheck,
+      boolean expectAclFeature) throws IOException {
+    assertAclFeature(cluster, pathToCheck, expectAclFeature);
+  }
+
   /**
    * Asserts whether or not the inode for a specific path has an AclFeature.
    *
+   * @param miniCluster the cluster into which the path resides
    * @param pathToCheck Path inode to check
    * @param expectAclFeature boolean true if an AclFeature must be present,
    *   false if an AclFeature must not be present
    * @throws IOException thrown if there is an I/O error
    */
-  private static void assertAclFeature(Path pathToCheck,
-      boolean expectAclFeature) throws IOException {
-    AclFeature aclFeature = getAclFeature(pathToCheck, cluster);
+  public static void assertAclFeature(final MiniDFSCluster miniCluster,
+      Path pathToCheck, boolean expectAclFeature) throws IOException {
+    AclFeature aclFeature = getAclFeature(pathToCheck, miniCluster);
     if (expectAclFeature) {
       assertNotNull(aclFeature);
       // Intentionally capturing a reference to the entries, not using nested
@@ -1667,7 +1674,7 @@ public abstract class FSAclBaseTest {
   public static AclFeature getAclFeature(Path pathToCheck,
       MiniDFSCluster cluster) throws IOException {
     INode inode = cluster.getNamesystem().getFSDirectory()
-        .getINode(pathToCheck.toUri().getPath(), false);
+        .getINode(pathToCheck.toUri().getPath(), DirOp.READ_LINK);
     assertNotNull(inode);
     AclFeature aclFeature = inode.getAclFeature();
     return aclFeature;

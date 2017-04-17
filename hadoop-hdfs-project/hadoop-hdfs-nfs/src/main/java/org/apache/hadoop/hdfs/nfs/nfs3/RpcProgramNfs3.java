@@ -44,8 +44,8 @@ import org.apache.hadoop.hdfs.client.HdfsDataOutputStream;
 import org.apache.hadoop.hdfs.nfs.conf.NfsConfigKeys;
 import org.apache.hadoop.hdfs.nfs.conf.NfsConfiguration;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.DNS;
@@ -813,7 +813,7 @@ public class RpcProgramNfs3 extends RpcProgram implements Nfs3Interface {
       attrs = Nfs3Utils.getFileAttr(dfsClient, Nfs3Utils.getFileIdPath(handle),
           iug);
       if (readCount < count) {
-        LOG.info("Partical read. Asked offset: " + offset + " count: " + count
+        LOG.info("Partial read. Asked offset: " + offset + " count: " + count
             + " and read back: " + readCount + " file size: "
             + attrs.getSize());
       }
@@ -2031,7 +2031,7 @@ public class RpcProgramNfs3 extends RpcProgram implements Nfs3Interface {
       }
 
       return new PATHCONF3Response(Nfs3Status.NFS3_OK, attrs, 0,
-          HdfsConstants.MAX_PATH_LENGTH, true, false, false, true);
+          HdfsServerConstants.MAX_PATH_LENGTH, true, false, false, true);
     } catch (IOException e) {
       LOG.warn("Exception ", e);
       int status = mapErrorStatus(e);

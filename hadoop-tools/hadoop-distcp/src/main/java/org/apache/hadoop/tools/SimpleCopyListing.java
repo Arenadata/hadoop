@@ -18,24 +18,35 @@
 
 package org.apache.hadoop.tools;
 
+import com.google.common.collect.Lists;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.tools.DistCpOptions.FileAttribute;
 import org.apache.hadoop.tools.util.DistCpUtils;
+import org.apache.hadoop.tools.util.ProducerConsumer;
+import org.apache.hadoop.tools.util.WorkReport;
+import org.apache.hadoop.tools.util.WorkRequest;
+import org.apache.hadoop.tools.util.WorkRequestProcessor;
 import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.security.Credentials;
 
 import com.google.common.annotations.VisibleForTesting;
 
-import java.io.*;
-import java.util.Stack;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Random;
 
 import static org.apache.hadoop.tools.DistCpConstants
         .HDFS_RESERVED_RAW_DIRECTORY_NAME;
@@ -49,8 +60,19 @@ import static org.apache.hadoop.tools.DistCpConstants
 public class SimpleCopyListing extends CopyListing {
   private static final Log LOG = LogFactory.getLog(SimpleCopyListing.class);
 
+  public static final int DEFAULT_FILE_STATUS_SIZE = 1000;
+  public static final boolean DEFAULT_RANDOMIZE_FILE_LISTING = true;
+
   private long totalPaths = 0;
+  private long totalDirs = 0;
   private long totalBytesToCopy = 0;
+  private int numListstatusThreads = 1;
+  private final int fileStatusLimit;
+  private final boolean randomizeFileListing;
+  private final int maxRetries = 3;
+  private CopyFilter copyFilter;
+  private DistCpSync distCpSync;
+  private final Random rnd = new Random();
 
   /**
    * Protected constructor, to initialize configuration.
@@ -61,6 +83,41 @@ public class SimpleCopyListing extends CopyListing {
    */
   protected SimpleCopyListing(Configuration configuration, Credentials credentials) {
     super(configuration, credentials);
+    numListstatusThreads = getConf().getInt(
+        DistCpConstants.CONF_LABEL_LISTSTATUS_THREADS,
+        DistCpConstants.DEFAULT_LISTSTATUS_THREADS);
+    fileStatusLimit = Math.max(1, getConf()
+        .getInt(DistCpConstants.CONF_LABEL_SIMPLE_LISTING_FILESTATUS_SIZE,
+        DEFAULT_FILE_STATUS_SIZE));
+    randomizeFileListing = getConf().getBoolean(
+        DistCpConstants.CONF_LABEL_SIMPLE_LISTING_RANDOMIZE_FILES,
+        DEFAULT_RANDOMIZE_FILE_LISTING);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("numListstatusThreads=" + numListstatusThreads
+          + ", fileStatusLimit=" + fileStatusLimit
+          + ", randomizeFileListing=" + randomizeFileListing);
+    }
+    copyFilter = CopyFilter.getCopyFilter(getConf());
+    copyFilter.initialize();
+  }
+
+  @VisibleForTesting
+  protected SimpleCopyListing(Configuration configuration,
+                              Credentials credentials,
+                              int numListstatusThreads,
+                              int fileStatusLimit,
+                              boolean randomizeFileListing) {
+    super(configuration, credentials);
+    this.numListstatusThreads = numListstatusThreads;
+    this.fileStatusLimit = Math.max(1, fileStatusLimit);
+    this.randomizeFileListing = randomizeFileListing;
+  }
+
+  protected SimpleCopyListing(Configuration configuration,
+                              Credentials credentials,
+                              DistCpSync distCpSync) {
+    this(configuration, credentials);
+    this.distCpSync = distCpSync;
   }
 
   @Override
@@ -134,11 +191,114 @@ public class SimpleCopyListing extends CopyListing {
     }
   }
 
-  /** {@inheritDoc} */
   @Override
-  public void doBuildListing(Path pathToListingFile, DistCpOptions options) throws IOException {
-    doBuildListing(getWriter(pathToListingFile), options);
+  protected void doBuildListing(Path pathToListingFile,
+                                DistCpOptions options) throws IOException {
+    if(options.shouldUseDiff()) {
+      doBuildListingWithSnapshotDiff(getWriter(pathToListingFile), options);
+    }else {
+      doBuildListing(getWriter(pathToListingFile), options);
+    }
   }
+
+  /**
+   * Get a path with its scheme and authority.
+   */
+  private Path getPathWithSchemeAndAuthority(Path path) throws IOException {
+    FileSystem fs= path.getFileSystem(getConf());
+    String scheme = path.toUri().getScheme();
+    if (scheme == null) {
+      scheme = fs.getUri().getScheme();
+    }
+
+    String authority = path.toUri().getAuthority();
+    if (authority == null) {
+      authority = fs.getUri().getAuthority();
+    }
+
+    return new Path(scheme, authority, makeQualified(path).toUri().getPath());
+  }
+
+  /**
+   * Write a single file/directory to the sequence file.
+   * @throws IOException
+   */
+  private void addToFileListing(SequenceFile.Writer fileListWriter,
+      Path sourceRoot, Path path, DistCpOptions options) throws IOException {
+    sourceRoot = getPathWithSchemeAndAuthority(sourceRoot);
+    path = getPathWithSchemeAndAuthority(path);
+    path = makeQualified(path);
+
+    FileSystem sourceFS = sourceRoot.getFileSystem(getConf());
+    FileStatus fileStatus = sourceFS.getFileStatus(path);
+    final boolean preserveAcls = options.shouldPreserve(FileAttribute.ACL);
+    final boolean preserveXAttrs = options.shouldPreserve(FileAttribute.XATTR);
+    final boolean preserveRawXAttrs = options.shouldPreserveRawXattrs();
+    CopyListingFileStatus fileCopyListingStatus =
+        DistCpUtils.toCopyListingFileStatus(sourceFS, fileStatus,
+            preserveAcls, preserveXAttrs, preserveRawXAttrs);
+
+    writeToFileListingRoot(fileListWriter, fileCopyListingStatus,
+        sourceRoot, options);
+  }
+
+  /**
+   * Build a copy list based on the snapshot diff report.
+   *
+   * Any file/directory changed or created will be in the list. Deleted
+   * files/directories will not be in the list, since they are handled by
+   * {@link org.apache.hadoop.tools.DistCpSync#sync}. An item can be
+   * created/modified and renamed, in which case, the target path is put
+   * into the list.
+   * @throws IOException
+   */
+  @VisibleForTesting
+  protected void doBuildListingWithSnapshotDiff(
+      SequenceFile.Writer fileListWriter, DistCpOptions options)
+      throws IOException {
+    ArrayList<DiffInfo> diffList = distCpSync.prepareDiffList();
+    Path sourceRoot = options.getSourcePaths().get(0);
+    FileSystem sourceFS = sourceRoot.getFileSystem(getConf());
+
+    try {
+      List<FileStatusInfo> fileStatuses = Lists.newArrayList();
+      for (DiffInfo diff : diffList) {
+        // add snapshot paths prefix
+        diff.target = new Path(options.getSourcePaths().get(0), diff.target);
+        if (diff.getType() == SnapshotDiffReport.DiffType.MODIFY) {
+          addToFileListing(fileListWriter, sourceRoot, diff.target, options);
+        } else if (diff.getType() == SnapshotDiffReport.DiffType.CREATE) {
+          addToFileListing(fileListWriter, sourceRoot, diff.target, options);
+
+          FileStatus sourceStatus = sourceFS.getFileStatus(diff.target);
+          if (sourceStatus.isDirectory()) {
+            if (LOG.isDebugEnabled()) {
+              LOG.debug("Adding source dir for traverse: " +
+                  sourceStatus.getPath());
+            }
+
+            HashSet<String> excludeList =
+                distCpSync.getTraverseExcludeList(diff.source,
+                    options.getSourcePaths().get(0));
+
+            ArrayList<FileStatus> sourceDirs = new ArrayList<>();
+            sourceDirs.add(sourceStatus);
+
+            traverseDirectory(fileListWriter, sourceFS, sourceDirs,
+                sourceRoot, options, excludeList, fileStatuses);
+          }
+        }
+      }
+      if (randomizeFileListing) {
+        writeToFileListing(fileStatuses, fileListWriter);
+      }
+      fileListWriter.close();
+      fileListWriter = null;
+    } finally {
+      IOUtils.cleanup(LOG, fileListWriter);
+    }
+  }
+
   /**
    * Collect the list of 
    *   {@literal <sourceRelativePath, sourceFileStatus>}
@@ -158,9 +318,14 @@ public class SimpleCopyListing extends CopyListing {
    * @throws IOException
    */
   @VisibleForTesting
-  public void doBuildListing(SequenceFile.Writer fileListWriter,
+  protected void doBuildListing(SequenceFile.Writer fileListWriter,
       DistCpOptions options) throws IOException {
+    if (options.getNumListstatusThreads() > 0) {
+      numListstatusThreads = options.getNumListstatusThreads();
+    }
+
     try {
+      List<FileStatusInfo> statusList = Lists.newArrayList();
       for (Path path: options.getSourcePaths()) {
         FileSystem sourceFS = path.getFileSystem(getConf());
         final boolean preserveAcls = options.shouldPreserve(FileAttribute.ACL);
@@ -181,6 +346,7 @@ public class SimpleCopyListing extends CopyListing {
               sourcePathRoot, options);
         }
         if (explore) {
+          ArrayList<FileStatus> sourceDirs = new ArrayList<FileStatus>();
           for (FileStatus sourceStatus: sourceFiles) {
             if (LOG.isDebugEnabled()) {
               LOG.debug("Recording source-path: " + sourceStatus.getPath() + " for copy.");
@@ -190,23 +356,81 @@ public class SimpleCopyListing extends CopyListing {
                   preserveAcls && sourceStatus.isDirectory(),
                   preserveXAttrs && sourceStatus.isDirectory(),
                   preserveRawXAttrs && sourceStatus.isDirectory());
-            writeToFileListing(fileListWriter, sourceCopyListingStatus,
-                sourcePathRoot, options);
+            if (randomizeFileListing) {
+              addToFileListing(statusList,
+                  new FileStatusInfo(sourceCopyListingStatus, sourcePathRoot),
+                  fileListWriter);
+            } else {
+              writeToFileListing(fileListWriter, sourceCopyListingStatus,
+                  sourcePathRoot);
+            }
 
-            if (isDirectoryAndNotEmpty(sourceFS, sourceStatus)) {
+            if (sourceStatus.isDirectory()) {
               if (LOG.isDebugEnabled()) {
-                LOG.debug("Traversing non-empty source dir: " + sourceStatus.getPath());
+                LOG.debug("Adding source dir for traverse: " + sourceStatus.getPath());
               }
-              traverseNonEmptyDirectory(fileListWriter, sourceStatus, sourcePathRoot,
-                  options);
+              sourceDirs.add(sourceStatus);
             }
           }
+          traverseDirectory(fileListWriter, sourceFS, sourceDirs,
+              sourcePathRoot, options, null, statusList);
         }
       }
+      if (randomizeFileListing) {
+        writeToFileListing(statusList, fileListWriter);
+      }
       fileListWriter.close();
+      printStats();
+      LOG.info("Build file listing completed.");
       fileListWriter = null;
     } finally {
       IOUtils.cleanup(LOG, fileListWriter);
+    }
+  }
+
+  private void addToFileListing(List<FileStatusInfo> fileStatusInfoList,
+      FileStatusInfo statusInfo, SequenceFile.Writer fileListWriter)
+      throws IOException {
+    fileStatusInfoList.add(statusInfo);
+    if (fileStatusInfoList.size() > fileStatusLimit) {
+      writeToFileListing(fileStatusInfoList, fileListWriter);
+    }
+  }
+
+  @VisibleForTesting
+  void setSeedForRandomListing(long seed) {
+    this.rnd.setSeed(seed);
+  }
+
+  private void writeToFileListing(List<FileStatusInfo> fileStatusInfoList,
+      SequenceFile.Writer fileListWriter) throws IOException {
+    /**
+     * In cloud storage systems, it is possible to get region hotspot.
+     * Shuffling paths can avoid such cases and also ensure that
+     * some mappers do not get lots of similar paths.
+     */
+    Collections.shuffle(fileStatusInfoList, rnd);
+    for (FileStatusInfo fileStatusInfo : fileStatusInfoList) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Adding " + fileStatusInfo.fileStatus.getPath());
+      }
+      writeToFileListing(fileListWriter, fileStatusInfo.fileStatus,
+          fileStatusInfo.sourceRootPath);
+    }
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Number of paths written to fileListing="
+          + fileStatusInfoList.size());
+    }
+    fileStatusInfoList.clear();
+  }
+
+  private static class FileStatusInfo {
+    private CopyListingFileStatus fileStatus;
+    private Path sourceRootPath;
+
+    FileStatusInfo(CopyListingFileStatus fileStatus, Path sourceRootPath) {
+      this.fileStatus = fileStatus;
+      this.sourceRootPath = sourceRootPath;
     }
   }
 
@@ -230,8 +454,12 @@ public class SimpleCopyListing extends CopyListing {
       boolean specialHandling = (options.getSourcePaths().size() == 1 && !targetPathExists) ||
           options.shouldSyncFolder() || options.shouldOverwrite();
 
-      return specialHandling && sourceStatus.isDirectory() ? sourceStatus.getPath() :
-          sourceStatus.getPath().getParent();
+      if ((specialHandling && sourceStatus.isDirectory()) ||
+          sourceStatus.getPath().isRoot()) {
+        return sourceStatus.getPath();
+      } else {
+        return sourceStatus.getPath().getParent();
+      }
     }
   }
 
@@ -239,11 +467,10 @@ public class SimpleCopyListing extends CopyListing {
    * Provide an option to skip copy of a path, Allows for exclusion
    * of files such as {@link org.apache.hadoop.mapreduce.lib.output.FileOutputCommitter#SUCCEEDED_FILE_NAME}
    * @param path - Path being considered for copy while building the file listing
-   * @param options - Input options passed during DistCp invocation
    * @return - True if the path should be considered for copy, false otherwise
    */
-  protected boolean shouldCopy(Path path, DistCpOptions options) {
-    return true;
+  protected boolean shouldCopy(Path path) {
+    return copyFilter.shouldCopy(path);
   }
 
   /** {@inheritDoc} */
@@ -275,50 +502,171 @@ public class SimpleCopyListing extends CopyListing {
             SequenceFile.Writer.compression(SequenceFile.CompressionType.NONE));
   }
 
-  private static boolean isDirectoryAndNotEmpty(FileSystem fileSystem,
-                                    FileStatus fileStatus) throws IOException {
-    return fileStatus.isDirectory() && getChildren(fileSystem, fileStatus).length > 0;
+  /*
+   *  Private class to implement WorkRequestProcessor interface. It processes
+   *  each directory (represented by FileStatus item) and returns a list of all
+   *  file-system objects in that directory (files and directories). In case of
+   *  retriable exceptions it increments retry counter and returns the same
+   *  directory for later retry.
+   */
+  private static class FileStatusProcessor
+      implements WorkRequestProcessor<FileStatus, FileStatus[]> {
+    private FileSystem fileSystem;
+    private HashSet<String> excludeList;
+
+    public FileStatusProcessor(FileSystem fileSystem,
+                               HashSet<String> excludeList) {
+      this.fileSystem = fileSystem;
+      this.excludeList = excludeList;
+    }
+
+    /**
+     * Get FileStatuses for a given path.
+     * Exclude the some renamed FileStatuses since they are already handled by
+     * {@link org.apache.hadoop.tools.DistCpSync#sync}.
+     * @return an array of file status
+     */
+    private FileStatus[] getFileStatus(Path path) throws IOException {
+      FileStatus[] fileStatuses = fileSystem.listStatus(path);
+      if (excludeList != null && excludeList.size() > 0) {
+        ArrayList<FileStatus> fileStatusList = new ArrayList<>();
+        for(FileStatus status : fileStatuses) {
+          if (!excludeList.contains(status.getPath().toUri().getPath())) {
+            fileStatusList.add(status);
+          }
+        }
+        fileStatuses = fileStatusList.toArray(
+                new FileStatus[fileStatusList.size()]);
+      }
+      return fileStatuses;
+    }
+
+    /*
+     *  Processor for FileSystem.listStatus().
+     *
+     *  @param workRequest  Input work item that contains FileStatus item which
+     *                      is a parent directory we want to list.
+     *  @return Outputs WorkReport<FileStatus[]> with a list of objects in the
+     *          directory (array of objects, empty if parent directory is
+     *          empty). In case of intermittent exception we increment retry
+     *          counter and return the list containing the parent directory).
+     */
+    public WorkReport<FileStatus[]> processItem(
+        WorkRequest<FileStatus> workRequest) {
+      FileStatus parent = workRequest.getItem();
+      int retry = workRequest.getRetry();
+      WorkReport<FileStatus[]> result = null;
+      try {
+        if (retry > 0) {
+          int sleepSeconds = 2;
+          for (int i = 1; i < retry; i++) {
+            sleepSeconds *= 2;
+          }
+          try {
+            Thread.sleep(1000 * sleepSeconds);
+          } catch (InterruptedException ie) {
+            LOG.debug("Interrupted while sleeping in exponential backoff.");
+          }
+        }
+        result = new WorkReport<FileStatus[]>(getFileStatus(parent.getPath()),
+                retry, true);
+      } catch (FileNotFoundException fnf) {
+        LOG.error("FileNotFoundException exception in listStatus: " +
+                  fnf.getMessage());
+        result = new WorkReport<FileStatus[]>(new FileStatus[0], retry, true,
+                                              fnf);
+      } catch (Exception e) {
+        LOG.error("Exception in listStatus. Will send for retry.");
+        FileStatus[] parentList = new FileStatus[1];
+        parentList[0] = parent;
+        result = new WorkReport<FileStatus[]>(parentList, retry + 1, false, e);
+      }
+      return result;
+    }
   }
 
-  private static FileStatus[] getChildren(FileSystem fileSystem,
-                                         FileStatus parent) throws IOException {
-    return fileSystem.listStatus(parent.getPath());
+  private void printStats() {
+    LOG.info("Paths (files+dirs) cnt = " + totalPaths +
+             "; dirCnt = " + totalDirs);
   }
 
-  private void traverseNonEmptyDirectory(SequenceFile.Writer fileListWriter,
-                                         FileStatus sourceStatus,
-                                         Path sourcePathRoot,
-                                         DistCpOptions options)
-                                         throws IOException {
-    FileSystem sourceFS = sourcePathRoot.getFileSystem(getConf());
+  private void maybePrintStats() {
+    if (totalPaths % 100000 == 0) {
+      printStats();
+    }
+  }
+
+  private void traverseDirectory(SequenceFile.Writer fileListWriter,
+                                 FileSystem sourceFS,
+                                 ArrayList<FileStatus> sourceDirs,
+                                 Path sourcePathRoot,
+                                 DistCpOptions options,
+                                 HashSet<String> excludeList,
+                                 List<FileStatusInfo> fileStatuses)
+                                 throws IOException {
     final boolean preserveAcls = options.shouldPreserve(FileAttribute.ACL);
     final boolean preserveXAttrs = options.shouldPreserve(FileAttribute.XATTR);
     final boolean preserveRawXattrs = options.shouldPreserveRawXattrs();
-    Stack<FileStatus> pathStack = new Stack<FileStatus>();
-    pathStack.push(sourceStatus);
 
-    while (!pathStack.isEmpty()) {
-      for (FileStatus child: getChildren(sourceFS, pathStack.pop())) {
-        if (LOG.isDebugEnabled())
-          LOG.debug("Recording source-path: "
-                    + sourceStatus.getPath() + " for copy.");
-        CopyListingFileStatus childCopyListingStatus =
-          DistCpUtils.toCopyListingFileStatus(sourceFS, child,
-            preserveAcls && child.isDirectory(),
-            preserveXAttrs && child.isDirectory(),
-            preserveRawXattrs && child.isDirectory());
-        writeToFileListing(fileListWriter, childCopyListingStatus,
-             sourcePathRoot, options);
-        if (isDirectoryAndNotEmpty(sourceFS, child)) {
-          if (LOG.isDebugEnabled())
-            LOG.debug("Traversing non-empty source dir: "
-                       + sourceStatus.getPath());
-          pathStack.push(child);
+    assert numListstatusThreads > 0;
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Starting thread pool of " + numListstatusThreads +
+          " listStatus workers.");
+    }
+    ProducerConsumer<FileStatus, FileStatus[]> workers =
+        new ProducerConsumer<FileStatus, FileStatus[]>(numListstatusThreads);
+    for (int i = 0; i < numListstatusThreads; i++) {
+      workers.addWorker(
+          new FileStatusProcessor(sourcePathRoot.getFileSystem(getConf()),
+              excludeList));
+    }
+
+    for (FileStatus status : sourceDirs) {
+      workers.put(new WorkRequest<FileStatus>(status, 0));
+    }
+
+    while (workers.hasWork()) {
+      try {
+        WorkReport<FileStatus[]> workResult = workers.take();
+        int retry = workResult.getRetry();
+        for (FileStatus child: workResult.getItem()) {
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Recording source-path: " + child.getPath() + " for copy.");
+          }
+          if (workResult.getSuccess()) {
+            CopyListingFileStatus childCopyListingStatus =
+              DistCpUtils.toCopyListingFileStatus(sourceFS, child,
+                preserveAcls && child.isDirectory(),
+                preserveXAttrs && child.isDirectory(),
+                preserveRawXattrs && child.isDirectory());
+            if (randomizeFileListing) {
+              addToFileListing(fileStatuses,
+                  new FileStatusInfo(childCopyListingStatus, sourcePathRoot),
+                  fileListWriter);
+            } else {
+              writeToFileListing(fileListWriter, childCopyListingStatus,
+                  sourcePathRoot);
+            }
+          }
+          if (retry < maxRetries) {
+            if (child.isDirectory()) {
+              if (LOG.isDebugEnabled()) {
+                LOG.debug("Traversing into source dir: " + child.getPath());
+              }
+              workers.put(new WorkRequest<FileStatus>(child, retry));
+            }
+          } else {
+            LOG.error("Giving up on " + child.getPath() +
+                      " after " + retry + " retries.");
+          }
         }
+      } catch (InterruptedException ie) {
+        LOG.error("Could not get item from childQueue. Retrying...");
       }
     }
+    workers.shutdown();
   }
-  
+
   private void writeToFileListingRoot(SequenceFile.Writer fileListWriter,
       CopyListingFileStatus fileStatus, Path sourcePathRoot,
       DistCpOptions options) throws IOException {
@@ -332,31 +680,31 @@ public class SimpleCopyListing extends CopyListing {
       }      
       return;
     }
-    writeToFileListing(fileListWriter, fileStatus, sourcePathRoot, options);
+    writeToFileListing(fileListWriter, fileStatus, sourcePathRoot);
   }
 
   private void writeToFileListing(SequenceFile.Writer fileListWriter,
                                   CopyListingFileStatus fileStatus,
-                                  Path sourcePathRoot,
-                                  DistCpOptions options) throws IOException {
+                                  Path sourcePathRoot) throws IOException {
     if (LOG.isDebugEnabled()) {
       LOG.debug("REL PATH: " + DistCpUtils.getRelativePath(sourcePathRoot,
         fileStatus.getPath()) + ", FULL PATH: " + fileStatus.getPath());
     }
 
-    FileStatus status = fileStatus;
-
-    if (!shouldCopy(fileStatus.getPath(), options)) {
+    if (!shouldCopy(fileStatus.getPath())) {
       return;
     }
 
     fileListWriter.append(new Text(DistCpUtils.getRelativePath(sourcePathRoot,
-        fileStatus.getPath())), status);
+        fileStatus.getPath())), fileStatus);
     fileListWriter.sync();
 
     if (!fileStatus.isDirectory()) {
       totalBytesToCopy += fileStatus.getLen();
+    } else {
+      totalDirs++;
     }
     totalPaths++;
+    maybePrintStats();
   }
 }

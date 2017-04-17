@@ -34,13 +34,11 @@ import java.util.HashMap;
 import java.net.InetSocketAddress;
 import java.net.URI;
 
-import junit.framework.TestCase;
-
 import org.apache.commons.logging.Log;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.fs.shell.CommandFormat;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.SequenceFile;
@@ -50,8 +48,15 @@ import org.apache.hadoop.mapred.*;
 import org.apache.hadoop.mapred.lib.LongSumReducer;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
+import org.junit.Test;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
 
-public class TestFileSystem extends TestCase {
+
+public class TestFileSystem {
   private static final Log LOG = FileSystem.LOG;
 
   private static Configuration conf = new Configuration();
@@ -66,6 +71,7 @@ public class TestFileSystem extends TestCase {
   private static Path READ_DIR = new Path(ROOT, "fs_read");
   private static Path DATA_DIR = new Path(ROOT, "fs_data");
 
+  @Test
   public void testFs() throws Exception {
     testFs(10 * MEGA, 100, 0);
   }
@@ -90,7 +96,8 @@ public class TestFileSystem extends TestCase {
     fs.delete(READ_DIR, true);
   }
 
-  public static void testCommandFormat() throws Exception {
+  @Test
+  public void testCommandFormat() throws Exception {
     // This should go to TestFsShell.java when it is added.
     CommandFormat cf;
     cf= new CommandFormat("copyToLocal", 2,2,"crc","ignoreCrc");
@@ -488,6 +495,7 @@ public class TestFileSystem extends TestCase {
     }
   }
 
+  @Test
   public void testFsCache() throws Exception {
     {
       long now = System.currentTimeMillis();
@@ -510,10 +518,10 @@ public class TestFileSystem extends TestCase {
     
     {
       try {
-        runTestCache(NameNode.DEFAULT_PORT);
+        runTestCache(HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT);
       } catch(java.net.BindException be) {
-        LOG.warn("Cannot test NameNode.DEFAULT_PORT (="
-            + NameNode.DEFAULT_PORT + ")", be);
+        LOG.warn("Cannot test HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT (="
+            + HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT + ")", be);
       }
 
       runTestCache(0);
@@ -537,11 +545,11 @@ public class TestFileSystem extends TestCase {
         }
       }
       
-      if (port == NameNode.DEFAULT_PORT) {
+      if (port == HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT) {
         //test explicit default port
         URI uri2 = new URI(uri.getScheme(), uri.getUserInfo(),
-            uri.getHost(), NameNode.DEFAULT_PORT, uri.getPath(),
-            uri.getQuery(), uri.getFragment());  
+            uri.getHost(), HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT,
+            uri.getPath(), uri.getQuery(), uri.getFragment());
         LOG.info("uri2=" + uri2);
         FileSystem fs = FileSystem.get(uri2, conf);
         checkPath(cluster, fs);
@@ -561,6 +569,7 @@ public class TestFileSystem extends TestCase {
         + StringUtils.toUpperCase(add.getHostName()) + ":" + add.getPort()));
   }
 
+  @Test
   public void testFsClose() throws Exception {
     {
       Configuration conf = new Configuration();
@@ -581,6 +590,7 @@ public class TestFileSystem extends TestCase {
     }
   }
 
+  @Test
   public void testFsShutdownHook() throws Exception {
     final Set<FileSystem> closed = Collections.synchronizedSet(new HashSet<FileSystem>());
     Configuration conf = new Configuration();
@@ -612,7 +622,7 @@ public class TestFileSystem extends TestCase {
     assertTrue(closed.contains(fsWithoutAuto));
   }
 
-
+  @Test
   public void testCacheKeysAreCaseInsensitive()
     throws Exception
   {

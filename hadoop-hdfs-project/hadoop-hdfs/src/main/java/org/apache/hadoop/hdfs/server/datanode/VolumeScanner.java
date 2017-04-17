@@ -69,7 +69,12 @@ public class VolumeScanner extends Thread {
   /**
    * The configuration.
    */
-  private final Conf conf;
+  private Conf conf;
+
+  @VisibleForTesting
+  void setConf(Conf conf) {
+    this.conf = conf;
+  }
 
   /**
    * The DataNode this VolumEscanner is associated with.
@@ -216,9 +221,8 @@ public class VolumeScanner extends Thread {
   }
 
   public void printStats(StringBuilder p) {
-    p.append("Block scanner information for volume " +
-        volume.getStorageID() + " with base path " + volume.getBasePath() +
-        "%n");
+    p.append(String.format("Block scanner information for volume %s with base" +
+        " path %s%n", volume.getStorageID(), volume.getBasePath()));
     synchronized (stats) {
       p.append(String.format("Bytes verified in last hour       : %57d%n",
           stats.bytesScannedInPastHour));
@@ -245,7 +249,7 @@ public class VolumeScanner extends Thread {
           stats.lastBlockScanned.toString())));
       p.append(String.format("More blocks to scan in period     : %57s%n",
           !stats.eof));
-      p.append("%n");
+      p.append(System.lineSeparator());
     }
   }
 
@@ -282,12 +286,13 @@ public class VolumeScanner extends Thread {
             volume.getBasePath(), block);
         return;
       }
-      LOG.warn("Reporting bad {} on {}", block, volume.getBasePath());
+      LOG.warn("Reporting bad " + block + " with volume "
+          + volume.getBasePath(), e);
       try {
-        scanner.datanode.reportBadBlocks(block);
+        scanner.datanode.reportBadBlocks(block, volume);
       } catch (IOException ie) {
         // This is bad, but not bad enough to shut down the scanner.
-        LOG.warn("Cannot report bad " + block.getBlockId(), e);
+        LOG.warn("Cannot report bad block " + block, ie);
       }
     }
   }
@@ -430,6 +435,7 @@ public class VolumeScanner extends Thread {
     if (block == null) {
       return -1; // block not found.
     }
+    LOG.debug("start scanning block {}", block);
     BlockSender blockSender = null;
     try {
       blockSender = new BlockSender(block, 0, -1,
@@ -536,11 +542,13 @@ public class VolumeScanner extends Thread {
           return 0;
         }
       }
-      long saveDelta = monotonicMs - curBlockIter.getLastSavedMs();
-      if (saveDelta >= conf.cursorSaveMs) {
-        LOG.debug("{}: saving block iterator {} after {} ms.",
-            this, curBlockIter, saveDelta);
-        saveBlockIterator(curBlockIter);
+      if (curBlockIter != null) {
+        long saveDelta = monotonicMs - curBlockIter.getLastSavedMs();
+        if (saveDelta >= conf.cursorSaveMs) {
+          LOG.debug("{}: saving block iterator {} after {} ms.",
+              this, curBlockIter, saveDelta);
+          saveBlockIterator(curBlockIter);
+        }
       }
       bytesScanned = scanBlock(block, conf.targetBytesPerSec);
       if (bytesScanned >= 0) {
@@ -609,6 +617,7 @@ public class VolumeScanner extends Thread {
               break;
             }
             if (timeout > 0) {
+              LOG.debug("{}: wait for {} milliseconds", this, timeout);
               wait(timeout);
               if (stopping) {
                 break;
@@ -656,24 +665,24 @@ public class VolumeScanner extends Thread {
 
   public synchronized void markSuspectBlock(ExtendedBlock block) {
     if (stopping) {
-      LOG.info("{}: Not scheduling suspect block {} for " +
+      LOG.debug("{}: Not scheduling suspect block {} for " +
           "rescanning, because this volume scanner is stopping.", this, block);
       return;
     }
     Boolean recent = recentSuspectBlocks.getIfPresent(block);
     if (recent != null) {
-      LOG.info("{}: Not scheduling suspect block {} for " +
+      LOG.debug("{}: Not scheduling suspect block {} for " +
           "rescanning, because we rescanned it recently.", this, block);
       return;
     }
     if (suspectBlocks.contains(block)) {
-      LOG.info("{}: suspect block {} is already queued for " +
+      LOG.debug("{}: suspect block {} is already queued for " +
           "rescanning.", this, block);
       return;
     }
     suspectBlocks.add(block);
     recentSuspectBlocks.put(block, true);
-    LOG.info("{}: Scheduling suspect block {} for rescanning.", this, block);
+    LOG.debug("{}: Scheduling suspect block {} for rescanning.", this, block);
     notify(); // wake scanner thread.
   }
 

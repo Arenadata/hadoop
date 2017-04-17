@@ -18,15 +18,26 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import com.amazonaws.AmazonClientException;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.auth.AWSCredentials;
 import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 
+/**
+ * BasicAWSCredentialsProvider supports static configuration of access key ID
+ * and secret access key for use with the AWS SDK.
+ *
+ */
+@InterfaceAudience.Private
+@InterfaceStability.Stable
 public class BasicAWSCredentialsProvider implements AWSCredentialsProvider {
+  public static final String NAME
+      = "org.apache.hadoop.fs.s3a.BasicAWSCredentialsProvider";
   private final String accessKey;
   private final String secretKey;
+
 
   public BasicAWSCredentialsProvider(String accessKey, String secretKey) {
     this.accessKey = accessKey;
@@ -37,7 +48,7 @@ public class BasicAWSCredentialsProvider implements AWSCredentialsProvider {
     if (!StringUtils.isEmpty(accessKey) && !StringUtils.isEmpty(secretKey)) {
       return new BasicAWSCredentials(accessKey, secretKey);
     }
-    throw new AmazonClientException(
+    throw new CredentialInitializationException(
         "Access key or secret key is null");
   }
 

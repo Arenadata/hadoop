@@ -27,7 +27,6 @@ import java.net.URI;
 import java.net.URL;
 import java.security.PrivilegedExceptionAction;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.FSMainOperationsBaseTest;
@@ -39,11 +38,13 @@ import org.apache.hadoop.hdfs.AppendTestUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.web.resources.ExceptionHandler;
 import org.apache.hadoop.hdfs.web.resources.GetOpParam;
 import org.apache.hadoop.hdfs.web.resources.HttpOpParam;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.log4j.Level;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -52,7 +53,7 @@ import org.junit.Test;
 
 public class TestFSMainOperationsWebHdfs extends FSMainOperationsBaseTest {
   {
-    ((Log4JLogger)ExceptionHandler.LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(ExceptionHandler.LOG, Level.ALL);
   }
 
   private static MiniDFSCluster cluster = null;
@@ -71,7 +72,7 @@ public class TestFSMainOperationsWebHdfs extends FSMainOperationsBaseTest {
   @BeforeClass
   public static void setupCluster() {
     final Configuration conf = new Configuration();
-    conf.setBoolean(DFSConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
+    conf.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 1024);
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
@@ -81,7 +82,7 @@ public class TestFSMainOperationsWebHdfs extends FSMainOperationsBaseTest {
       cluster.getFileSystem().setPermission(
           new Path("/"), new FsPermission((short)0777));
 
-      final String uri = WebHdfsFileSystem.SCHEME  + "://"
+      final String uri = WebHdfsConstants.WEBHDFS_SCHEME + "://"
           + conf.get(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY);
 
       //get file system as a non-superuser

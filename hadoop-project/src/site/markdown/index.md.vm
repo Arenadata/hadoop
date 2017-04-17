@@ -16,38 +16,75 @@ Apache Hadoop ${project.version}
 ================================
 
 Apache Hadoop ${project.version} is a minor release in the 2.x.y release
-line, building upon the previous release 2.7.0. This is the next stable release
-after Apache Hadoop 2.6.x.
+line, building upon the previous stable release 2.7.3.
 
-Here is a short overview of the major features and improvements since 2.6.x.
-
-* IMPORTANT notes
-
-    *   This release drops support for JDK6 runtime and works with JDK 7+ only.
+Here is a short overview of the major features and improvements.
 
 *   Common
 
-    *   Support Windows Azure Storage - Blob as a file system in Hadoop.
+    *   Support async call retry and failover which can be used in async DFS
+        implementation with retry effort.
+
+    *   Cross Frame Scripting (XFS) prevention for UIs can be provided through
+        a common servlet filter.
+
+    *   S3A improvements: add ability to plug in any AWSCredentialsProvider,
+        support read s3a credentials from hadoop credential provider API in
+        addition to XML configuraiton files, support Amazon STS temporary
+        credentials
+
+    *   WASB improvements: adding append API support
+
+    *   Build enhancements: replace dev-support with wrappers to Yetus,
+        provide a docker based solution to setup a build environment,
+        remove CHANGES.txt and rework the change log and release notes.
+
+    *   Add posixGroups support for LDAP groups mapping service.
+
+    *   Support integration with Azure Data Lake (ADL) as an alternative
+        Hadoop-compatible file system.
 
 *   HDFS
 
-    *   Support for file truncate
+    *   WebHDFS enhancements: integrate CSRF prevention filter in WebHDFS,
+        support OAuth2 in WebHDFS, disallow/allow snapshots via WebHDFS
 
-    *   Support for quotas per storage type
+    *   Allow long-running Balancer to login with keytab
 
-    *   Support for files with variable-length blocks
+    *   Add ReverseXML processor which reconstructs an fsimage from an XML file.
+        This will make it easy to create fsimages for testing, and manually edit
+        fsimages when there is corruption
+
+    *   Support nested encryption zones
+
+    *   DataNode Lifeline Protocol: an alternative protocol for reporting DataNode
+        liveness. This can prevent the NameNode from incorrectly marking DataNodes
+        as stale or dead in highly overloaded clusters where heartbeat processing
+        is suffering delays.
+
+    *   Logging HDFS operation's caller context into audit logs
+
+    *   A new Datanode command for evicting writers which is useful when data node
+        decommissioning is blocked by slow writers.
 
 *   YARN
 
-    *   Make YARN authorization pluggable
+    *   NodeManager CPU resource monitoring in Windows.
 
-    *   Automatic shared, global caching of YARN localized resources (beta)
+    *   NM shutdown more graceful: NM will unregister to RM immediately rather than
+        waiting for timeout to be LOST (if NM work preserving is not enabled).
+
+    *   Add ability to fail a specific AM attempt in scenario of AM attempt get stuck.
+
+    *   CallerContext support in YARN audit log.
+
+    *   ATS versioning support: a new configuration to indicate timeline service version.
 
 *   MAPREDUCE
 
-    *   Ability to limit running Map/Reduce tasks of a job
+    *   Allow node labels get specificed in submitting MR jobs
 
-    *   Speed up FileOutputCommitter for very large jobs with many output files.
+    *   Add a new tool to combine aggregated logs into HAR files
 
 Getting Started
 ===============

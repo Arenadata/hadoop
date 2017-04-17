@@ -1,4 +1,4 @@
-<!---
+﻿<!---
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
   You may obtain a copy of the License at
@@ -26,6 +26,7 @@ Archival Storage, SSD & Memory
     * [Storage Policy Commands](#Storage_Policy_Commands)
         * [List Storage Policies](#List_Storage_Policies)
         * [Set Storage Policy](#Set_Storage_Policy)
+        * [Unset Storage Policy](#Unset_Storage_Policy)
         * [Get Storage Policy](#Get_Storage_Policy)
 
 Introduction
@@ -73,24 +74,24 @@ The following is a typical storage policy table.
 
 | **Policy** **ID** | **Policy** **Name** | **Block Placement** **(n  replicas)** | **Fallback storages** **for creation** | **Fallback storages** **for replication** |
 |:---- |:---- |:---- |:---- |:---- |
-| 15 | Lasy\_Persist | RAM\_DISK: 1, DISK: *n*-1 | DISK | DISK |
+| 15 | Lazy\_Persist | RAM\_DISK: 1, DISK: *n*-1 | DISK | DISK |
 | 12 | All\_SSD | SSD: *n* | DISK | DISK |
 | 10 | One\_SSD | SSD: 1, DISK: *n*-1 | SSD, DISK | SSD, DISK |
 | 7 | Hot (default) | DISK: *n* | \<none\> | ARCHIVE |
 | 5 | Warm | DISK: 1, ARCHIVE: *n*-1 | ARCHIVE, DISK | ARCHIVE, DISK |
 | 2 | Cold | ARCHIVE: *n* | \<none\> | \<none\> |
 
-Note that the Lasy\_Persist policy is useful only for single replica blocks. For blocks with more than one replicas, all the replicas will be written to DISK since writing only one of the replicas to RAM\_DISK does not improve the overall performance.
+Note that the Lazy\_Persist policy is useful only for single replica blocks. For blocks with more than one replicas, all the replicas will be written to DISK since writing only one of the replicas to RAM\_DISK does not improve the overall performance.
 
 ### Storage Policy Resolution
 
-When a file or directory is created, its storage policy is *unspecified*. The storage policy can be specified using the "[`dfsadmin -setStoragePolicy`](#Set_Storage_Policy)" command. The effective storage policy of a file or directory is resolved by the following rules.
+When a file or directory is created, its storage policy is *unspecified*. The storage policy can be specified using the "[`storagepolicies -setStoragePolicy`](#Set_Storage_Policy)" command. The effective storage policy of a file or directory is resolved by the following rules.
 
 1.  If the file or directory is specificed with a storage policy, return it.
 
 2.  For an unspecified file or directory, if it is the root directory, return the *default storage policy*. Otherwise, return its parent's effective storage policy.
 
-The effective storage policy can be retrieved by the "[`dfsadmin -getStoragePolicy`](#Get_Storage_Policy)" command.
+The effective storage policy can be retrieved by the "[`storagepolicies -getStoragePolicy`](#Get_Storage_Policy)" command.
 
 ### Configuration
 
@@ -149,6 +150,20 @@ Set a storage policy to a file or a directory.
 |:---- |:---- |
 | `-path <path>` | The path referring to either a directory or a file. |
 | `-policy <policy>` | The name of the storage policy. |
+
+### Unset Storage Policy
+
+Unset a storage policy to a file or a directory. After the unset command the storage policy of the nearest ancestor will apply, and if there is no policy on any ancestor then the default storage policy will apply.
+
+* Command:
+
+        hdfs storagepolicies -unsetStoragePolicy -path <path>
+
+* Arguments:
+
+| | |
+|:---- |:---- |
+| `-path <path>` | The path referring to either a directory or a file. |
 
 ### Get Storage Policy
 

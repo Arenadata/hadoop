@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ExecutionException;
 
@@ -48,7 +49,7 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
@@ -56,10 +57,12 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DecommissionManager;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStatistics;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
 import org.apache.log4j.Level;
@@ -68,6 +71,7 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.mortbay.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -122,6 +126,7 @@ public class TestDecommission {
     cleanupFile(localFileSys, dir);
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
   
@@ -347,14 +352,13 @@ public class TestDecommission {
     for (int i = 0; i < 10; i++) {
       long[] newStats = namenode.getRpcServer().getStats();
 
-      // For decommissioning nodes, ensure capacity of the DN is no longer
-      // counted. Only used space of the DN is counted in cluster capacity
+      // For decommissioning nodes, ensure capacity of the DN and dfsUsed
+      //  is no longer counted towards total
       assertEquals(newStats[0],
-          decommissioning ? info.getDfsUsed() : info.getCapacity());
+          decommissioning ? 0 : info.getCapacity());
 
-      // Ensure cluster used capacity is counted for both normal and
-      // decommissioning nodes
-      assertEquals(newStats[1], info.getDfsUsed());
+      // Ensure cluster used capacity is counted for normal nodes only
+      assertEquals(newStats[1], decommissioning ? 0 : info.getDfsUsed());
 
       // For decommissioning nodes, remaining space from the DN is not counted
       assertEquals(newStats[2], decommissioning ? 0 : info.getRemaining());
@@ -671,7 +675,7 @@ public class TestDecommission {
       GenericTestUtils.waitFor(new Supplier<Boolean>() {
         @Override
         public Boolean get() {
-          BlockInfoContiguous info =
+          BlockInfo info =
               blockManager.getStoredBlock(b.getLocalBlock());
           int count = 0;
           StringBuilder sb = new StringBuilder("Replica locations: ");
@@ -810,16 +814,13 @@ public class TestDecommission {
       }
       assertEquals("Number of live nodes should be 0", 0, info.length);
       
-      // Test that non-live and bogus hostnames are considered "dead".
-      // The dead report should have an entry for (1) the DN  that is
-      // now considered dead because it is no longer allowed to connect
-      // and (2) the bogus entry in the hosts file (these entries are
-      // always added last)
+      // Test that bogus hostnames are considered "dead".
+      // The dead report should have an entry for the bogus entry in the hosts
+      // file.  The original datanode is excluded from the report because it
+      // is no longer in the included list.
       info = client.datanodeReport(DatanodeReportType.DEAD);
-      assertEquals("There should be 2 dead nodes", 2, info.length);
-      DatanodeID id = cluster.getDataNodes().get(0).getDatanodeId();
-      assertEquals(id.getHostName(), info[0].getHostName());
-      assertEquals(bogusIp, info[1].getHostName());
+      assertEquals("There should be 1 dead node", 1, info.length);
+      assertEquals(bogusIp, info[0].getHostName());
     }
   }
   
@@ -921,6 +922,41 @@ public class TestDecommission {
     // are allowed to register with the namenode
     cluster.shutdown();
     startCluster(numNamenodes, numDatanodes, conf);
+    cluster.shutdown();
+  }
+
+  /**
+   * Tests dead node count after restart of namenode
+   **/
+  @Test(timeout=360000)
+  public void testDeadNodeCountAfterNamenodeRestart()throws Exception {
+    LOG.info("Starting test testDeadNodeCountAfterNamenodeRestart");
+    int numNamenodes = 1;
+    int numDatanodes = 2;
+
+    startCluster(numNamenodes, numDatanodes, conf);
+
+    DFSClient client = getDfsClient(cluster.getNameNode(), conf);
+    DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
+    DatanodeInfo excludedDatanode = info[0];
+    String excludedDatanodeName = info[0].getXferAddr();
+
+    writeConfigFile(hostsFile, new ArrayList<String>(Arrays.asList(
+        excludedDatanodeName, info[1].getXferAddr())));
+    decommissionNode(0, excludedDatanode.getDatanodeUuid(), null,
+        AdminStates.DECOMMISSIONED);
+
+    cluster.stopDataNode(excludedDatanodeName);
+    DFSTestUtil.waitForDatanodeState(
+        cluster, excludedDatanode.getDatanodeUuid(), false, 20000);
+
+    //Restart the namenode
+    cluster.restartNameNode();
+
+    assertEquals("There should be one node alive", 1,
+        client.datanodeReport(DatanodeReportType.LIVE).length);
+    assertEquals("There should be one node dead", 1,
+        client.datanodeReport(DatanodeReportType.DEAD).length);
     cluster.shutdown();
   }
 
@@ -1152,5 +1188,178 @@ public class TestDecommission {
         decomManager.getNumTrackedNodes());
     assertEquals("Unexpected number of pending nodes", pending,
         decomManager.getNumPendingNodes());
+  }
+
+  /**
+   * Fetching Live DataNodes by passing removeDecommissionedNode value as
+   * false- returns LiveNodeList with Node in Decommissioned state
+   * true - returns LiveNodeList without Node in Decommissioned state
+   * @throws InterruptedException
+   */
+  @Test
+  public void testCountOnDecommissionedNodeList() throws IOException{
+    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 1);
+    try {
+      cluster =
+          new MiniDFSCluster.Builder(conf)
+              .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(1))
+              .numDataNodes(1).build();
+      cluster.waitActive();
+      DFSClient client = getDfsClient(cluster.getNameNode(0), conf);
+      validateCluster(client, 1);
+
+      ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList =
+          new ArrayList<ArrayList<DatanodeInfo>>(1);
+      namenodeDecomList.add(0, new ArrayList<DatanodeInfo>(1));
+
+      // Move datanode1 to Decommissioned state
+      ArrayList<DatanodeInfo> decommissionedNode = namenodeDecomList.get(0);
+      decommissionNode(0, null,
+          decommissionedNode, AdminStates.DECOMMISSIONED);
+
+      FSNamesystem ns = cluster.getNamesystem(0);
+      DatanodeManager datanodeManager =
+          ns.getBlockManager().getDatanodeManager();
+      List<DatanodeDescriptor> live = new ArrayList<DatanodeDescriptor>();
+      // fetchDatanode with false should return livedecommisioned node
+      datanodeManager.fetchDatanodes(live, null, false);
+      assertTrue(1==live.size());
+      // fetchDatanode with true should not return livedecommisioned node
+      datanodeManager.fetchDatanodes(live, null, true);
+      assertTrue(0==live.size());
+    }finally {
+      cluster.shutdown();
+    }
+  }
+
+  /**
+   * Decommissioned node should not be considered while calculating node usage
+   * @throws InterruptedException
+   */
+  @Test
+  public void testNodeUsageAfterDecommissioned()
+      throws IOException, InterruptedException {
+    nodeUsageVerification(2, new long[] { 26384L, 26384L },
+        AdminStates.DECOMMISSIONED);
+  }
+
+  /**
+   * DECOMMISSION_INPROGRESS node should not be considered
+   * while calculating node usage
+   * @throws InterruptedException
+   */
+  @Test
+  public void testNodeUsageWhileDecommissioining()
+      throws IOException, InterruptedException {
+    nodeUsageVerification(1, new long[] { 26384L },
+        AdminStates.DECOMMISSION_INPROGRESS);
+  }
+
+  @SuppressWarnings({ "unchecked" })
+  public void nodeUsageVerification(int numDatanodes, long[] nodesCapacity,
+      AdminStates decommissionState) throws IOException, InterruptedException {
+    Map<String, Map<String, String>> usage = null;
+    DatanodeInfo decommissionedNodeInfo = null;
+    String zeroNodeUsage = "0.00%";
+    conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 1);
+    FileSystem fileSys = null;
+    Path file1 = new Path("testNodeUsage.dat");
+    try {
+      SimulatedFSDataset.setFactory(conf);
+      cluster =
+          new MiniDFSCluster.Builder(conf)
+              .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(1))
+              .numDataNodes(numDatanodes)
+              .simulatedCapacities(nodesCapacity).build();
+      cluster.waitActive();
+      DFSClient client = getDfsClient(cluster.getNameNode(0), conf);
+      validateCluster(client, numDatanodes);
+
+      ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList =
+          new ArrayList<ArrayList<DatanodeInfo>>(1);
+      namenodeDecomList.add(0, new ArrayList<DatanodeInfo>(numDatanodes));
+
+      if (decommissionState == AdminStates.DECOMMISSIONED) {
+        // Move datanode1 to Decommissioned state
+        ArrayList<DatanodeInfo> decommissionedNode = namenodeDecomList.get(0);
+        decommissionedNodeInfo = decommissionNode(0, null,
+            decommissionedNode, decommissionState);
+      }
+      // Write a file(replica 1).Hence will be written to only one live node.
+      fileSys = cluster.getFileSystem(0);
+      FSNamesystem ns = cluster.getNamesystem(0);
+      writeFile(fileSys, file1, 1);
+      Thread.sleep(2000);
+
+      // min NodeUsage should not be 0.00%
+      usage = (Map<String, Map<String, String>>) JSON.parse(ns.getNodeUsage());
+      String minUsageBeforeDecom = usage.get("nodeUsage").get("min");
+      assertTrue(!minUsageBeforeDecom.equalsIgnoreCase(zeroNodeUsage));
+
+      if (decommissionState == AdminStates.DECOMMISSION_INPROGRESS) {
+        // Start decommissioning datanode
+        ArrayList<DatanodeInfo> decommissioningNodes = namenodeDecomList.
+            get(0);
+        decommissionedNodeInfo = decommissionNode(0, null,
+            decommissioningNodes, decommissionState);
+        // NodeUsage should not include DECOMMISSION_INPROGRESS node
+        // (minUsage should be 0.00%)
+        usage = (Map<String, Map<String, String>>)
+            JSON.parse(ns.getNodeUsage());
+        assertTrue(usage.get("nodeUsage").get("min").
+            equalsIgnoreCase(zeroNodeUsage));
+      }
+      // Recommission node
+      recommissionNode(0, decommissionedNodeInfo);
+
+      usage = (Map<String, Map<String, String>>) JSON.parse(ns.getNodeUsage());
+      String nodeusageAfterRecommi =
+          decommissionState == AdminStates.DECOMMISSION_INPROGRESS
+              ? minUsageBeforeDecom
+              : zeroNodeUsage;
+      assertTrue(usage.get("nodeUsage").get("min").
+          equalsIgnoreCase(nodeusageAfterRecommi));
+    } finally {
+      cleanupFile(fileSys, file1);
+      cluster.shutdown();
+    }
+  }
+
+  @Test
+  public void testUsedCapacity() throws Exception {
+    int numNamenodes = 1;
+    int numDatanodes = 2;
+
+    startCluster(numNamenodes,numDatanodes,conf);
+    cluster.waitActive();
+    FSNamesystem ns = cluster.getNamesystem(0);
+    BlockManager blockManager = ns.getBlockManager();
+    DatanodeStatistics datanodeStatistics = blockManager.getDatanodeManager()
+        .getDatanodeStatistics();
+
+    long initialUsedCapacity = datanodeStatistics.getCapacityUsed();
+    long initialTotalCapacity = datanodeStatistics.getCapacityTotal();
+    long initialBlockPoolUsed = datanodeStatistics.getBlockPoolUsed();
+    ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList =
+        new ArrayList<ArrayList<DatanodeInfo>>(numNamenodes);
+    namenodeDecomList.add(0, new ArrayList<DatanodeInfo>(numDatanodes));
+    ArrayList<DatanodeInfo> decommissionedNodes = namenodeDecomList.get(0);
+    //decommission one node
+    DatanodeInfo decomNode = decommissionNode(0, null, decommissionedNodes,
+        AdminStates.DECOMMISSIONED);
+    decommissionedNodes.add(decomNode);
+    long newUsedCapacity = datanodeStatistics.getCapacityUsed();
+    long newTotalCapacity = datanodeStatistics.getCapacityTotal();
+    long newBlockPoolUsed = datanodeStatistics.getBlockPoolUsed();
+
+    assertTrue("DfsUsedCapacity should not be the same after a node has " +
+        "been decommissioned!", initialUsedCapacity != newUsedCapacity);
+    assertTrue("TotalCapacity should not be the same after a node has " +
+        "been decommissioned!", initialTotalCapacity != newTotalCapacity);
+    assertTrue("BlockPoolUsed should not be the same after a node has " +
+        "been decommissioned!",initialBlockPoolUsed != newBlockPoolUsed);
   }
 }

@@ -47,7 +47,7 @@ public class TestHDFSCLI extends CLITestHelperDFS {
     
     // Many of the tests expect a replication value of 1 in the output
     conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
-    
+
     // Build racks and hosts configuration to test dfsAdmin -printTopology
     String [] racks =  {"/rack1", "/rack1", "/rack2", "/rack2",
                         "/rack2", "/rack3", "/rack4", "/rack4" };
@@ -77,9 +77,11 @@ public class TestHDFSCLI extends CLITestHelperDFS {
   public void tearDown() throws Exception {
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (dfsCluster != null) {
       dfsCluster.shutdown();
+      dfsCluster = null;
     }
     Thread.sleep(2000);
     super.tearDown();
@@ -95,7 +97,7 @@ public class TestHDFSCLI extends CLITestHelperDFS {
   
   @Override
   protected Result execute(CLICommand cmd) throws Exception {
-    return cmd.getExecutor(namenode).executeCommand(cmd.getCmd());
+    return cmd.getExecutor(namenode, conf).executeCommand(cmd.getCmd());
   }
   
   @Test

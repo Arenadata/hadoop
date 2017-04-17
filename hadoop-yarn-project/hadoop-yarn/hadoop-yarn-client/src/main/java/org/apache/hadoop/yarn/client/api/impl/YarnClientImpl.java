@@ -42,6 +42,7 @@ import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
+import org.apache.hadoop.yarn.api.protocolrecords.FailApplicationAttemptRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationAttemptReportRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationAttemptReportResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationAttemptsRequest;
@@ -64,6 +65,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetDelegationTokenResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetLabelsToNodesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNodesToLabelsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetQueueUserAclsInfoRequest;
@@ -72,11 +75,15 @@ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationListRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationListResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptReport;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -86,10 +93,13 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.ContainerReport;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.QueueUserACLInfo;
+import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.Token;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
@@ -164,11 +174,24 @@ public class YarnClientImpl extends YarnClient {
 
     if (conf.getBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED,
         YarnConfiguration.DEFAULT_TIMELINE_SERVICE_ENABLED)) {
-      timelineServiceEnabled = true;
-      timelineClient = createTimelineClient();
-      timelineClient.init(conf);
-      timelineDTRenewer = getTimelineDelegationTokenRenewer(conf);
-      timelineService = TimelineUtils.buildTimelineTokenService(conf);
+      try {
+        timelineServiceEnabled = true;
+        timelineClient = createTimelineClient();
+        timelineClient.init(conf);
+        timelineDTRenewer = getTimelineDelegationTokenRenewer(conf);
+        timelineService = TimelineUtils.buildTimelineTokenService(conf);
+      } catch (NoClassDefFoundError error) {
+        // When attempt to initiate the timeline client with
+        // different set of dependencies, it may fail with
+        // NoClassDefFoundError. When some of them are not compatible
+        // with timeline server. This is not necessarily a fatal error
+        // to the client.
+        LOG.warn("Timeline client could not be initialized "
+            + "because dependency missing or incompatible,"
+            + " disabling timeline client.",
+            error);
+        timelineServiceEnabled = false;
+      }
     }
 
     timelineServiceBestEffort = conf.getBoolean(
@@ -291,9 +314,10 @@ public class YarnClientImpl extends YarnClient {
         try {
           Thread.sleep(submitPollIntervalMillis);
         } catch (InterruptedException ie) {
-          LOG.error("Interrupted while waiting for application "
-              + applicationId
-              + " to be successfully submitted.");
+          String msg = "Interrupted while waiting for application "
+              + applicationId + " to be successfully submitted.";
+          LOG.error(msg);
+          throw new YarnException(msg, ie);
         }
       } catch (ApplicationNotFoundException ex) {
         // FailOver or RM restart happens before RMStateStore saves
@@ -378,11 +402,32 @@ public class YarnClientImpl extends YarnClient {
   }
 
   @Override
+  public void failApplicationAttempt(ApplicationAttemptId attemptId)
+      throws YarnException, IOException {
+    LOG.info("Failing application attempt " + attemptId);
+    FailApplicationAttemptRequest request =
+        Records.newRecord(FailApplicationAttemptRequest.class);
+    request.setApplicationAttemptId(attemptId);
+    rmClient.failApplicationAttempt(request);
+  }
+
+  @Override
   public void killApplication(ApplicationId applicationId)
       throws YarnException, IOException {
+    killApplication(applicationId, null);
+  }
+
+  @Override
+  public void killApplication(ApplicationId applicationId, String diagnostics)
+      throws YarnException, IOException {
+
     KillApplicationRequest request =
         Records.newRecord(KillApplicationRequest.class);
     request.setApplicationId(applicationId);
+
+    if (diagnostics != null) {
+      request.setDiagnostics(diagnostics);
+    }
 
     try {
       int pollCount = 0;
@@ -397,20 +442,23 @@ public class YarnClientImpl extends YarnClient {
         }
 
         long elapsedMillis = System.currentTimeMillis() - startTime;
-        if (enforceAsyncAPITimeout() &&
-            elapsedMillis >= this.asyncApiPollTimeoutMillis) {
-          throw new YarnException("Timed out while waiting for application " +
-            applicationId + " to be killed.");
+        if (enforceAsyncAPITimeout()
+            && elapsedMillis >= this.asyncApiPollTimeoutMillis) {
+          throw new YarnException("Timed out while waiting for application "
+              + applicationId + " to be killed.");
         }
 
         if (++pollCount % 10 == 0) {
-          LOG.info("Waiting for application " + applicationId + " to be killed.");
+          LOG.info(
+              "Waiting for application " + applicationId + " to be killed.");
         }
         Thread.sleep(asyncApiPollIntervalMillis);
       }
     } catch (InterruptedException e) {
-      LOG.error("Interrupted while waiting for application " + applicationId
-          + " to be killed.");
+      String msg = "Interrupted while waiting for application "
+          + applicationId + " to be killed.";
+      LOG.error(msg);
+      throw new YarnException(msg, e);
     }
   }
 
@@ -428,14 +476,9 @@ public class YarnClientImpl extends YarnClient {
           .newRecord(GetApplicationReportRequest.class);
       request.setApplicationId(appId);
       response = rmClient.getApplicationReport(request);
-    } catch (YarnException e) {
+    } catch (ApplicationNotFoundException e) {
       if (!historyServiceEnabled) {
         // Just throw it as usual if historyService is not enabled.
-        throw e;
-      }
-      // Even if history-service is enabled, treat all exceptions still the same
-      // except the following
-      if (!(e.getClass() == ApplicationNotFoundException.class)) {
         throw e;
       }
       return historyClient.getApplicationReport(appId);
@@ -480,6 +523,19 @@ public class YarnClientImpl extends YarnClient {
       IOException {
     GetApplicationsRequest request =
         GetApplicationsRequest.newInstance(applicationTypes, applicationStates);
+    GetApplicationsResponse response = rmClient.getApplications(request);
+    return response.getApplicationList();
+  }
+
+  @Override
+  public List<ApplicationReport> getApplications(Set<String> queues,
+      Set<String> users, Set<String> applicationTypes,
+      EnumSet<YarnApplicationState> applicationStates) throws YarnException,
+      IOException {
+    GetApplicationsRequest request =
+        GetApplicationsRequest.newInstance(applicationTypes, applicationStates);
+    request.setQueues(queues);
+    request.setUsers(users);
     GetApplicationsResponse response = rmClient.getApplications(request);
     return response.getApplicationList();
   }
@@ -763,6 +819,14 @@ public class YarnClientImpl extends YarnClient {
   }
 
   @Override
+  public GetNewReservationResponse createReservation() throws YarnException,
+      IOException {
+    GetNewReservationRequest request =
+        Records.newRecord(GetNewReservationRequest.class);
+    return rmClient.getNewReservation(request);
+  }
+
+  @Override
   public ReservationSubmissionResponse submitReservation(
       ReservationSubmissionRequest request) throws YarnException, IOException {
     return rmClient.submitReservation(request);
@@ -779,7 +843,13 @@ public class YarnClientImpl extends YarnClient {
       ReservationDeleteRequest request) throws YarnException, IOException {
     return rmClient.deleteReservation(request);
   }
-  
+
+  @Override
+  public ReservationListResponse listReservations(
+          ReservationListRequest request) throws YarnException, IOException {
+    return rmClient.listReservations(request);
+  }
+
   @Override
   public Map<NodeId, Set<String>> getNodeToLabels() throws YarnException,
       IOException {
@@ -802,8 +872,26 @@ public class YarnClientImpl extends YarnClient {
   }
 
   @Override
-  public Set<String> getClusterNodeLabels() throws YarnException, IOException {
+  public List<NodeLabel> getClusterNodeLabels() throws YarnException, IOException {
     return rmClient.getClusterNodeLabels(
-        GetClusterNodeLabelsRequest.newInstance()).getNodeLabels();
+        GetClusterNodeLabelsRequest.newInstance()).getNodeLabelList();
+  }
+
+  @Override
+  public Priority updateApplicationPriority(ApplicationId applicationId,
+      Priority priority) throws YarnException, IOException {
+    UpdateApplicationPriorityRequest request =
+        UpdateApplicationPriorityRequest.newInstance(applicationId, priority);
+    return rmClient.updateApplicationPriority(request).getApplicationPriority();
+  }
+
+  @Override
+  public void signalToContainer(ContainerId containerId,
+      SignalContainerCommand command)
+          throws YarnException, IOException {
+    LOG.info("Signalling container " + containerId + " with command " + command);
+    SignalContainerRequest request =
+        SignalContainerRequest.newInstance(containerId, command);
+    rmClient.signalToContainer(request);
   }
 }

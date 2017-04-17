@@ -44,6 +44,7 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.datatransfer.BlockConstructionStage;
 import org.apache.hadoop.hdfs.protocol.datatransfer.DataTransferProtoUtil;
@@ -58,9 +59,8 @@ import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.BlockOpResponseP
 import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.ReadOpChecksumInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.Status;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.datanode.CachingStrategy;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.util.DataChecksum;
@@ -108,9 +108,9 @@ public class TestDataTransferProtocol {
           StringUtils.byteToHexString(sendBuf.toByteArray()));
       
       sock = new Socket();
-      sock.connect(dnAddr, HdfsServerConstants.READ_TIMEOUT);
-      sock.setSoTimeout(HdfsServerConstants.READ_TIMEOUT);
-      
+      sock.connect(dnAddr, HdfsConstants.READ_TIMEOUT);
+      sock.setSoTimeout(HdfsConstants.READ_TIMEOUT);
+
       OutputStream out = sock.getOutputStream();
       // Should we excuse 
       byte[] retBuf = new byte[recvBuf.size()];
@@ -217,7 +217,7 @@ public class TestDataTransferProtocol {
     try {
       cluster.waitActive();
       String poolId = cluster.getNamesystem().getBlockPoolId(); 
-      datanode = DataNodeTestUtils.getDNRegistrationForBP(
+      datanode = InternalDataNodeTestUtils.getDNRegistrationForBP(
           cluster.getDataNodes().get(0), poolId);
       dnAddr = NetUtils.createSocketAddr(datanode.getXferAddr());
       FileSystem fileSys = cluster.getFileSystem();
@@ -543,17 +543,15 @@ public class TestDataTransferProtocol {
     proto.writeDelimitedTo(oldAckBytes);
     PipelineAck oldAck = new PipelineAck();
     oldAck.readFields(new ByteArrayInputStream(oldAckBytes.toByteArray()));
-    assertEquals(
-        PipelineAck.combineHeader(PipelineAck.ECN.DISABLED, Status.CHECKSUM_OK),
-        oldAck.getHeaderFlag(0));
+    assertEquals(PipelineAck.combineHeader(PipelineAck.ECN.DISABLED, Status
+        .CHECKSUM_OK), oldAck.getHeaderFlag(0));
 
     PipelineAck newAck = new PipelineAck();
     ByteArrayOutputStream newAckBytes = new ByteArrayOutputStream();
     newProto.writeDelimitedTo(newAckBytes);
     newAck.readFields(new ByteArrayInputStream(newAckBytes.toByteArray()));
-    assertEquals(PipelineAck.combineHeader(PipelineAck.ECN.SUPPORTED,
-                                           Status.CHECKSUM_OK),
-                 newAck.getHeaderFlag(0));
+    assertEquals(PipelineAck.combineHeader(PipelineAck.ECN.SUPPORTED, Status
+        .CHECKSUM_OK), newAck.getHeaderFlag(0));
   }
 
   void writeBlock(String poolId, long blockId, DataChecksum checksum) throws IOException {

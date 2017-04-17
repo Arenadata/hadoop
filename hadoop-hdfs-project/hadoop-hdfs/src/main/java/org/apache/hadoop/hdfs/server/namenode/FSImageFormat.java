@@ -24,7 +24,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.security.DigestInputStream;
@@ -44,19 +43,19 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.PathIsNotDirectoryException;
-import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.LayoutFlags;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion.Feature;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguousUnderConstruction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
@@ -598,7 +597,7 @@ public class FSImageFormat {
      // Rename .snapshot paths if we're doing an upgrade
      parentPath = renameReservedPathsOnUpgrade(parentPath, getLayoutVersion());
      final INodeDirectory parent = INodeDirectory.valueOf(
-         namesystem.dir.getINode(parentPath, true), parentPath);
+         namesystem.dir.getINode(parentPath, DirOp.READ), parentPath);
      return loadChildren(parent, in, counter);
    }
 
@@ -649,15 +648,14 @@ public class FSImageFormat {
     }
   }
 
-  private INodeDirectory getParentINodeDirectory(byte[][] pathComponents
-      ) throws FileNotFoundException, PathIsNotDirectoryException,
-      UnresolvedLinkException {
+  private INodeDirectory getParentINodeDirectory(byte[][] pathComponents)
+      throws IOException {
     if (pathComponents.length < 2) { // root
       return null;
     }
     // Gets the parent INode
-    final INodesInPath inodes = namesystem.dir.getExistingPathINodes(
-        pathComponents);
+    final INodesInPath inodes =
+        namesystem.dir.getINodesInPath(pathComponents, DirOp.WRITE);
     return INodeDirectory.valueOf(inodes.getINode(-2), pathComponents);
   }
 
@@ -666,7 +664,8 @@ public class FSImageFormat {
    * This method is only used for image loading so that synchronization,
    * modification time update and space count update are not needed.
    */
-  private void addToParent(INodeDirectory parent, INode child) {
+  private void addToParent(INodeDirectory parent, INode child)
+      throws IllegalReservedPathException {
     FSDirectory fsDir = namesystem.dir;
     if (parent == fsDir.rootDir) {
         child.setLocalName(renameReservedRootComponentOnUpgrade(
@@ -685,7 +684,7 @@ public class FSImageFormat {
 
     public void updateBlocksMap(INodeFile file) {
       // Add file->block mapping
-      final BlockInfoContiguous[] blocks = file.getBlocks();
+      final BlockInfo[] blocks = file.getBlocks();
       if (blocks != null) {
         final BlockManager bm = namesystem.getBlockManager();
         for (int i = 0; i < blocks.length; i++) {
@@ -752,7 +751,7 @@ public class FSImageFormat {
       // file
       
       // read blocks
-      BlockInfoContiguous[] blocks = new BlockInfoContiguous[numBlocks];
+      BlockInfo[] blocks = new BlockInfo[numBlocks];
       for (int j = 0; j < numBlocks; j++) {
         blocks[j] = new BlockInfoContiguous(replication);
         blocks[j].readFields(in);
@@ -774,9 +773,9 @@ public class FSImageFormat {
             clientMachine = FSImageSerialization.readString(in);
             // convert the last block to BlockUC
             if (blocks.length > 0) {
-              BlockInfoContiguous lastBlk = blocks[blocks.length - 1];
-              blocks[blocks.length - 1] = new BlockInfoContiguousUnderConstruction(
-                  lastBlk, replication);
+              BlockInfo lastBlk = blocks[blocks.length - 1];
+              lastBlk.convertToBlockUnderConstruction(
+                  HdfsServerConstants.BlockUCState.UNDER_CONSTRUCTION, null);
             }
           }
         }
@@ -950,23 +949,22 @@ public class FSImageFormat {
           inSnapshot = true;
         } else {
           path = renameReservedPathsOnUpgrade(path, getLayoutVersion());
-          final INodesInPath iip = fsDir.getINodesInPath(path, true);
+          final INodesInPath iip = fsDir.getINodesInPath(path, DirOp.WRITE);
           oldnode = INodeFile.valueOf(iip.getLastINode(), path);
         }
 
         FileUnderConstructionFeature uc = cons.getFileUnderConstructionFeature();
         oldnode.toUnderConstruction(uc.getClientName(), uc.getClientMachine());
         if (oldnode.numBlocks() > 0) {
-          BlockInfoContiguous ucBlock = cons.getLastBlock();
+          BlockInfo ucBlock = cons.getLastBlock();
           // we do not replace the inode, just replace the last block of oldnode
-          BlockInfoContiguous info = namesystem.getBlockManager().addBlockCollection(
+          BlockInfo info = namesystem.getBlockManager().addBlockCollection(
               ucBlock, oldnode);
           oldnode.setBlock(oldnode.numBlocks() - 1, info);
         }
 
         if (!inSnapshot) {
-          namesystem.leaseManager.addLease(cons
-              .getFileUnderConstructionFeature().getClientName(), path);
+          namesystem.leaseManager.addLease(uc.getClientName(), oldnode.getId());
         }
       }
     }
@@ -1046,10 +1044,10 @@ public class FSImageFormat {
   @VisibleForTesting
   public static void useDefaultRenameReservedPairs() {
     renameReservedMap.clear();
-    for (String key: HdfsConstants.RESERVED_PATH_COMPONENTS) {
+    for (String key: HdfsServerConstants.RESERVED_PATH_COMPONENTS) {
       renameReservedMap.put(
           key,
-          key + "." + HdfsConstants.NAMENODE_LAYOUT_VERSION + "."
+          key + "." + HdfsServerConstants.NAMENODE_LAYOUT_VERSION + "."
               + "UPGRADE_RENAMED");
     }
   }
@@ -1094,7 +1092,7 @@ public class FSImageFormat {
    * @return New path with reserved path components renamed to user value
    */
   static String renameReservedPathsOnUpgrade(String path,
-      final int layoutVersion) {
+      final int layoutVersion) throws IllegalReservedPathException {
     final String oldPath = path;
     // If any known LVs aren't supported, we're doing an upgrade
     if (!NameNodeLayoutVersion.supports(Feature.ADD_INODE_ID, layoutVersion)) {
@@ -1144,13 +1142,13 @@ public class FSImageFormat {
    * byte array path component.
    */
   private static byte[] renameReservedComponentOnUpgrade(byte[] component,
-      final int layoutVersion) {
+      final int layoutVersion) throws IllegalReservedPathException {
     // If the LV doesn't support snapshots, we're doing an upgrade
     if (!NameNodeLayoutVersion.supports(Feature.SNAPSHOT, layoutVersion)) {
-      if (Arrays.equals(component, HdfsConstants.DOT_SNAPSHOT_DIR_BYTES)) {
-        Preconditions.checkArgument(
-            renameReservedMap.containsKey(HdfsConstants.DOT_SNAPSHOT_DIR),
-            RESERVED_ERROR_MSG);
+      if (Arrays.equals(component, HdfsServerConstants.DOT_SNAPSHOT_DIR_BYTES)) {
+        if (!renameReservedMap.containsKey(HdfsConstants.DOT_SNAPSHOT_DIR)) {
+          throw new IllegalReservedPathException(RESERVED_ERROR_MSG);
+        }
         component =
             DFSUtil.string2Bytes(renameReservedMap
                 .get(HdfsConstants.DOT_SNAPSHOT_DIR));
@@ -1164,13 +1162,13 @@ public class FSImageFormat {
    * byte array path component.
    */
   private static byte[] renameReservedRootComponentOnUpgrade(byte[] component,
-      final int layoutVersion) {
+      final int layoutVersion) throws IllegalReservedPathException {
     // If the LV doesn't support inode IDs, we're doing an upgrade
     if (!NameNodeLayoutVersion.supports(Feature.ADD_INODE_ID, layoutVersion)) {
       if (Arrays.equals(component, FSDirectory.DOT_RESERVED)) {
-        Preconditions.checkArgument(
-            renameReservedMap.containsKey(FSDirectory.DOT_RESERVED_STRING),
-            RESERVED_ERROR_MSG);
+        if (!renameReservedMap.containsKey(HdfsConstants.DOT_SNAPSHOT_DIR)) {
+          throw new IllegalReservedPathException(RESERVED_ERROR_MSG);
+        }
         final String renameString = renameReservedMap
             .get(FSDirectory.DOT_RESERVED_STRING);
         component =
@@ -1296,7 +1294,7 @@ public class FSImageFormat {
         // paths, so that when loading fsimage we do not put them into the lease
         // map. In the future, we can remove this hack when we can bump the
         // layout version.
-        sourceNamesystem.saveFilesUnderConstruction(out, snapshotUCMap);
+        saveFilesUnderConstruction(sourceNamesystem, out, snapshotUCMap);
 
         context.checkCancelled();
         sourceNamesystem.saveSecretManagerStateCompat(out, sdPath);
@@ -1445,6 +1443,47 @@ public class FSImageFormat {
       // reference that counts toward quota.
       if (!(inode instanceof INodeReference)) {
         counter.increment();
+      }
+    }
+
+    /**
+     * Serializes leases.
+     */
+    void saveFilesUnderConstruction(FSNamesystem fsn, DataOutputStream out,
+                                    Map<Long, INodeFile> snapshotUCMap) throws IOException {
+      // This is run by an inferior thread of saveNamespace, which holds a read
+      // lock on our behalf. If we took the read lock here, we could block
+      // for fairness if a writer is waiting on the lock.
+      final LeaseManager leaseManager = fsn.getLeaseManager();
+      final FSDirectory dir = fsn.getFSDirectory();
+      synchronized (leaseManager) {
+        Collection<Long> filesWithUC = leaseManager.getINodeIdWithLeases();
+        for (Long id : filesWithUC) {
+          // TODO: for HDFS-5428, because of rename operations, some
+          // under-construction files that are
+          // in the current fs directory can also be captured in the
+          // snapshotUCMap. We should remove them from the snapshotUCMap.
+          snapshotUCMap.remove(id);
+        }
+        out.writeInt(filesWithUC.size() + snapshotUCMap.size()); // write the size
+
+        for (Long id : filesWithUC) {
+          INodeFile file = dir.getInode(id).asFile();
+          String path = file.getFullPathName();
+          FSImageSerialization.writeINodeUnderConstruction(
+                  out, file, path);
+        }
+
+        for (Map.Entry<Long, INodeFile> entry : snapshotUCMap.entrySet()) {
+          // for those snapshot INodeFileUC, we use "/.reserved/.inodes/<inodeid>"
+          // as their paths
+          StringBuilder b = new StringBuilder();
+          b.append(FSDirectory.DOT_RESERVED_PATH_PREFIX)
+                  .append(Path.SEPARATOR).append(FSDirectory.DOT_INODES_STRING)
+                  .append(Path.SEPARATOR).append(entry.getValue().getId());
+          FSImageSerialization.writeINodeUnderConstruction(
+                  out, entry.getValue(), b.toString());
+        }
       }
     }
   }

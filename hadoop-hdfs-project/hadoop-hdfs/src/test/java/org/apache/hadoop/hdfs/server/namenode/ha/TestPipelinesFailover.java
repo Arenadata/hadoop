@@ -38,13 +38,14 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.io.IOUtils;
@@ -54,6 +55,8 @@ import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.GenericTestUtils.DelayAnswer;
 import org.apache.hadoop.test.MultithreadedTestUtil.RepeatingTestThread;
 import org.apache.hadoop.test.MultithreadedTestUtil.TestContext;
+import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 import org.apache.log4j.Level;
 import org.junit.Test;
 import org.mockito.Mockito;
@@ -358,8 +361,8 @@ public class TestPipelinesFailover {
       // active.
       DataNode primaryDN = cluster.getDataNode(expectedPrimary.getIpcPort());
       DatanodeProtocolClientSideTranslatorPB nnSpy =
-          DataNodeTestUtils.spyOnBposToNN(primaryDN, nn0);
-      
+          InternalDataNodeTestUtils.spyOnBposToNN(primaryDN, nn0);
+
       // Delay the commitBlockSynchronization call
       DelayAnswer delayer = new DelayAnswer(LOG);
       Mockito.doAnswer(delayer).when(nnSpy).commitBlockSynchronization(
@@ -413,6 +416,31 @@ public class TestPipelinesFailover {
    */
   @Test(timeout=STRESS_RUNTIME*3)
   public void testPipelineRecoveryStress() throws Exception {
+
+    // The following section of code is to help debug HDFS-6694 about
+    // this test that fails from time to time due to "too many open files".
+    //
+    LOG.info("HDFS-6694 Debug Data BEGIN");
+
+    String[][] scmds = new String[][] {
+      {"/bin/sh", "-c", "ulimit -a"},
+      {"hostname"},
+      {"ifconfig", "-a"}
+    };
+
+    for (String[] scmd: scmds) {
+      String scmd_str = StringUtils.join(" ", scmd);
+      try {
+        ShellCommandExecutor sce = new ShellCommandExecutor(scmd);
+        sce.execute();
+        LOG.info("'" + scmd_str + "' output:\n" + sce.getOutput());
+      } catch (IOException e) {
+        LOG.warn("Error when running '" + scmd_str + "'", e);
+      }
+    }
+
+    LOG.info("HDFS-6694 Debug Data END");
+
     HAStressTestHarness harness = new HAStressTestHarness();
     // Disable permissions so that another user can recover the lease.
     harness.conf.setBoolean(
@@ -420,8 +448,7 @@ public class TestPipelinesFailover {
     // This test triggers rapid NN failovers.  The client retry policy uses an
     // exponential backoff.  This can quickly lead to long sleep times and even
     // timeout the whole test.  Cap the sleep time at 1s to prevent this.
-    harness.conf.setInt(DFSConfigKeys.DFS_CLIENT_FAILOVER_SLEEPTIME_MAX_KEY,
-      1000);
+    harness.conf.setInt(HdfsClientConfigKeys.Failover.SLEEPTIME_MAX_KEY, 1000);
 
     final MiniDFSCluster cluster = harness.startCluster();
     try {

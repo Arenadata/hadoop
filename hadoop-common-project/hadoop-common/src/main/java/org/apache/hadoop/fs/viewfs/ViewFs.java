@@ -34,6 +34,7 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.AbstractFileSystem;
 import org.apache.hadoop.fs.BlockLocation;
+import org.apache.hadoop.fs.BlockStoragePolicySpi;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -82,7 +83,7 @@ import org.apache.hadoop.util.Time;
  * ViewFs is specified with the following URI: <b>viewfs:///</b> 
  * <p>
  * To use viewfs one would typically set the default file system in the
- * config  (i.e. fs.default.name< = viewfs:///) along with the
+ * config  (i.e. fs.defaultFS < = viewfs:///) along with the
  * mount table config variables as described below. 
  * 
  * <p>
@@ -471,14 +472,16 @@ public class ViewFs extends AbstractFileSystem {
   
     if (resSrc.isInternalDir()) {
       throw new AccessControlException(
-          "Cannot Rename within internal dirs of mount table: it is readOnly");
+          "Cannot Rename within internal dirs of mount table: src=" + src
+              + " is readOnly");
     }
-      
+
     InodeTree.ResolveResult<AbstractFileSystem> resDst = 
                                 fsState.resolve(getUriPath(dst), false);
     if (resDst.isInternalDir()) {
       throw new AccessControlException(
-          "Cannot Rename within internal dirs of mount table: it is readOnly");
+          "Cannot Rename within internal dirs of mount table: dest=" + dst
+              + " is readOnly");
     }
     
     /**
@@ -621,7 +624,8 @@ public class ViewFs extends AbstractFileSystem {
 
   @Override
   public boolean isValidName(String src) {
-    // Prefix validated at mount time and rest of path validated by mount target.
+    // Prefix validated at mount time and rest of path validated by mount
+    // target.
     return true;
   }
 
@@ -714,8 +718,61 @@ public class ViewFs extends AbstractFileSystem {
         fsState.resolve(getUriPath(path), true);
     res.targetFileSystem.removeXAttr(res.remainingPath, name);
   }
-  
-  
+
+  @Override
+  public Path createSnapshot(Path path, String snapshotName)
+      throws IOException {
+    InodeTree.ResolveResult<AbstractFileSystem> res = fsState.resolve(
+        getUriPath(path), true);
+    return res.targetFileSystem.createSnapshot(res.remainingPath, snapshotName);
+  }
+
+  @Override
+  public void renameSnapshot(Path path, String snapshotOldName,
+      String snapshotNewName) throws IOException {
+    InodeTree.ResolveResult<AbstractFileSystem> res = fsState.resolve(
+        getUriPath(path), true);
+    res.targetFileSystem.renameSnapshot(res.remainingPath, snapshotOldName,
+        snapshotNewName);
+  }
+
+  @Override
+  public void deleteSnapshot(Path path, String snapshotName) throws IOException {
+    InodeTree.ResolveResult<AbstractFileSystem> res = fsState.resolve(
+        getUriPath(path), true);
+    res.targetFileSystem.deleteSnapshot(res.remainingPath, snapshotName);
+  }
+
+  @Override
+  public void setStoragePolicy(final Path path, final String policyName)
+      throws IOException {
+    InodeTree.ResolveResult<AbstractFileSystem> res =
+        fsState.resolve(getUriPath(path), true);
+    res.targetFileSystem.setStoragePolicy(res.remainingPath, policyName);
+  }
+
+  @Override
+  public void unsetStoragePolicy(final Path src)
+      throws IOException {
+    InodeTree.ResolveResult<AbstractFileSystem> res =
+        fsState.resolve(getUriPath(src), true);
+    res.targetFileSystem.unsetStoragePolicy(res.remainingPath);
+  }
+
+  /**
+   * Retrieve the storage policy for a given file or directory.
+   *
+   * @param src file or directory path.
+   * @return storage policy for give file.
+   * @throws IOException
+   */
+  public BlockStoragePolicySpi getStoragePolicy(final Path src)
+      throws IOException {
+    InodeTree.ResolveResult<AbstractFileSystem> res =
+        fsState.resolve(getUriPath(src), true);
+    return res.targetFileSystem.getStoragePolicy(res.remainingPath);
+  }
+
   /*
    * An instance of this class represents an internal dir of the viewFs 
    * ie internal dir of the mount table.
@@ -788,14 +845,14 @@ public class ViewFs extends AbstractFileSystem {
     public FileStatus getFileStatus(final Path f) throws IOException {
       checkPathIsSlash(f);
       return new FileStatus(0, true, 0, 0, creationTime, creationTime,
-          PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+          PERMISSION_555, ugi.getShortUserName(), ugi.getPrimaryGroupName(),
           new Path(theInternalDir.fullPath).makeQualified(
               myUri, null));
     }
     
     @Override
     public FileStatus getFileLinkStatus(final Path f)
-        throws FileNotFoundException {
+        throws IOException {
       // look up i internalDirs children - ignore first Slash
       INode<AbstractFileSystem> inode =
         theInternalDir.children.get(f.toUri().toString().substring(1)); 
@@ -808,13 +865,13 @@ public class ViewFs extends AbstractFileSystem {
         INodeLink<AbstractFileSystem> inodelink = 
           (INodeLink<AbstractFileSystem>) inode;
         result = new FileStatus(0, false, 0, 0, creationTime, creationTime,
-            PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+            PERMISSION_555, ugi.getShortUserName(), ugi.getPrimaryGroupName(),
             inodelink.getTargetLink(),
             new Path(inode.fullPath).makeQualified(
                 myUri, null));
       } else {
         result = new FileStatus(0, true, 0, 0, creationTime, creationTime,
-          PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+          PERMISSION_555, ugi.getShortUserName(), ugi.getPrimaryGroupName(),
           new Path(inode.fullPath).makeQualified(
               myUri, null));
       }
@@ -853,14 +910,14 @@ public class ViewFs extends AbstractFileSystem {
 
           result[i++] = new FileStatus(0, false, 0, 0,
             creationTime, creationTime,
-            PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+            PERMISSION_555, ugi.getShortUserName(), ugi.getPrimaryGroupName(),
             link.getTargetLink(),
             new Path(inode.fullPath).makeQualified(
                 myUri, null));
         } else {
           result[i++] = new FileStatus(0, true, 0, 0,
             creationTime, creationTime,
-            PERMISSION_555, ugi.getUserName(), ugi.getGroupNames()[0],
+            PERMISSION_555, ugi.getShortUserName(), ugi.getGroupNames()[0],
             new Path(inode.fullPath).makeQualified(
                 myUri, null));
         }
@@ -986,8 +1043,8 @@ public class ViewFs extends AbstractFileSystem {
     @Override
     public AclStatus getAclStatus(Path path) throws IOException {
       checkPathIsSlash(path);
-      return new AclStatus.Builder().owner(ugi.getUserName())
-          .group(ugi.getGroupNames()[0])
+      return new AclStatus.Builder().owner(ugi.getShortUserName())
+          .group(ugi.getPrimaryGroupName())
           .addEntries(AclUtil.getMinimalAcl(PERMISSION_555))
           .stickyBit(false).build();
     }
@@ -1024,6 +1081,33 @@ public class ViewFs extends AbstractFileSystem {
     public void removeXAttr(Path path, String name) throws IOException {
       checkPathIsSlash(path);
       throw readOnlyMountTable("removeXAttr", path);
+    }
+
+    @Override
+    public Path createSnapshot(Path path, String snapshotName)
+        throws IOException {
+      checkPathIsSlash(path);
+      throw readOnlyMountTable("createSnapshot", path);
+    }
+
+    @Override
+    public void renameSnapshot(Path path, String snapshotOldName,
+        String snapshotNewName) throws IOException {
+      checkPathIsSlash(path);
+      throw readOnlyMountTable("renameSnapshot", path);
+    }
+
+    @Override
+    public void deleteSnapshot(Path path, String snapshotName)
+        throws IOException {
+      checkPathIsSlash(path);
+      throw readOnlyMountTable("deleteSnapshot", path);
+    }
+
+    @Override
+    public void setStoragePolicy(Path path, String policyName)
+        throws IOException {
+      throw readOnlyMountTable("setStoragePolicy", path);
     }
   }
 }

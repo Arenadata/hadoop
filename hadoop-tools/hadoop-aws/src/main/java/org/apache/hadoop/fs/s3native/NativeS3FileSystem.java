@@ -333,7 +333,7 @@ public class NativeS3FileSystem extends FileSystem {
     }
     store.initialize(uri, conf);
     setConf(conf);
-    this.uri = URI.create(uri.getScheme() + "://" + uri.getAuthority());
+    this.uri = S3xLoginHelper.buildFSURI(uri);
     this.workingDir =
       new Path("/user", System.getProperty("user.name")).makeQualified(this.uri, this.getWorkingDirectory());
   }
@@ -386,6 +386,23 @@ public class NativeS3FileSystem extends FileSystem {
       return path;
     }
     return new Path(workingDir, path);
+  }
+
+  /**
+   * Check that a Path belongs to this FileSystem.
+   * Unlike the superclass, this version does not look at authority,
+   * only hostnames.
+   * @param path to check
+   * @throws IllegalArgumentException if there is an FS mismatch
+   */
+  @Override
+  protected void checkPath(Path path) {
+    S3xLoginHelper.checkPath(getConf(), getUri(), path, getDefaultPort());
+  }
+
+  @Override
+  protected URI canonicalizeUri(URI rawUri) {
+    return S3xLoginHelper.canonicalizeUri(rawUri, getDefaultPort());
   }
 
   /** This optional operation is not yet supported. */
@@ -557,7 +574,12 @@ public class NativeS3FileSystem extends FileSystem {
       for (String commonPrefix : listing.getCommonPrefixes()) {
         Path subpath = keyToPath(commonPrefix);
         String relativePath = pathUri.relativize(subpath.toUri()).getPath();
-        status.add(newDirectory(new Path(absolutePath, relativePath)));
+        // sometimes the common prefix includes the base dir (HADOOP-13830).
+        // avoid that problem by detecting it and keeping it out
+        // of the list
+        if (!relativePath.isEmpty()) {
+          status.add(newDirectory(new Path(absolutePath, relativePath)));
+        }
       }
       priorLastKey = listing.getPriorLastKey();
     } while (priorLastKey != null);

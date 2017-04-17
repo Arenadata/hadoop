@@ -18,7 +18,7 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 
 /** SafeMode related operations. */
 @InterfaceAudience.Private
@@ -39,9 +39,6 @@ public interface SafeMode {
    */
   public boolean isInStartupSafeMode();
 
-  /** Check whether replication queues are being populated. */
-  public boolean isPopulatingReplQueues();
-    
   /**
    * Increment number of blocks that reached minimal replication.
    * @param replication current replication 
@@ -49,5 +46,5 @@ public interface SafeMode {
   public void incrementSafeBlockCount(int replication);
 
   /** Decrement number of blocks that reached minimal replication. */
-  public void decrementSafeBlockCount(Block b);
+  public void decrementSafeBlockCount(BlockInfo b);
 }

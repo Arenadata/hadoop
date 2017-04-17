@@ -32,6 +32,7 @@ option java_generate_equals_and_hash = true;
 package hadoop.hdfs.datanode;
 
 import "hdfs.proto";
+import "HdfsServer.proto";
 
 /**
  * Information to identify a datanode to a namenode
@@ -194,19 +195,7 @@ message HeartbeatRequestProto {
   optional uint64 cacheCapacity = 6 [ default = 0 ];
   optional uint64 cacheUsed = 7 [default = 0 ];
   optional VolumeFailureSummaryProto volumeFailureSummary = 8;
-}
-
-/**
- * state - State the NN is in when returning response to the DN
- * txid - Highest transaction ID this NN has seen
- */
-message NNHAStatusHeartbeatProto {
-  enum State {
-    ACTIVE = 0;
-    STANDBY = 1;
-  }
-  required State state = 1; 
-  required uint64 txid = 2;
+  optional bool requestFullBlockReportLease = 9 [ default = false ];
 }
 
 /**
@@ -217,6 +206,8 @@ message HeartbeatResponseProto {
   repeated DatanodeCommandProto cmds = 1; // Returned commands can be null
   required NNHAStatusHeartbeatProto haStatus = 2;
   optional RollingUpgradeStatusProto rollingUpgradeStatus = 3;
+  optional RollingUpgradeStatusProto rollingUpgradeStatusV2 = 4;
+  optional uint64 fullBlockReportLeaseId = 5 [ default = 0 ];
 }
 
 /**
@@ -246,6 +237,10 @@ message BlockReportContextProto  {
 
   // The unique 64-bit ID of this block report
   required int64 id = 3;
+
+  // The block report lease ID, or 0 if we are sending without a lease to
+  // bypass rate-limiting.
+  optional uint64 leaseId = 4 [ default = 0 ];
 }
 
 /**

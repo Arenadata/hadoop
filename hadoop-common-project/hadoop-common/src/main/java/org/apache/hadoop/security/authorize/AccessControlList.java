@@ -230,8 +230,8 @@ public class AccessControlList implements Writable {
   public final boolean isUserInList(UserGroupInformation ugi) {
     if (allAllowed || users.contains(ugi.getShortUserName())) {
       return true;
-    } else {
-      for(String group: ugi.getGroupNames()) {
+    } else if (!groups.isEmpty()) {
+      for (String group : ugi.getGroups()) {
         if (groups.contains(group)) {
           return true;
         }

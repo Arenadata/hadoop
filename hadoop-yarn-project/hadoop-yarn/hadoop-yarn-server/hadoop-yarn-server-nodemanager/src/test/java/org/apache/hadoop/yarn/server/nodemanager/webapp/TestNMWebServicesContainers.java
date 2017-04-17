@@ -20,21 +20,27 @@ package org.apache.hadoop.yarn.server.nodemanager.webapp;
 
 import static org.apache.hadoop.yarn.util.StringHelper.ujoin;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.StringReader;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 
 import javax.ws.rs.core.MediaType;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import com.sun.jersey.api.client.filter.LoggingFilter;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.util.NodeHealthScriptRunner;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
@@ -46,6 +52,7 @@ import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
 import org.apache.hadoop.yarn.server.nodemanager.ResourceView;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerState;
 import org.apache.hadoop.yarn.server.nodemanager.webapp.WebServer.NMWebApp;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
@@ -123,7 +130,9 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       };
       conf.set(YarnConfiguration.NM_LOCAL_DIRS, testRootDir.getAbsolutePath());
       conf.set(YarnConfiguration.NM_LOG_DIRS, testLogDir.getAbsolutePath());
-      NodeHealthCheckerService healthChecker = new NodeHealthCheckerService();
+      LocalDirsHandlerService dirsHandler = new LocalDirsHandlerService();
+      NodeHealthCheckerService healthChecker = new NodeHealthCheckerService(
+          NodeManager.getNodeHealthScriptRunner(conf), dirsHandler);
       healthChecker.init(conf);
       dirsHandler = healthChecker.getDiskHandler();
       aclsManager = new ApplicationACLsManager(conf);
@@ -199,12 +208,27 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
         app.getAppId(), 1);
     Container container1 = new MockContainer(appAttemptId, dispatcher, conf,
         app.getUser(), app.getAppId(), 1);
+    ((MockContainer)container1).setState(ContainerState.RUNNING);
     Container container2 = new MockContainer(appAttemptId, dispatcher, conf,
         app.getUser(), app.getAppId(), 2);
+    ((MockContainer)container2).setState(ContainerState.RUNNING);
     nmContext.getContainers()
         .put(container1.getContainerId(), container1);
     nmContext.getContainers()
         .put(container2.getContainerId(), container2);
+    File appDir = new File(testLogDir + "/" + app.getAppId().toString());
+    appDir.mkdir();
+    File container1Dir =
+        new File(appDir + "/" + container1.getContainerId().toString());
+    container1Dir.mkdir();
+    // Create log files for containers.
+    new File(container1Dir + "/" + "syslog").createNewFile();
+    new File(container1Dir + "/" + "stdout").createNewFile();
+    File container2Dir =
+        new File(appDir + "/" + container2.getContainerId().toString());
+    container2Dir.mkdir();
+    new File(container2Dir + "/" + "syslog").createNewFile();
+    new File(container2Dir + "/" + "stdout").createNewFile();
 
     app.getContainers().put(container1.getContainerId(), container1);
     app.getContainers().put(container2.getContainerId(), container2);
@@ -242,6 +266,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
     Application app2 = new MockApp(2);
     nmContext.getApplications().put(app2.getAppId(), app2);
     addAppContainers(app2);
+    client().addFilter(new LoggingFilter());
 
     ClientResponse response = r.path("ws").path("v1").path("node").path(path)
         .accept(media).get(ClientResponse.class);
@@ -256,7 +281,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       verifyNodeContainerInfo(
           conInfo.getJSONObject(i),
           nmContext.getContainers().get(
-              ConverterUtils.toContainerId(conInfo.getJSONObject(i).getString(
+              ContainerId.fromString(conInfo.getJSONObject(i).getString(
                   "id"))));
     }
   }
@@ -292,7 +317,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
       JSONObject json = response.getEntity(JSONObject.class);
       verifyNodeContainerInfo(json.getJSONObject("container"), nmContext
-          .getContainers().get(ConverterUtils.toContainerId(id)));
+          .getContainers().get(ContainerId.fromString(id)));
     }
   }
 
@@ -409,6 +434,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
     Application app2 = new MockApp(2);
     nmContext.getApplications().put(app2.getAppId(), app2);
     addAppContainers(app2);
+    client().addFilter(new LoggingFilter(System.out));
 
     for (String id : hash.keySet()) {
       ClientResponse response = r.path("ws").path("v1").path("node")
@@ -424,7 +450,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       NodeList nodes = dom.getElementsByTagName("container");
       assertEquals("incorrect number of elements", 1, nodes.getLength());
       verifyContainersInfoXML(nodes,
-          nmContext.getContainers().get(ConverterUtils.toContainerId(id)));
+          nmContext.getContainers().get(ContainerId.fromString(id)));
 
     }
   }
@@ -468,12 +494,20 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
           WebServicesTestUtils.getXmlInt(element, "totalMemoryNeededMB"),
           WebServicesTestUtils.getXmlInt(element, "totalVCoresNeeded"),
           WebServicesTestUtils.getXmlString(element, "containerLogsLink"));
+      // verify that the container log files element exists
+      List<String> containerLogFiles =
+          WebServicesTestUtils.getXmlStrings(element, "containerLogFiles");
+      assertFalse("containerLogFiles missing",containerLogFiles.isEmpty());
+      assertEquals(2, containerLogFiles.size());
+      assertTrue("syslog and stdout expected",
+          containerLogFiles.contains("syslog") &&
+          containerLogFiles.contains("stdout"));
     }
   }
 
   public void verifyNodeContainerInfo(JSONObject info, Container cont)
       throws JSONException, Exception {
-    assertEquals("incorrect number of elements", 9, info.length());
+    assertEquals("incorrect number of elements", 10, info.length());
 
     verifyNodeContainerInfoGeneric(cont, info.getString("id"),
         info.getString("state"), info.getString("user"),
@@ -481,6 +515,15 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
         info.getString("nodeId"), info.getInt("totalMemoryNeededMB"),
         info.getInt("totalVCoresNeeded"),
         info.getString("containerLogsLink"));
+    // verify that the container log files element exists
+    JSONArray containerLogFilesArr = info.getJSONArray("containerLogFiles");
+    assertTrue("containerLogFiles missing", containerLogFilesArr != null);
+    assertEquals(2, containerLogFilesArr.length());
+    for (int i = 0; i < 2; i++) {
+      assertTrue("syslog and stdout expected",
+          containerLogFilesArr.get(i).equals("syslog") ||
+          containerLogFilesArr.get(i).equals("stdout"));
+    }
   }
 
   public void verifyNodeContainerInfoGeneric(Container cont, String id,
@@ -511,5 +554,4 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
             cont.getUser());
     assertTrue("containerLogsLink wrong", logsLink.contains(shortLink));
   }
-
 }

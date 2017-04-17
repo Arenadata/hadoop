@@ -21,9 +21,11 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
+import java.util.EnumSet;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.FileContextTestWrapper;
 import org.apache.hadoop.fs.FileStatus;
@@ -31,8 +33,12 @@ import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.FileSystemTestWrapper;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.client.CreateEncryptionZoneFlag;
 import org.apache.hadoop.hdfs.client.HdfsAdmin;
 import org.apache.hadoop.hdfs.server.namenode.EncryptionZoneManager;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
+import org.apache.hadoop.hdfs.server.namenode.INodesInPath;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.log4j.Level;
@@ -46,6 +52,8 @@ import static org.apache.hadoop.hdfs.DFSTestUtil.verifyFilesNotEqual;
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
 import static org.apache.hadoop.test.GenericTestUtils.assertMatches;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class TestReservedRawPaths {
@@ -60,6 +68,8 @@ public class TestReservedRawPaths {
 
   protected FileSystemTestWrapper fsWrapper;
   protected FileContextTestWrapper fcWrapper;
+  protected static final EnumSet< CreateEncryptionZoneFlag > NO_TRASH =
+      EnumSet.of(CreateEncryptionZoneFlag.NO_TRASH);
 
   @Before
   public void setup() throws Exception {
@@ -69,7 +79,7 @@ public class TestReservedRawPaths {
     String testRoot = fsHelper.getTestRootDir();
     File testRootDir = new File(testRoot).getAbsoluteFile();
     final Path jksPath = new Path(testRootDir.toString(), "test.jks");
-    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+    conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri()
     );
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
@@ -90,7 +100,26 @@ public class TestReservedRawPaths {
   public void teardown() {
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
+  }
+
+  /**
+   * Verify resolving path will return an iip that tracks if the original
+   * path was a raw path.
+   */
+  @Test(timeout = 120000)
+  public void testINodesInPath() throws IOException {
+    FSDirectory fsd = cluster.getNamesystem().getFSDirectory();
+    final String path = "/path";
+
+    INodesInPath iip = fsd.resolvePath(null, path, DirOp.READ);
+    assertFalse(iip.isRaw());
+    assertEquals(path, iip.getPath());
+
+    iip = fsd.resolvePath(null, "/.reserved/raw" + path, DirOp.READ);
+    assertTrue(iip.isRaw());
+    assertEquals(path, iip.getPath());
   }
 
   /**
@@ -112,7 +141,7 @@ public class TestReservedRawPaths {
     // Create the first enc file
     final Path zone = new Path("/zone");
     fs.mkdirs(zone);
-    dfsAdmin.createEncryptionZone(zone, TEST_KEY);
+    dfsAdmin.createEncryptionZone(zone, TEST_KEY, NO_TRASH);
     final Path encFile1 = new Path(zone, "myfile");
     DFSTestUtil.createFile(fs, encFile1, len, (short) 1, 0xFEED);
     // Read them back in and compare byte-by-byte
@@ -152,7 +181,7 @@ public class TestReservedRawPaths {
     final Path zone = new Path("zone");
     final Path slashZone = new Path("/", zone);
     fs.mkdirs(slashZone);
-    dfsAdmin.createEncryptionZone(slashZone, TEST_KEY);
+    dfsAdmin.createEncryptionZone(slashZone, TEST_KEY, NO_TRASH);
 
     final Path base = new Path("base");
     final Path reservedRaw = new Path("/.reserved/raw");
@@ -184,7 +213,7 @@ public class TestReservedRawPaths {
     final Path zone = new Path("zone");
     final Path slashZone = new Path("/", zone);
     fs.mkdirs(slashZone);
-    dfsAdmin.createEncryptionZone(slashZone, TEST_KEY);
+    dfsAdmin.createEncryptionZone(slashZone, TEST_KEY, NO_TRASH);
     final Path rawRoot = new Path("/.reserved/raw");
     final Path dir1 = new Path("dir1");
     final Path rawDir1 = new Path(rawRoot, dir1);
@@ -222,7 +251,7 @@ public class TestReservedRawPaths {
     final Path zone = new Path("zone");
     final Path slashZone = new Path("/", zone);
     fs.mkdirs(slashZone);
-    dfsAdmin.createEncryptionZone(slashZone, TEST_KEY);
+    dfsAdmin.createEncryptionZone(slashZone, TEST_KEY, NO_TRASH);
     final Path base = new Path("base");
     final Path reservedRaw = new Path("/.reserved/raw");
     final int len = 8192;
@@ -304,14 +333,12 @@ public class TestReservedRawPaths {
     DFSTestUtil.createFile(fs, baseFileRaw, len, (short) 1, 0xFEED);
 
     /*
-     * Ensure that you can't list /.reserved. Ever.
+     * Ensure that you can list /.reserved, with results: raw and .inodes
      */
-    try {
-      fs.listStatus(new Path("/.reserved"));
-      fail("expected FNFE");
-    } catch (FileNotFoundException e) {
-      assertExceptionContains("/.reserved does not exist", e);
-    }
+    FileStatus[] stats = fs.listStatus(new Path("/.reserved"));
+    assertEquals(2, stats.length);
+    assertEquals(FSDirectory.DOT_INODES_STRING, stats[0].getPath().getName());
+    assertEquals("raw", stats[1].getPath().getName());
 
     try {
       fs.listStatus(new Path("/.reserved/.inodes"));

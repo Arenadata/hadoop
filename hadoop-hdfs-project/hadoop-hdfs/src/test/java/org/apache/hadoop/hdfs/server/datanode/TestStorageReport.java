@@ -92,7 +92,7 @@ public class TestStorageReport {
 
     // Insert a spy object for the NN RPC.
     DatanodeProtocolClientSideTranslatorPB nnSpy =
-        DataNodeTestUtils.spyOnBposToNN(dn, nn);
+        InternalDataNodeTestUtils.spyOnBposToNN(dn, nn);
 
     // Trigger a heartbeat so there is an interaction with the spy
     // object.
@@ -106,7 +106,7 @@ public class TestStorageReport {
         any(DatanodeRegistration.class),
         captor.capture(),
         anyLong(), anyLong(), anyInt(), anyInt(), anyInt(),
-        Mockito.any(VolumeFailureSummary.class));
+        Mockito.any(VolumeFailureSummary.class), Mockito.anyBoolean());
 
     StorageReport[] reports = captor.getValue();
 

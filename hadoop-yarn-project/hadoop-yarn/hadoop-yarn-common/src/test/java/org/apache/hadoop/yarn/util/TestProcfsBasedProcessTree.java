@@ -36,6 +36,7 @@ import java.util.Vector;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -65,7 +66,7 @@ public class TestProcfsBasedProcessTree {
     TestProcfsBasedProcessTree.class.getName() + "-localDir");
 
   private ShellCommandExecutor shexec = null;
-  private String pidFile, lowestDescendant;
+  private String pidFile, lowestDescendant, lostDescendant;
   private String shellScript;
 
   private static final int N = 6; // Controls the RogueTask
@@ -144,19 +145,17 @@ public class TestProcfsBasedProcessTree {
 
     lowestDescendant =
         TEST_ROOT_DIR + File.separator + "lowestDescendantPidFile";
+    lostDescendant =
+        TEST_ROOT_DIR + File.separator + "lostDescendantPidFile";
 
     // write to shell-script
-    try {
-      FileWriter fWriter = new FileWriter(shellScript);
-      fWriter.write("# rogue task\n" + "sleep 1\n" + "echo hello\n"
-          + "if [ $1 -ne 0 ]\n" + "then\n" + " sh " + shellScript
-          + " $(($1-1))\n" + "else\n" + " echo $$ > " + lowestDescendant + "\n"
-          + " while true\n do\n" + "  sleep 5\n" + " done\n" + "fi");
-      fWriter.close();
-    } catch (IOException ioe) {
-      LOG.info("Error: " + ioe);
-      return;
-    }
+    File file = new File(shellScript);
+    FileUtils.writeStringToFile(file, "# rogue task\n" + "sleep 1\n" + "echo hello\n"
+        + "if [ $1 -ne 0 ]\n" + "then\n" + " sh " + shellScript
+        + " $(($1-1))\n" + "else\n" + " echo $$ > " + lowestDescendant + "\n"
+        + "(sleep 300&\n"
+        + "echo $! > " + lostDescendant + ")\n"
+        + " while true\n do\n" + "  sleep 5\n" + " done\n" + "fi");
 
     Thread t = new RogueTaskThread();
     t.start();
@@ -178,6 +177,12 @@ public class TestProcfsBasedProcessTree {
 
     p.updateProcessTree(); // reconstruct
     LOG.info("ProcessTree: " + p.toString());
+
+    // Verify the orphaned pid is In process tree
+    String lostpid = getPidFromPidFile(lostDescendant);
+    LOG.info("Orphaned pid: " + lostpid);
+    Assert.assertTrue("Child process owned by init escaped process tree.",
+       p.contains(lostpid));
 
     // Get the process-tree dump
     String processTreeDump = p.getProcessTreeDump();
@@ -230,10 +235,12 @@ public class TestProcfsBasedProcessTree {
     
     Assert.assertTrue(
       "vmem for the gone-process is " + p.getVirtualMemorySize()
-          + " . It should be zero.", p.getVirtualMemorySize() == 0);
+          + " . It should be UNAVAILABLE(-1).",
+          p.getVirtualMemorySize() == UNAVAILABLE);
     Assert.assertTrue(
       "vmem (old API) for the gone-process is " + p.getCumulativeVmem()
-          + " . It should be zero.", p.getCumulativeVmem() == 0);
+          + " . It should be UNAVAILABLE(-1).",
+          p.getCumulativeVmem() == UNAVAILABLE);
     Assert.assertTrue(p.toString().equals("[ ]"));
   }
 
@@ -247,7 +254,7 @@ public class TestProcfsBasedProcessTree {
   }
 
   protected void destroyProcessTree(String pid) throws IOException {
-    sendSignal(pid, 9);
+    sendSignal("-"+pid, 9);
   }
 
   /**
@@ -408,17 +415,17 @@ public class TestProcfsBasedProcessTree {
       // assuming processes 100, 200, 300 are in tree and 400 is not.
       ProcessStatInfo[] procInfos = new ProcessStatInfo[4];
       procInfos[0] =
-          new ProcessStatInfo(new String[] { "100", "proc1", "1", "100", "100",
-              "100000", "100", "1000", "200" });
+          new ProcessStatInfo(new String[]{"100", "proc1", "1", "100", "100",
+              "100000", "100", "1000", "200"});
       procInfos[1] =
-          new ProcessStatInfo(new String[] { "200", "proc2", "100", "100",
-              "100", "200000", "200", "2000", "400" });
+          new ProcessStatInfo(new String[]{"200", "process two", "100", "100",
+              "100", "200000", "200", "2000", "400"});
       procInfos[2] =
-          new ProcessStatInfo(new String[] { "300", "proc3", "200", "100",
-              "100", "300000", "300", "3000", "600" });
+          new ProcessStatInfo(new String[]{"300", "proc3", "200", "100",
+              "100", "300000", "300", "3000", "600"});
       procInfos[3] =
-          new ProcessStatInfo(new String[] { "400", "proc4", "1", "400", "400",
-              "400000", "400", "4000", "800" });
+          new ProcessStatInfo(new String[]{"400", "proc4", "1", "400", "400",
+              "400000", "400", "4000", "800"});
 
       ProcessTreeSmapMemInfo[] memInfo = new ProcessTreeSmapMemInfo[4];
       memInfo[0] = new ProcessTreeSmapMemInfo("100");
@@ -475,11 +482,11 @@ public class TestProcfsBasedProcessTree {
 
       // test the cpu time again to see if it cumulates
       procInfos[0] =
-          new ProcessStatInfo(new String[] { "100", "proc1", "1", "100", "100",
-              "100000", "100", "2000", "300" });
+          new ProcessStatInfo(new String[]{"100", "proc1", "1", "100", "100",
+              "100000", "100", "2000", "300"});
       procInfos[1] =
-          new ProcessStatInfo(new String[] { "200", "proc2", "100", "100",
-              "100", "200000", "200", "3000", "500" });
+          new ProcessStatInfo(new String[]{"200", "process two", "100", "100",
+              "100", "200000", "200", "3000", "500"});
       writeStatFiles(procfsRootDir, pids, procInfos, memInfo);
 
       long elapsedTimeBetweenUpdatesMsec = 200000;
@@ -552,17 +559,17 @@ public class TestProcfsBasedProcessTree {
       // assuming 100, 200 and 400 are in tree, 300 is not.
       ProcessStatInfo[] procInfos = new ProcessStatInfo[4];
       procInfos[0] =
-          new ProcessStatInfo(new String[] { "100", "proc1", "1", "100", "100",
-              "100000", "100" });
+          new ProcessStatInfo(new String[]{"100", "proc1", "1", "100", "100",
+              "100000", "100"});
       procInfos[1] =
-          new ProcessStatInfo(new String[] { "200", "proc2", "100", "100",
-              "100", "200000", "200" });
+          new ProcessStatInfo(new String[]{"200", "process two", "100", "100",
+              "100", "200000", "200"});
       procInfos[2] =
-          new ProcessStatInfo(new String[] { "300", "proc3", "1", "300", "300",
-              "300000", "300" });
+          new ProcessStatInfo(new String[]{"300", "proc3", "1", "300", "300",
+              "300000", "300"});
       procInfos[3] =
-          new ProcessStatInfo(new String[] { "400", "proc4", "100", "100",
-              "100", "400000", "400" });
+          new ProcessStatInfo(new String[]{"400", "proc4", "100", "100",
+              "100", "400000", "400"});
       // write smap information invariably for testing
       ProcessTreeSmapMemInfo[] memInfo = new ProcessTreeSmapMemInfo[4];
       memInfo[0] = new ProcessTreeSmapMemInfo("100");
@@ -804,23 +811,23 @@ public class TestProcfsBasedProcessTree {
       // Processes 200, 300, 400 and 500 are descendants of 100. 600 is not.
       ProcessStatInfo[] procInfos = new ProcessStatInfo[numProcesses];
       procInfos[0] =
-          new ProcessStatInfo(new String[] { "100", "proc1", "1", "100", "100",
-              "100000", "100", "1000", "200" });
+          new ProcessStatInfo(new String[]{"100", "proc1", "1", "100", "100",
+              "100000", "100", "1000", "200"});
       procInfos[1] =
-          new ProcessStatInfo(new String[] { "200", "proc2", "100", "100",
-              "100", "200000", "200", "2000", "400" });
+          new ProcessStatInfo(new String[]{"200", "process two", "100", "100",
+              "100", "200000", "200", "2000", "400"});
       procInfos[2] =
-          new ProcessStatInfo(new String[] { "300", "proc3", "200", "100",
-              "100", "300000", "300", "3000", "600" });
+          new ProcessStatInfo(new String[]{"300", "proc3", "200", "100",
+              "100", "300000", "300", "3000", "600"});
       procInfos[3] =
-          new ProcessStatInfo(new String[] { "400", "proc4", "200", "100",
-              "100", "400000", "400", "4000", "800" });
+          new ProcessStatInfo(new String[]{"400", "proc4", "200", "100",
+              "100", "400000", "400", "4000", "800"});
       procInfos[4] =
-          new ProcessStatInfo(new String[] { "500", "proc5", "400", "100",
-              "100", "400000", "400", "4000", "800" });
+          new ProcessStatInfo(new String[]{"500", "proc5", "400", "100",
+              "100", "400000", "400", "4000", "800"});
       procInfos[5] =
-          new ProcessStatInfo(new String[] { "600", "proc6", "1", "1", "1",
-              "400000", "400", "4000", "800" });
+          new ProcessStatInfo(new String[]{"600", "proc6", "1", "1", "1",
+              "400000", "400", "4000", "800"});
 
       ProcessTreeSmapMemInfo[] memInfos = new ProcessTreeSmapMemInfo[6];
       memInfos[0] = new ProcessTreeSmapMemInfo("100");
@@ -832,7 +839,7 @@ public class TestProcfsBasedProcessTree {
 
       String[] cmdLines = new String[numProcesses];
       cmdLines[0] = "proc1 arg1 arg2";
-      cmdLines[1] = "proc2 arg3 arg4";
+      cmdLines[1] = "process two arg3 arg4";
       cmdLines[2] = "proc3 arg5 arg6";
       cmdLines[3] = "proc4 arg7 arg8";
       cmdLines[4] = "proc5 arg9 arg10";
@@ -917,7 +924,7 @@ public class TestProcfsBasedProcessTree {
 
   private static void sendSignal(String pid, int signal) throws IOException {
     ShellCommandExecutor shexec = null;
-    String[] arg = { "kill", "-" + signal, pid };
+    String[] arg = { "kill", "-" + signal, "--", pid };
     shexec = new ShellCommandExecutor(arg);
     shexec.execute();
   }

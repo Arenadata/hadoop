@@ -27,8 +27,6 @@ import java.io.IOException;
 import java.util.Random;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileContext;
@@ -37,13 +35,12 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.web.HftpFileSystem;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.log4j.Level;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -54,8 +51,8 @@ import org.junit.Test;
  */
 public class TestFileStatus {
   {
-    ((Log4JLogger)LogFactory.getLog(FSNamesystem.class)).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger)FileSystem.LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(FSNamesystem.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(FileSystem.LOG, Level.ALL);
   }
 
   static final long seed = 0xDEADBEEFL;
@@ -78,22 +75,26 @@ public class TestFileStatus {
     fs = cluster.getFileSystem();
     fc = FileContext.getFileContext(cluster.getURI(0), conf);
     hftpfs = cluster.getHftpFileSystem(0);
-    dfsClient = new DFSClient(NameNode.getAddress(conf), conf);
+    dfsClient = new DFSClient(DFSUtilClient.getNNAddress(conf), conf);
     file1 = new Path("filestatus.dat");
     writeFile(fs, file1, 1, fileSize, blockSize);
   }
   
   @AfterClass
   public static void testTearDown() throws Exception {
-    fs.close();
-    cluster.shutdown();
+    if (fs != null) {
+      fs.close();
+    }
+    if (cluster != null) {
+      cluster.shutdown();
+    }
   }
 
   private static void writeFile(FileSystem fileSys, Path name, int repl,
       int fileSize, int blockSize) throws IOException {
     // Create and write a file that contains three blocks of data
     FSDataOutputStream stm = fileSys.create(name, true,
-        HdfsConstants.IO_FILE_BUFFER_SIZE, (short)repl, (long)blockSize);
+        DFSUtilClient.getIoFileBufferSize(conf), (short)repl, (long)blockSize);
     byte[] buffer = new byte[fileSize];
     Random rand = new Random(seed);
     rand.nextBytes(buffer);
@@ -133,8 +134,8 @@ public class TestFileStatus {
       dfsClient.getFileInfo("non-absolute");
       fail("getFileInfo for a non-absolute path did not throw IOException");
     } catch (RemoteException re) {
-      assertTrue("Wrong exception for invalid file name", 
-          re.toString().contains("Invalid file name"));
+      assertTrue("Wrong exception for invalid file name: "+re,
+          re.toString().contains("Absolute path required"));
     }
   }
 

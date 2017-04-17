@@ -24,9 +24,11 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.hdfs.protocol.RollingUpgradeInfo;
 
 /**
- * This is the JMX management interface for namenode information
+ * This is the JMX management interface for namenode information.
+ * End users shouldn't be implementing these interfaces, and instead
+ * access this information through the JMX APIs.
  */
-@InterfaceAudience.Public
+@InterfaceAudience.Private
 @InterfaceStability.Stable
 public interface NameNodeMXBean {
 
@@ -81,9 +83,10 @@ public interface NameNodeMXBean {
   public boolean isUpgradeFinalized();
 
   /**
-   * Gets the RollingUpgrade information
+   * Gets the RollingUpgrade information.
    *
-   * @return Rolling upgrade information
+   * @return Rolling upgrade information if an upgrade is in progress. Else
+   * (e.g. if there is no upgrade or the upgrade is finalized), returns null.
    */
   public RollingUpgradeInfo.Bean getRollingUpgradeStatus();
 
@@ -139,9 +142,12 @@ public interface NameNodeMXBean {
   
   /**
    * Gets the total number of files on the cluster
-   * 
+   *
    * @return the total number of files on the cluster
+   * @deprecated Use
+   * {@link org.apache.hadoop.hdfs.server.namenode.metrics.FSNamesystemMBean#getFilesTotal()} instead.
    */
+  @Deprecated
   public long getTotalFiles();
   
   /**
@@ -159,6 +165,13 @@ public interface NameNodeMXBean {
    * replication factor 1
    */
   public long getNumberOfMissingBlocksWithReplicationFactorOne();
+
+  /**
+   * Gets the total number of snapshottable dirs in the system.
+   *
+   * @return the total number of snapshottable dirs in the system
+   */
+  public long getNumberOfSnapshottableDirs();
 
   /**
    * Gets the number of threads.
@@ -232,10 +245,18 @@ public interface NameNodeMXBean {
 
   /**
    * Gets the NN start time
-   *
+   * @deprecated Use
+   * {@link #getNNStartedTimeInMillis()} instead.
    * @return the NN start time
    */
+  @Deprecated
   public String getNNStarted();
+
+  /**
+   * Gets the NN start time in milliseconds.
+   * @return the NN start time in msec
+   */
+  long getNNStartedTimeInMillis();
 
   /**
    * Get the compilation information which contains date, user and branch
@@ -265,4 +286,9 @@ public interface NameNodeMXBean {
    */
   public Map<String, Integer> getDistinctVersions();
   
+  /**
+   * Get namenode directory size.
+   */
+  String getNameDirSize();
+
 }

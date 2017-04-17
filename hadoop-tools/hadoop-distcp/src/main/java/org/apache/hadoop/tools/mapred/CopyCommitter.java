@@ -27,10 +27,16 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapreduce.*;
+import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.JobStatus;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputCommitter;
-import org.apache.hadoop.tools.*;
+import org.apache.hadoop.tools.CopyListing;
+import org.apache.hadoop.tools.CopyListingFileStatus;
+import org.apache.hadoop.tools.DistCpConstants;
+import org.apache.hadoop.tools.DistCpOptions;
 import org.apache.hadoop.tools.DistCpOptions.FileAttribute;
+import org.apache.hadoop.tools.GlobbedCopyListing;
 import org.apache.hadoop.tools.util.DistCpUtils;
 
 import java.io.IOException;
@@ -132,6 +138,9 @@ public class CopyCommitter extends FileOutputCommitter {
   private void deleteAttemptTempFiles(Path targetWorkPath,
                                       FileSystem targetFS,
                                       String jobId) throws IOException {
+    if (targetWorkPath == null) {
+      return;
+    }
 
     FileStatus[] tempFiles = targetFS.globStatus(
         new Path(targetWorkPath, ".distcp.tmp." + jobId.replaceAll("job","attempt") + "*"));
@@ -229,7 +238,10 @@ public class CopyCommitter extends FileOutputCommitter {
     List<Path> targets = new ArrayList<Path>(1);
     Path targetFinalPath = new Path(conf.get(DistCpConstants.CONF_LABEL_TARGET_FINAL_PATH));
     targets.add(targetFinalPath);
-    DistCpOptions options = new DistCpOptions(targets, new Path("/NONE"));
+    Path resultNonePath = Path.getPathWithoutSchemeAndAuthority(targetFinalPath)
+        .toString().startsWith(DistCpConstants.HDFS_RESERVED_RAW_DIRECTORY_NAME)
+        ? DistCpConstants.RAW_NONE_PATH : DistCpConstants.NONE_PATH;
+    DistCpOptions options = new DistCpOptions(targets, resultNonePath);
     //
     // Set up options to be the same from the CopyListing.buildListing's perspective,
     // so to collect similar listings as when doing the copy

@@ -24,9 +24,11 @@ import java.util.Map;
 
 /**
  * 
- * This is the JMX management interface for data node information
+ * This is the JMX management interface for data node information.
+ * End users shouldn't be implementing these interfaces, and instead
+ * access this information through the JMX APIs.
  */
-@InterfaceAudience.Public
+@InterfaceAudience.Private
 @InterfaceStability.Stable
 public interface DataNodeMXBean {
   
@@ -50,14 +52,28 @@ public interface DataNodeMXBean {
    * @return the http port
    */
   public String getHttpPort();
-  
+
   /**
-   * Gets the namenode IP addresses
+   * Gets the data port.
+   *
+   * @return the data port
+   */
+  String getDataPort();
+
+  /**
+   * Gets the namenode IP addresses.
    * 
    * @return the namenode IP addresses that the datanode is talking to
    */
   public String getNamenodeAddresses();
-  
+
+  /**
+   * Gets information of the block pool service actors.
+   *
+   * @return block pool service actors info
+   */
+  String getBPServiceActorInfo();
+
   /**
    * Gets the information of each volume on the Datanode. Please
    * see the implementation for the format of returned information.
@@ -78,6 +94,12 @@ public interface DataNodeMXBean {
    * actively transferring blocks.
    */
   public int getXceiverCount();
+
+  /**
+   * Returns an estimate of the number of data replication/reconstruction tasks
+   * running currently.
+   */
+  public int getXmitsInProgress();
 
   /**
    * Gets the network error counts on a per-Datanode basis.

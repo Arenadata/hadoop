@@ -67,9 +67,11 @@ public class TestXAttrCLI  extends CLITestHelperDFS {
   public void tearDown() throws Exception {
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (dfsCluster != null) {
       dfsCluster.shutdown();
+      dfsCluster = null;
     }
     Thread.sleep(2000);
     super.tearDown();
@@ -87,7 +89,7 @@ public class TestXAttrCLI  extends CLITestHelperDFS {
   
   @Override
   protected Result execute(CLICommand cmd) throws Exception {
-    return cmd.getExecutor(namenode).executeCommand(cmd.getCmd());
+    return cmd.getExecutor(namenode, conf).executeCommand(cmd.getCmd());
   }
   
   @Test

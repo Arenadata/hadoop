@@ -28,11 +28,11 @@ import java.util.Random;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.client.impl.BlockReaderTestUtil;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.util.Time;
 import org.apache.log4j.Level;
 import org.apache.log4j.LogManager;
-import org.junit.Assume;
 import org.junit.Ignore;
 import org.junit.Test;
 
@@ -325,7 +325,7 @@ public class TestParallelReadUtil {
       testInfo.filepath = new Path("/TestParallelRead.dat." + i);
       testInfo.authenticData = util.writeFile(testInfo.filepath, FILE_SIZE_K);
       testInfo.dis = dfsClient.open(testInfo.filepath.toString(),
-          dfsClient.getConf().ioBufferSize, verifyChecksums);
+          dfsClient.getConf().getIoBufferSize(), verifyChecksums);
 
       for (int j = 0; j < nWorkerEach; ++j) {
         workers[nWorkers++] = new ReadWorker(testInfo, nWorkers, helper);

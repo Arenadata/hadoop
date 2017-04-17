@@ -32,6 +32,10 @@ import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.protocol.HdfsBlocksMetadata;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.DeleteBlockPoolRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.DeleteBlockPoolResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.EvictWritersRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.EvictWritersResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetBalancerBandwidthRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetBalancerBandwidthResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetBlockLocalPathInfoRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetBlockLocalPathInfoResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetDatanodeInfoRequestProto;
@@ -44,6 +48,8 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetHdf
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetHdfsBlockLocationsResponseProto.Builder;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetReplicaVisibleLengthRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetReplicaVisibleLengthResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.ListReconfigurablePropertiesRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.ListReconfigurablePropertiesResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.RefreshNamenodesRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.RefreshNamenodesResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.ShutdownDatanodeRequestProto;
@@ -79,6 +85,8 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
       StartReconfigurationResponseProto.newBuilder().build();
   private final static TriggerBlockReportResponseProto TRIGGER_BLOCK_REPORT_RESP =
       TriggerBlockReportResponseProto.newBuilder().build();
+  private final static EvictWritersResponseProto EVICT_WRITERS_RESP =
+      EvictWritersResponseProto.newBuilder().build();
   
   private final ClientDatanodeProtocol impl;
 
@@ -93,7 +101,7 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
       throws ServiceException {
     long len;
     try {
-      len = impl.getReplicaVisibleLength(PBHelper.convert(request.getBlock()));
+      len = impl.getReplicaVisibleLength(PBHelperClient.convert(request.getBlock()));
     } catch (IOException e) {
       throw new ServiceException(e);
     }
@@ -130,12 +138,14 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
       throws ServiceException {
     BlockLocalPathInfo resp;
     try {
-      resp = impl.getBlockLocalPathInfo(PBHelper.convert(request.getBlock()), PBHelper.convert(request.getToken()));
+      resp = impl.getBlockLocalPathInfo(
+                 PBHelperClient.convert(request.getBlock()),
+                 PBHelperClient.convert(request.getToken()));
     } catch (IOException e) {
       throw new ServiceException(e);
     }
     return GetBlockLocalPathInfoResponseProto.newBuilder()
-        .setBlock(PBHelper.convert(resp.getBlock()))
+        .setBlock(PBHelperClient.convert(resp.getBlock()))
         .setLocalPath(resp.getBlockPath()).setLocalMetaPath(resp.getMetaPath())
         .build();
   }
@@ -148,10 +158,10 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
     try {
       String poolId = request.getBlockPoolId();
 
-      List<Token<BlockTokenIdentifier>> tokens = 
+      List<Token<BlockTokenIdentifier>> tokens =
           new ArrayList<Token<BlockTokenIdentifier>>(request.getTokensCount());
       for (TokenProto b : request.getTokensList()) {
-        tokens.add(PBHelper.convert(b));
+        tokens.add(PBHelperClient.convert(b));
       }
       long[] blockIds = Longs.toArray(request.getBlockIdsList());
       
@@ -184,12 +194,23 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
     return SHUTDOWN_DATANODE_RESP;
   }
 
+  @Override
+  public EvictWritersResponseProto evictWriters(RpcController unused,
+      EvictWritersRequestProto request) throws ServiceException {
+    try {
+      impl.evictWriters();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return EVICT_WRITERS_RESP;
+  }
+
   public GetDatanodeInfoResponseProto getDatanodeInfo(RpcController unused,
       GetDatanodeInfoRequestProto request) throws ServiceException {
     GetDatanodeInfoResponseProto res;
     try {
       res = GetDatanodeInfoResponseProto.newBuilder()
-          .setLocalInfo(PBHelper.convert(impl.getDatanodeInfo())).build();
+          .setLocalInfo(PBHelperClient.convert(impl.getDatanodeInfo())).build();
     } catch (IOException e) {
       throw new ServiceException(e);
     }
@@ -206,6 +227,23 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
       throw new ServiceException(e);
     }
     return START_RECONFIG_RESP;
+  }
+
+  @Override
+  public ListReconfigurablePropertiesResponseProto listReconfigurableProperties(
+        RpcController controller,
+        ListReconfigurablePropertiesRequestProto request)
+      throws ServiceException {
+    ListReconfigurablePropertiesResponseProto.Builder builder =
+        ListReconfigurablePropertiesResponseProto.newBuilder();
+    try {
+      for (String name : impl.listReconfigurableProperties()) {
+        builder.addName(name);
+      }
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return builder.build();
   }
 
   @Override
@@ -254,5 +292,19 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
       throw new ServiceException(e);
     }
     return TRIGGER_BLOCK_REPORT_RESP;
+  }
+
+  @Override
+  public GetBalancerBandwidthResponseProto getBalancerBandwidth(
+      RpcController controller, GetBalancerBandwidthRequestProto request)
+      throws ServiceException {
+    long bandwidth;
+    try {
+      bandwidth = impl.getBalancerBandwidth();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return GetBalancerBandwidthResponseProto.newBuilder()
+        .setBandwidth(bandwidth).build();
   }
 }

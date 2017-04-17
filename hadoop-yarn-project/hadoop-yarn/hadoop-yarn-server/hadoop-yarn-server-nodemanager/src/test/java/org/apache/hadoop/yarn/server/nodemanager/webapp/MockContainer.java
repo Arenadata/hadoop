@@ -66,7 +66,7 @@ public class MockContainer implements Container {
     long currentTime = System.currentTimeMillis();
     this.containerTokenIdentifier =
         BuilderUtils.newContainerTokenIdentifier(BuilderUtils
-          .newContainerToken(id, "127.0.0.1", 1234, user,
+          .newContainerToken(id, 0, "127.0.0.1", 1234, user,
             BuilderUtils.newResource(1024, 1), currentTime + 10000, 123,
             "password".getBytes(), currentTime));
     this.state = ContainerState.NEW;
@@ -129,6 +129,10 @@ public class MockContainer implements Container {
   @Override
   public Resource getResource() {
     return this.containerTokenIdentifier.getResource();
+  }
+
+  @Override
+  public void setResource(Resource targetResource) {
   }
 
   @Override

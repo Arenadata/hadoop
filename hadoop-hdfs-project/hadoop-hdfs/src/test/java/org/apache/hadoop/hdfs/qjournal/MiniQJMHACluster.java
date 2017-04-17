@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.hdfs.qjournal;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
 
@@ -33,6 +32,7 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
@@ -47,7 +47,6 @@ public class MiniQJMHACluster {
   private static final String NN1 = "nn1";
   private static final String NN2 = "nn2";
   private static final Random RANDOM = new Random();
-  private int basePort = 10000;
 
   public static class Builder {
     private final Configuration conf;
@@ -86,18 +85,22 @@ public class MiniQJMHACluster {
   private MiniQJMHACluster(Builder builder) throws IOException {
     this.conf = builder.conf;
     int retryCount = 0;
+    int basePort = 10000;
+
     while (true) {
       try {
         basePort = 10000 + RANDOM.nextInt(1000) * 4;
+        LOG.info("Set MiniQJMHACluster basePort to " + basePort);
         // start 3 journal nodes
         journalCluster = new MiniJournalCluster.Builder(conf).format(true)
             .build();
+        journalCluster.waitActive();
         URI journalURI = journalCluster.getQuorumJournalURI(NAMESERVICE);
 
         // start cluster with 2 NameNodes
         MiniDFSNNTopology topology = createDefaultTopology(basePort);
 
-        initHAConf(journalURI, builder.conf);
+        initHAConf(journalURI, builder.conf, basePort);
 
         // First start up the NNs just to format the namespace. The MinIDFSCluster
         // has no way to just format the NameNodes without also starting them.
@@ -115,16 +118,21 @@ public class MiniQJMHACluster {
 
         // restart the cluster
         cluster.restartNameNodes();
-        ++retryCount;
         break;
       } catch (BindException e) {
+        if (cluster != null) {
+          cluster.shutdown(true);
+          cluster = null;
+        }
+        ++retryCount;
         LOG.info("MiniQJMHACluster port conflicts, retried " +
             retryCount + " times");
       }
     }
   }
-  
-  private Configuration initHAConf(URI journalURI, Configuration conf) {
+
+  private Configuration initHAConf(URI journalURI, Configuration conf,
+      int basePort) {
     conf.set(DFSConfigKeys.DFS_NAMENODE_SHARED_EDITS_DIR_KEY,
         journalURI.toString());
     
@@ -137,7 +145,7 @@ public class MiniQJMHACluster {
     conf.set(DFSConfigKeys.DFS_NAMESERVICES, NAMESERVICE);
     conf.set(DFSUtil.addKeySuffixes(DFS_HA_NAMENODES_KEY_PREFIX, NAMESERVICE),
         NN1 + "," + NN2);
-    conf.set(DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX + "." + NAMESERVICE,
+    conf.set(HdfsClientConfigKeys.Failover.PROXY_PROVIDER_KEY_PREFIX + "." + NAMESERVICE,
         ConfiguredFailoverProxyProvider.class.getName());
     conf.set("fs.defaultFS", "hdfs://" + NAMESERVICE);
     

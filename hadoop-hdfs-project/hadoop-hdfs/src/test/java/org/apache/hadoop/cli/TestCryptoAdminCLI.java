@@ -35,7 +35,7 @@ import org.apache.hadoop.cli.util.CommandExecutor.Result;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
 import org.apache.hadoop.crypto.key.KeyProvider;
-import org.apache.hadoop.crypto.key.KeyProviderFactory;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -62,11 +62,12 @@ public class TestCryptoAdminCLI extends CLITestHelperDFS {
     conf.setClass(PolicyProvider.POLICY_PROVIDER_CONFIG,
         HDFSPolicyProvider.class, PolicyProvider.class);
     conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
+    conf.setLong(CommonConfigurationKeysPublic.FS_TRASH_INTERVAL_KEY, 10);
 
     tmpDir = new File(System.getProperty("test.build.data", "target"),
         UUID.randomUUID().toString()).getAbsoluteFile();
     final Path jksPath = new Path(tmpDir.toString(), "test.jks");
-    conf.set(DFSConfigKeys.DFS_ENCRYPTION_KEY_PROVIDER_URI,
+    conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
         JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri());
 
     dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
@@ -86,9 +87,11 @@ public class TestCryptoAdminCLI extends CLITestHelperDFS {
   public void tearDown() throws Exception {
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (dfsCluster != null) {
       dfsCluster.shutdown();
+      dfsCluster = null;
     }
     Thread.sleep(2000);
     super.tearDown();
@@ -125,7 +128,7 @@ public class TestCryptoAdminCLI extends CLITestHelperDFS {
   }
 
   private class TestConfigFileParserCryptoAdmin extends
-      CLITestHelper.TestConfigFileParser {
+      CLITestHelperDFS.TestConfigFileParserDFS {
     @Override
     public void endElement(String uri, String localName, String qName)
         throws SAXException {
@@ -149,18 +152,18 @@ public class TestCryptoAdminCLI extends CLITestHelperDFS {
     }
 
     @Override
-    public CommandExecutor getExecutor(String tag)
+    public CommandExecutor getExecutor(String tag, Configuration conf)
         throws IllegalArgumentException {
       if (getType() instanceof CLICommandCryptoAdmin) {
         return new CryptoAdminCmdExecutor(tag, new CryptoAdmin(conf));
       }
-      return super.getExecutor(tag);
+      return super.getExecutor(tag, conf);
     }
   }
 
   @Override
   protected Result execute(CLICommand cmd) throws Exception {
-    return cmd.getExecutor(namenode).executeCommand(cmd.getCmd());
+    return cmd.getExecutor(namenode, conf).executeCommand(cmd.getCmd());
   }
 
   @Test

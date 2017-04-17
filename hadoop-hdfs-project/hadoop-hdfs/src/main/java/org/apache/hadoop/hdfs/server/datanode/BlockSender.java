@@ -34,8 +34,10 @@ import java.util.Arrays;
 
 import org.apache.commons.logging.Log;
 import org.apache.hadoop.fs.ChecksumException;
+import org.apache.hadoop.hdfs.DFSUtilClient;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
+import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.datatransfer.PacketHeader;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.LengthInputStream;
@@ -45,13 +47,17 @@ import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.ReadaheadPool.ReadaheadRequest;
 import org.apache.hadoop.io.nativeio.NativeIO;
 import org.apache.hadoop.net.SocketOutputStream;
+import org.apache.hadoop.util.AutoCloseableLock;
 import org.apache.hadoop.util.DataChecksum;
-import org.apache.htrace.Sampler;
-import org.apache.htrace.Trace;
-import org.apache.htrace.TraceScope;
+import org.apache.htrace.core.Sampler;
+import org.apache.htrace.core.TraceScope;
+
+import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.POSIX_FADV_DONTNEED;
+import static org.apache.hadoop.io.nativeio.NativeIO.POSIX.POSIX_FADV_SEQUENTIAL;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import org.slf4j.Logger;
 
 /**
  * Reads a block from the disk and sends it to a recipient.
@@ -94,7 +100,7 @@ import com.google.common.base.Preconditions;
  *  no checksum error, it replies to DataNode with OP_STATUS_CHECKSUM_OK.
  */
 class BlockSender implements java.io.Closeable {
-  static final Log LOG = DataNode.LOG;
+  static final Logger LOG = DataNode.LOG;
   static final Log ClientTraceLog = DataNode.ClientTraceLog;
   private static final boolean is32Bit = 
       System.getProperty("sun.arch.data.model").equals("32");
@@ -104,8 +110,13 @@ class BlockSender implements java.io.Closeable {
    * not sure if there will be much more improvement.
    */
   private static final int MIN_BUFFER_WITH_TRANSFERTO = 64*1024;
+  private static final int IO_FILE_BUFFER_SIZE;
+  static {
+    HdfsConfiguration conf = new HdfsConfiguration();
+    IO_FILE_BUFFER_SIZE = DFSUtilClient.getIoFileBufferSize(conf);
+  }
   private static final int TRANSFERTO_BUFFER_SIZE = Math.max(
-      HdfsConstants.IO_FILE_BUFFER_SIZE, MIN_BUFFER_WITH_TRANSFERTO);
+      IO_FILE_BUFFER_SIZE, MIN_BUFFER_WITH_TRANSFERTO);
   
   /** the block to read from */
   private final ExtendedBlock block;
@@ -146,6 +157,9 @@ class BlockSender implements java.io.Closeable {
   private FileDescriptor blockInFd;
   /** The reference to the volume where the block is located */
   private FsVolumeReference volumeRef;
+
+  /** The replica of the block that is being read. */
+  private final Replica replica;
 
   // Cache-management related fields
   private final long readaheadLength;
@@ -228,15 +242,24 @@ class BlockSender implements java.io.Closeable {
         Preconditions.checkArgument(sendChecksum,
             "If verifying checksum, currently must also send it.");
       }
-      
-      final Replica replica;
+
+      // if there is a append write happening right after the BlockSender
+      // is constructed, the last partial checksum maybe overwritten by the
+      // append, the BlockSender need to use the partial checksum before
+      // the append write.
+      ChunkChecksum chunkChecksum = null;
       final long replicaVisibleLength;
-      synchronized(datanode.data) { 
+      try(AutoCloseableLock lock = datanode.data.acquireDatasetLock()) {
         replica = getReplica(block, datanode);
         replicaVisibleLength = replica.getVisibleLength();
+        if (replica instanceof FinalizedReplica) {
+          // Load last checksum in case the replica is being written
+          // concurrently
+          final FinalizedReplica frep = (FinalizedReplica) replica;
+          chunkChecksum = frep.getLastChecksumAndDataLen();
+        }
       }
       // if there is a write in progress
-      ChunkChecksum chunkChecksum = null;
       if (replica instanceof ReplicaBeingWritten) {
         final ReplicaBeingWritten rbw = (ReplicaBeingWritten)replica;
         waitForMinLength(rbw, startOffset + length);
@@ -292,13 +315,17 @@ class BlockSender implements java.io.Closeable {
 
             // The meta file will contain only the header if the NULL checksum
             // type was used, or if the replica was written to transient storage.
+            // Also, when only header portion of a data packet was transferred
+            // and then pipeline breaks, the meta file can contain only the
+            // header and 0 byte in the block data file.
             // Checksum verification is not performed for replicas on transient
             // storage.  The header is important for determining the checksum
             // type later when lazy persistence copies the block to non-transient
             // storage and computes the checksum.
-            if (metaIn.getLength() > BlockMetadataHeader.getHeaderSize()) {
+            if (!replica.isOnTransientStorage() &&
+                metaIn.getLength() >= BlockMetadataHeader.getHeaderSize()) {
               checksumIn = new DataInputStream(new BufferedInputStream(
-                  metaIn, HdfsConstants.IO_FILE_BUFFER_SIZE));
+                  metaIn, IO_FILE_BUFFER_SIZE));
   
               csum = BlockMetadataHeader.readDataChecksum(checksumIn, block);
               keepMetaInOpen = true;
@@ -306,6 +333,12 @@ class BlockSender implements java.io.Closeable {
           } else {
             LOG.warn("Could not find metadata file for " + block);
           }
+        } catch (FileNotFoundException e) {
+          // The replica is on its volume map but not on disk
+          datanode.notifyNamenodeDeletedBlock(block, replica.getStorageUuid());
+          datanode.data.invalidate(block.getBlockPoolId(),
+              new Block[]{block.getLocalBlock()});
+          throw e;
         } finally {
           if (!keepMetaInOpen) {
             IOUtils.closeStream(metaIn);
@@ -405,8 +438,7 @@ class BlockSender implements java.io.Closeable {
       try {
         NativeIO.POSIX.getCacheManipulator().posixFadviseIfPossible(
             block.getBlockName(), blockInFd, lastCacheDropOffset,
-            offset - lastCacheDropOffset,
-            NativeIO.POSIX.POSIX_FADV_DONTNEED);
+            offset - lastCacheDropOffset, POSIX_FADV_DONTNEED);
       } catch (Exception e) {
         LOG.warn("Unable to drop cache on file close", e);
       }
@@ -476,7 +508,7 @@ class BlockSender implements java.io.Closeable {
               bytesOnDisk));
     }
   }
-  
+
   /**
    * Converts an IOExcpetion (not subclasses) to SocketException.
    * This is typically done to indicate to upper layers that the error 
@@ -550,7 +582,6 @@ class BlockSender implements java.io.Closeable {
       if (lastDataPacket && lastChunkChecksum != null) {
         int start = checksumOff + checksumDataLen - checksumSize;
         byte[] updatedChecksum = lastChunkChecksum.getChecksum();
-        
         if (updatedChecksum != null) {
           System.arraycopy(updatedChecksum, 0, buf, start, checksumSize);
         }
@@ -607,10 +638,10 @@ class BlockSender implements java.io.Closeable {
         String ioem = e.getMessage();
         if (!ioem.startsWith("Broken pipe") && !ioem.startsWith("Connection reset")) {
           LOG.error("BlockSender.sendChunks() exception: ", e);
-        }
-        datanode.getBlockScanner().markSuspectBlock(
+          datanode.getBlockScanner().markSuspectBlock(
               volumeRef.getVolume().getStorageID(),
               block);
+        }
       }
       throw ioeToSocketException(e);
     }
@@ -637,7 +668,7 @@ class BlockSender implements java.io.Closeable {
     try {
       checksumIn.readFully(buf, checksumOffset, checksumLen);
     } catch (IOException e) {
-      LOG.warn(" Could not read or failed to veirfy checksum for data"
+      LOG.warn(" Could not read or failed to verify checksum for data"
           + " at offset " + offset + " for block " + block, e);
       IOUtils.closeStream(checksumIn);
       checksumIn = null;
@@ -676,8 +707,12 @@ class BlockSender implements java.io.Closeable {
       checksum.update(buf, dOff, dLen);
       if (!checksum.compare(buf, cOff)) {
         long failedPos = offset + datalen - dLeft;
-        throw new ChecksumException("Checksum failed at " + failedPos,
-            failedPos);
+        StringBuilder replicaInfoString = new StringBuilder();
+        if (replica != null) {
+          replicaInfoString.append(" for replica: " + replica.toString());
+        }
+        throw new ChecksumException("Checksum failed at " + failedPos
+            + replicaInfoString, failedPos);
       }
       dLeft -= dLen;
       dOff += dLen;
@@ -700,8 +735,8 @@ class BlockSender implements java.io.Closeable {
    */
   long sendBlock(DataOutputStream out, OutputStream baseStream, 
                  DataTransferThrottler throttler) throws IOException {
-    TraceScope scope =
-        Trace.startSpan("sendBlock_" + block.getBlockId(), Sampler.NEVER);
+    TraceScope scope = datanode.tracer.
+        newScope("sendBlock_" + block.getBlockId());
     try {
       return doSendBlock(out, baseStream, throttler);
     } finally {
@@ -723,8 +758,7 @@ class BlockSender implements java.io.Closeable {
     if (isLongRead() && blockInFd != null) {
       // Advise that this file descriptor will be accessed sequentially.
       NativeIO.POSIX.getCacheManipulator().posixFadviseIfPossible(
-          block.getBlockName(), blockInFd, 0, 0,
-          NativeIO.POSIX.POSIX_FADV_SEQUENTIAL);
+          block.getBlockName(), blockInFd, 0, 0, POSIX_FADV_SEQUENTIAL);
     }
     
     // Trigger readahead of beginning of file if configured.
@@ -747,7 +781,7 @@ class BlockSender implements java.io.Closeable {
         pktBufSize += checksumSize * maxChunksPerPacket;
       } else {
         maxChunksPerPacket = Math.max(1,
-            numberOfChunks(HdfsConstants.IO_FILE_BUFFER_SIZE));
+            numberOfChunks(IO_FILE_BUFFER_SIZE));
         // Packet size includes both checksum and data
         pktBufSize += (chunkSize + checksumSize) * maxChunksPerPacket;
       }
@@ -812,7 +846,7 @@ class BlockSender implements java.io.Closeable {
         long dropLength = offset - lastCacheDropOffset;
         NativeIO.POSIX.getCacheManipulator().posixFadviseIfPossible(
             block.getBlockName(), blockInFd, lastCacheDropOffset,
-            dropLength, NativeIO.POSIX.POSIX_FADV_DONTNEED);
+            dropLength, POSIX_FADV_DONTNEED);
         lastCacheDropOffset = offset;
       }
     }

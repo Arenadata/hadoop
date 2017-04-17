@@ -18,12 +18,12 @@
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project-dist</artifactId>
-    <version>2.7.1-arenadata</version>
+    <version>2.8.0-arenadata</version>
     <relativePath>../hadoop-project-dist</relativePath>
   </parent>
   <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-client</artifactId>
-  <version>2.7.1-arenadata</version>
+  <version>2.8.0-arenadata</version>
   <packaging>jar</packaging>
 
   <description>Apache Hadoop Client</description>
@@ -104,10 +104,6 @@
       <scope>compile</scope>
       <exclusions>
         <exclusion>
-          <groupId>commons-daemon</groupId>
-          <artifactId>commons-daemon</artifactId>
-        </exclusion>
-        <exclusion>
           <groupId>org.apache.avro</groupId>
           <artifactId>avro</artifactId>
         </exclusion>
@@ -126,6 +122,30 @@
         <exclusion>
           <groupId>javax.servlet</groupId>
           <artifactId>servlet-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.netty</groupId>
+          <artifactId>netty</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.netty</groupId>
+          <artifactId>netty-all</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>xerces</groupId>
+          <artifactId>xercesImpl</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>commons-daemon</groupId>
+          <artifactId>commons-daemon</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.mortbay.jetty</groupId>
+          <artifactId>jetty-util</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.fusesource.leveldbjni</groupId>
+          <artifactId>leveldbjni-all</artifactId>
         </exclusion>
       </exclusions>
     </dependency>

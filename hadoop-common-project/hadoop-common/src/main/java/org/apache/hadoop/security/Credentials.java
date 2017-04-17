@@ -26,6 +26,7 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -33,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import org.apache.commons.io.Charsets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -50,10 +50,10 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 
 /**
- * A class that provides the facilities of reading and writing 
+ * A class that provides the facilities of reading and writing
  * secret keys and Tokens.
  */
-@InterfaceAudience.LimitedPrivate({"HDFS", "MapReduce"})
+@InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class Credentials implements Writable {
   private static final Log LOG = LogFactory.getLog(Credentials.class);
@@ -220,7 +220,7 @@ public class Credentials implements Writable {
   }
   
   private static final byte[] TOKEN_STORAGE_MAGIC =
-      "HDTS".getBytes(Charsets.UTF_8);
+      "HDTS".getBytes(StandardCharsets.UTF_8);
   private static final byte TOKEN_STORAGE_VERSION = 0;
   
   public void writeTokenStorageToStream(DataOutputStream os)

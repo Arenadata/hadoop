@@ -18,6 +18,8 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
@@ -27,7 +29,6 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
  * This class describes a replica that has been finalized.
  */
 public class FinalizedReplica extends ReplicaInfo {
-  private boolean unlinked;      // copy-on-write done for block
 
   /**
    * Constructor
@@ -58,22 +59,11 @@ public class FinalizedReplica extends ReplicaInfo {
    */
   public FinalizedReplica(FinalizedReplica from) {
     super(from);
-    this.unlinked = from.isUnlinked();
   }
 
   @Override  // ReplicaInfo
   public ReplicaState getState() {
     return ReplicaState.FINALIZED;
-  }
-  
-  @Override // ReplicaInfo
-  public boolean isUnlinked() {
-    return unlinked;
-  }
-
-  @Override  // ReplicaInfo
-  public void setUnlinked() {
-    unlinked = true;
   }
   
   @Override
@@ -98,7 +88,33 @@ public class FinalizedReplica extends ReplicaInfo {
   
   @Override
   public String toString() {
-    return super.toString()
-        + "\n  unlinked          =" + unlinked;
+    return super.toString();
+  }
+
+  /**
+   * gets the last chunk checksum and the length of the block corresponding
+   * to that checksum.
+   * Note, need to be called with the FsDataset lock acquired. May improve to
+   * lock only the FsVolume in the future.
+   * @throws IOException
+   */
+  public ChunkChecksum getLastChecksumAndDataLen() throws IOException {
+    ChunkChecksum chunkChecksum = null;
+    try {
+      byte[] lastChecksum = getVolume().loadLastPartialChunkChecksum(
+          getBlockFile(), getMetaFile());
+      if (lastChecksum != null) {
+        chunkChecksum =
+            new ChunkChecksum(getVisibleLength(), lastChecksum);
+      }
+    } catch (FileNotFoundException e) {
+      // meta file is lost. Try to continue anyway.
+      DataNode.LOG.warn("meta file " + getMetaFile() +
+          " is missing!");
+    } catch (IOException ioe) {
+      DataNode.LOG.warn("Unable to read checksum from meta file " +
+          getMetaFile(), ioe);
+    }
+    return chunkChecksum;
   }
 }

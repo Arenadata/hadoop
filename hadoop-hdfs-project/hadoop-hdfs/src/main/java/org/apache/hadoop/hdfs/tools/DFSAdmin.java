@@ -52,6 +52,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.shell.Command;
 import org.apache.hadoop.fs.shell.CommandFormat;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.DFSUtilClient;
+import org.apache.hadoop.hdfs.HAUtilClient;
 import org.apache.hadoop.hdfs.client.BlockReportOptions;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
@@ -59,7 +61,7 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HAUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.NameNodeProxies;
-import org.apache.hadoop.hdfs.NameNodeProxies.ProxyAndInfo;
+import org.apache.hadoop.hdfs.NameNodeProxiesClient.ProxyAndInfo;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
@@ -72,7 +74,6 @@ import org.apache.hadoop.hdfs.protocol.RollingUpgradeInfo;
 import org.apache.hadoop.hdfs.protocol.SnapshotException;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.TransferFsImage;
-import org.apache.hadoop.ipc.GenericRefreshProtocol;
 import org.apache.hadoop.ipc.ProtobufRpcEngine;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RefreshCallQueueProtocol;
@@ -162,16 +163,16 @@ public class DFSAdmin extends FsShell {
     private static final String NAME = "setQuota";
     private static final String USAGE =
       "-"+NAME+" <quota> <dirname>...<dirname>";
-    private static final String DESCRIPTION = 
-      "-setQuota <quota> <dirname>...<dirname>: " +
-      "Set the quota <quota> for each directory <dirName>.\n" + 
-      "\t\tThe directory quota is a long integer that puts a hard limit\n" +
-      "\t\ton the number of names in the directory tree\n" +
-      "\t\tFor each directory, attempt to set the quota. An error will be reported if\n" +
-      "\t\t1. N is not a positive integer, or\n" +
-      "\t\t2. User is not an administrator, or\n" +
-      "\t\t3. The directory does not exist or is a file.\n" +
-      "\t\tNote: A quota of 1 would force the directory to remain empty.\n";
+    private static final String DESCRIPTION =
+        "-setQuota <quota> <dirname>...<dirname>: " +
+        "Set the quota <quota> for each directory <dirName>.\n" +
+        "\t\tThe directory quota is a long integer that puts a hard limit\n" +
+        "\t\ton the number of names in the directory tree\n" +
+        "\t\tFor each directory, attempt to set the quota. An error will be reported if\n" +
+        "\t\t1. quota is not a positive integer, or\n" +
+        "\t\t2. User is not an administrator, or\n" +
+        "\t\t3. The directory does not exist or is a file.\n" +
+        "\t\tNote: A quota of 1 would force the directory to remain empty.\n";
 
     private final long quota; // the quota to be set
 
@@ -209,12 +210,20 @@ public class DFSAdmin extends FsShell {
     private static final String NAME = "clrSpaceQuota";
     private static final String USAGE = "-"+NAME+" [-storageType <storagetype>] <dirname>...<dirname>";
     private static final String DESCRIPTION = USAGE + ": " +
-    "Clear the space quota for each directory <dirName>.\n" +
-    "\t\tFor each directory, attempt to clear the quota. An error will be reported if\n" +
-    "\t\t1. the directory does not exist or is a file, or\n" +
-    "\t\t2. user is not an administrator.\n" +
-    "\t\tIt does not fault if the directory has no quota.\n" +
-    "\t\tThe storage type specific quota is cleared when -storageType option is specified.";
+        "Clear the space quota for each directory <dirName>.\n" +
+        "\t\tFor each directory, attempt to clear the quota. " +
+        "An error will be reported if\n" +
+        "\t\t1. the directory does not exist or is a file, or\n" +
+        "\t\t2. user is not an administrator.\n" +
+        "\t\tIt does not fault if the directory has no quota.\n" +
+        "\t\tThe storage type specific quota is cleared when -storageType " +
+        "option is specified.\n" +
+        "\t\tAvailable storageTypes are \n" +
+        "\t\t- RAM_DISK\n" +
+        "\t\t- DISK\n" +
+        "\t\t- SSD\n" +
+        "\t\t- ARCHIVE";
+
 
     private StorageType type;
 
@@ -222,9 +231,9 @@ public class DFSAdmin extends FsShell {
     ClearSpaceQuotaCommand(String[] args, int pos, FileSystem fs) {
       super(fs);
       CommandFormat c = new CommandFormat(1, Integer.MAX_VALUE);
+      c.addOptionWithValue("storageType");
       List<String> parameters = c.parse(args, pos);
-      String storageTypeString =
-          StringUtils.popOptionWithArgument("-storageType", parameters);
+      String storageTypeString = c.getOptValue("storageType");
       if (storageTypeString != null) {
         this.type = StorageType.parseStorageType(storageTypeString);
       }
@@ -261,18 +270,23 @@ public class DFSAdmin extends FsShell {
     private static final String USAGE =
       "-"+NAME+" <quota> [-storageType <storagetype>] <dirname>...<dirname>";
     private static final String DESCRIPTION = USAGE + ": " +
-      "Set the space quota <quota> for each directory <dirName>.\n" +
-      "\t\tThe space quota is a long integer that puts a hard limit\n" +
-      "\t\ton the total size of all the files under the directory tree.\n" +
-      "\t\tThe extra space required for replication is also counted. E.g.\n" +
-      "\t\ta 1GB file with replication of 3 consumes 3GB of the quota.\n\n" +
-      "\t\tQuota can also be specified with a binary prefix for terabytes,\n" +
-      "\t\tpetabytes etc (e.g. 50t is 50TB, 5m is 5MB, 3p is 3PB).\n" + 
-      "\t\tFor each directory, attempt to set the quota. An error will be reported if\n" +
-      "\t\t1. N is not a positive integer, or\n" +
-      "\t\t2. user is not an administrator, or\n" +
-      "\t\t3. the directory does not exist or is a file.\n" +
-      "\t\tThe storage type specific quota is set when -storageType option is specified.\n";
+        "Set the space quota <quota> for each directory <dirName>.\n" +
+        "\t\tThe space quota is a long integer that puts a hard limit\n" +
+        "\t\ton the total size of all the files under the directory tree.\n" +
+        "\t\tThe extra space required for replication is also counted. E.g.\n" +
+        "\t\ta 1GB file with replication of 3 consumes 3GB of the quota.\n\n" +
+        "\t\tQuota can also be specified with a binary prefix for terabytes,\n" +
+        "\t\tpetabytes etc (e.g. 50t is 50TB, 5m is 5MB, 3p is 3PB).\n" +
+        "\t\tFor each directory, attempt to set the quota. An error will be reported if\n" +
+        "\t\t1. quota is not a positive integer or zero, or\n" +
+        "\t\t2. user is not an administrator, or\n" +
+        "\t\t3. the directory does not exist or is a file.\n" +
+        "\t\tThe storage type specific quota is set when -storageType option is specified.\n" +
+        "\t\tAvailable storageTypes are \n" +
+        "\t\t- RAM_DISK\n" +
+        "\t\t- DISK\n" +
+        "\t\t- SSD\n" +
+        "\t\t- ARCHIVE";
 
     private long quota; // the quota to be set
     private StorageType type;
@@ -291,9 +305,15 @@ public class DFSAdmin extends FsShell {
       String storageTypeString =
           StringUtils.popOptionWithArgument("-storageType", parameters);
       if (storageTypeString != null) {
-        this.type = StorageType.parseStorageType(storageTypeString);
+        try {
+          this.type = StorageType.parseStorageType(storageTypeString);
+        } catch (IllegalArgumentException e) {
+          throw new IllegalArgumentException("Storage type "
+              + storageTypeString
+              + " is not available. Available storage types are "
+              + StorageType.getTypesSupportingQuota());
+        }
       }
-      
       this.args = parameters.toArray(new String[parameters.size()]);
     }
     
@@ -364,7 +384,7 @@ public class DFSAdmin extends FsShell {
       final RollingUpgradeAction action = RollingUpgradeAction.fromString(
           argv.length >= 2? argv[1]: "");
       if (action == null) {
-        throw new IllegalArgumentException("Failed to covert \"" + argv[1]
+        throw new IllegalArgumentException("Failed to convert \"" + argv[1]
             +"\" to " + RollingUpgradeAction.class.getSimpleName());
       }
 
@@ -408,15 +428,17 @@ public class DFSAdmin extends FsShell {
     "\t[-refreshSuperUserGroupsConfiguration]\n" +
     "\t[-refreshCallQueue]\n" +
     "\t[-refresh <host:ipc_port> <key> [arg1..argn]\n" +
-    "\t[-reconfig <datanode|...> <host:ipc_port> <start|status>]\n" +
+    "\t[-reconfig <datanode|...> <host:ipc_port> <start|status|properties>]\n" +
     "\t[-printTopology]\n" +
     "\t[-refreshNamenodes datanode_host:ipc_port]\n"+
     "\t[-deleteBlockPool datanode_host:ipc_port blockpoolId [force]]\n"+
     "\t[-setBalancerBandwidth <bandwidth in bytes per second>]\n" +
+    "\t[-getBalancerBandwidth <datanode_host:ipc_port>]\n" +
     "\t[-fetchImage <local directory>]\n" +
     "\t[-allowSnapshot <snapshotDir>]\n" +
     "\t[-disallowSnapshot <snapshotDir>]\n" +
     "\t[-shutdownDatanode <datanode_host:ipc_port> [upgrade]]\n" +
+    "\t[-evictWriters <datanode_host:ipc_port>]\n" +
     "\t[-getDatanodeInfo <datanode_host:ipc_port>]\n" +
     "\t[-metasave filename]\n" +
     "\t[-triggerBlockReport [-incremental] <datanode_host:ipc_port>]\n" +
@@ -455,10 +477,21 @@ public class DFSAdmin extends FsShell {
     long capacity = ds.getCapacity();
     long used = ds.getUsed();
     long remaining = ds.getRemaining();
+    long bytesInFuture = dfs.getBytesWithFutureGenerationStamps();
     long presentCapacity = used + remaining;
     boolean mode = dfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_GET);
     if (mode) {
       System.out.println("Safe mode is ON");
+      if (bytesInFuture > 0) {
+        System.out.println("\nWARNING: ");
+        System.out.println("Name node has detected blocks with generation " +
+            "stamps in future.");
+        System.out.println("Forcing exit from safemode will cause " +
+            bytesInFuture + " byte(s) to be deleted.");
+        System.out.println("If you are sure that the NameNode was started with"
+            + " the correct metadata files then you may proceed with " +
+            "'-safemode forceExit'\n");
+      }
     }
     System.out.println("Configured Capacity: " + capacity
                        + " (" + StringUtils.byteDesc(capacity) + ")");
@@ -484,6 +517,8 @@ public class DFSAdmin extends FsShell {
                        dfs.getMissingBlocksCount());
     System.out.println("Missing blocks (with replication factor 1): " +
                       dfs.getMissingReplOneBlocksCount());
+    System.out.println("Pending deletion blocks: " +
+        dfs.getPendingDeletionBlocksCount());
 
     System.out.println();
 
@@ -545,7 +580,7 @@ public class DFSAdmin extends FsShell {
 
   /**
    * Safe mode maintenance command.
-   * Usage: hdfs dfsadmin -safemode [enter | leave | get]
+   * Usage: hdfs dfsadmin -safemode [enter | leave | get | wait | forceExit]
    * @param argv List of of command line parameters.
    * @param idx The index of the command that is being processed.
    * @exception IOException if the filesystem does not exist.
@@ -567,6 +602,8 @@ public class DFSAdmin extends FsShell {
     } else if ("wait".equalsIgnoreCase(argv[idx])) {
       action = HdfsConstants.SafeModeAction.SAFEMODE_GET;
       waitExitSafe = true;
+    } else if ("forceExit".equalsIgnoreCase(argv[idx])){
+      action = HdfsConstants.SafeModeAction.SAFEMODE_FORCE_EXIT;
     } else {
       printUsage("-safemode");
       return;
@@ -575,7 +612,7 @@ public class DFSAdmin extends FsShell {
     DistributedFileSystem dfs = getDFS();
     Configuration dfsConf = dfs.getConf();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(dfsConf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(dfsConf, dfsUri);
 
     if (isHaEnabled) {
       String nsId = dfsUri.getHost();
@@ -676,7 +713,7 @@ public class DFSAdmin extends FsShell {
   }
   
   /**
-   * Allow snapshot on a directory.
+   * Disallow snapshot on a directory.
    * Usage: hdfs dfsadmin -disallowSnapshot snapshotDir
    * @param argv List of of command line parameters.
    * @exception IOException
@@ -703,8 +740,7 @@ public class DFSAdmin extends FsShell {
     DistributedFileSystem dfs = getDFS();
     Configuration dfsConf = dfs.getConf();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(dfsConf, dfsUri);
-
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(dfsConf, dfsUri);
     if (isHaEnabled) {
       String nsId = dfsUri.getHost();
       List<ProxyAndInfo<ClientProtocol>> proxies =
@@ -748,7 +784,7 @@ public class DFSAdmin extends FsShell {
     DistributedFileSystem dfs = getDFS();
     Configuration dfsConf = dfs.getConf();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(dfsConf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(dfsConf, dfsUri);
 
     if (isHaEnabled) {
       String nsId = dfsUri.getHost();
@@ -781,7 +817,7 @@ public class DFSAdmin extends FsShell {
     DistributedFileSystem dfs = getDFS();
     Configuration dfsConf = dfs.getConf();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(dfsConf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(dfsConf, dfsUri);
 
     if (isHaEnabled) {
       String nsId = dfsUri.getHost();
@@ -823,6 +859,11 @@ public class DFSAdmin extends FsShell {
       return exitCode;
     }
 
+    if (bandwidth < 0) {
+      System.err.println("Bandwidth should be a non-negative integer");
+      return exitCode;
+    }
+
     FileSystem fs = getFS();
     if (!(fs instanceof DistributedFileSystem)) {
       System.err.println("FileSystem is " + fs.getUri());
@@ -832,7 +873,7 @@ public class DFSAdmin extends FsShell {
     DistributedFileSystem dfs = (DistributedFileSystem) fs;
     Configuration dfsConf = dfs.getConf();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(dfsConf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(dfsConf, dfsUri);
 
     if (isHaEnabled) {
       String nsId = dfsUri.getHost();
@@ -851,6 +892,25 @@ public class DFSAdmin extends FsShell {
     exitCode = 0;
 
     return exitCode;
+  }
+
+  /**
+   * Command to get balancer bandwidth for the given datanode. Usage: hdfs
+   * dfsadmin -getBalancerBandwidth {@literal <datanode_host:ipc_port>}
+   * @param argv List of of command line parameters.
+   * @param idx The index of the command that is being processed.
+   * @exception IOException
+   */
+  public int getBalancerBandwidth(String[] argv, int idx) throws IOException {
+    ClientDatanodeProtocol dnProxy = getDataNodeProxy(argv[idx]);
+    try {
+      long bandwidth = dnProxy.getBalancerBandwidth();
+      System.out.println("Balancer bandwidth is " + bandwidth
+          + " bytes per second.");
+    } catch (IOException ioe) {
+      throw new IOException("Datanode unreachable. " + ioe, ioe);
+    }
+    return 0;
   }
 
   /**
@@ -888,11 +948,14 @@ public class DFSAdmin extends FsShell {
       commonUsageSummary;
 
     String report ="-report [-live] [-dead] [-decommissioning]:\n" +
-      "\tReports basic filesystem information and statistics.\n" +
+      "\tReports basic filesystem information and statistics. \n" +
+      "\tThe dfs usage can be different from \"du\" usage, because it\n" +
+      "\tmeasures raw space used by replication, checksums, snapshots\n" +
+      "\tand etc. on all the DNs.\n" +
       "\tOptional flags may be used to filter the list of displayed DNs.\n";
-    
 
-    String safemode = "-safemode <enter|leave|get|wait>:  Safe mode maintenance command.\n" + 
+    String safemode = "-safemode <enter|leave|get|wait|forceExit>:  Safe mode " +
+        "maintenance command.\n" +
       "\t\tSafe mode is a Namenode state in which it\n" +
       "\t\t\t1.  does not accept changes to the name space (read-only)\n" +
       "\t\t\t2.  does not replicate or delete blocks.\n" +
@@ -950,8 +1013,9 @@ public class DFSAdmin extends FsShell {
 
     String refreshCallQueue = "-refreshCallQueue: Reload the call queue from config\n";
 
-    String reconfig = "-reconfig <datanode|...> <host:ipc_port> <start|status>:\n" +
-        "\tStarts reconfiguration or gets the status of an ongoing reconfiguration.\n" +
+    String reconfig = "-reconfig <datanode|...> <host:ipc_port> <start|status|properties>:\n" +
+        "\tStarts or gets the status of a reconfiguration operation, \n" +
+        "\tor gets a list of reconfigurable properties.\n" +
         "\tThe second parameter specifies the node type.\n" +
         "\tCurrently, only reloading DataNode's configuration is supported.\n";
 
@@ -983,7 +1047,13 @@ public class DFSAdmin extends FsShell {
       "\t\tthat will be used by each datanode. This value overrides\n" +
       "\t\tthe dfs.balance.bandwidthPerSec parameter.\n\n" +
       "\t\t--- NOTE: The new value is not persistent on the DataNode.---\n";
-    
+
+    String getBalancerBandwidth = "-getBalancerBandwidth <datanode_host:ipc_port>:\n" +
+        "\tGet the network bandwidth for the given datanode.\n" +
+        "\tThis is the maximum network bandwidth used by the datanode\n" +
+        "\tduring HDFS block balancing.\n\n" +
+        "\t--- NOTE: This value is not persistent on the DataNode.---\n";
+
     String fetchImage = "-fetchImage <local directory>:\n" +
       "\tDownloads the most recent fsimage from the Name Node and saves it in" +
       "\tthe specified local directory.\n";
@@ -1001,6 +1071,10 @@ public class DFSAdmin extends FsShell {
         + "\tmode will be enabled. When the restart does not happen in time,\n"
         + "\tclients will timeout and ignore the datanode. In such case, the\n"
         + "\tfast start-up mode will also be disabled.\n";
+
+    String evictWriters = "-evictWriters <datanode_host:ipc_port>\n"
+        + "\tMake the datanode evict all clients that are writing a block.\n"
+        + "\tThis is useful if decommissioning is hung due to slow writers.\n";
 
     String getDatanodeInfo = "-getDatanodeInfo <datanode_host:ipc_port>\n"
         + "\tGet the information about the given datanode. This command can\n"
@@ -1061,6 +1135,8 @@ public class DFSAdmin extends FsShell {
       System.out.println(deleteBlockPool);
     } else if ("setBalancerBandwidth".equals(cmd)) {
       System.out.println(setBalancerBandwidth);
+    } else if ("getBalancerBandwidth".equals(cmd)) {
+      System.out.println(getBalancerBandwidth);
     } else if ("fetchImage".equals(cmd)) {
       System.out.println(fetchImage);
     } else if ("allowSnapshot".equalsIgnoreCase(cmd)) {
@@ -1069,6 +1145,8 @@ public class DFSAdmin extends FsShell {
       System.out.println(disallowSnapshot);
     } else if ("shutdownDatanode".equalsIgnoreCase(cmd)) {
       System.out.println(shutdownDatanode);
+    } else if ("evictWriters".equalsIgnoreCase(cmd)) {
+      System.out.println(evictWriters);
     } else if ("getDatanodeInfo".equalsIgnoreCase(cmd)) {
       System.out.println(getDatanodeInfo);
     } else if ("help".equals(cmd)) {
@@ -1098,10 +1176,12 @@ public class DFSAdmin extends FsShell {
       System.out.println(refreshNamenodes);
       System.out.println(deleteBlockPool);
       System.out.println(setBalancerBandwidth);
+      System.out.println(getBalancerBandwidth);
       System.out.println(fetchImage);
       System.out.println(allowSnapshot);
       System.out.println(disallowSnapshot);
       System.out.println(shutdownDatanode);
+      System.out.println(evictWriters);
       System.out.println(getDatanodeInfo);
       System.out.println(triggerBlockReport);
       System.out.println(help);
@@ -1121,7 +1201,7 @@ public class DFSAdmin extends FsShell {
     
     Configuration dfsConf = dfs.getConf();
     URI dfsUri = dfs.getUri();
-    boolean isHaAndLogicalUri = HAUtil.isLogicalUri(dfsConf, dfsUri);
+    boolean isHaAndLogicalUri = HAUtilClient.isLogicalUri(dfsConf, dfsUri);
     if (isHaAndLogicalUri) {
       // In the case of HA and logical URI, run finalizeUpgrade for all
       // NNs in this nameservice.
@@ -1161,7 +1241,7 @@ public class DFSAdmin extends FsShell {
     DistributedFileSystem dfs = getDFS();
     Configuration dfsConf = dfs.getConf();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(dfsConf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(dfsConf, dfsUri);
 
     if (isHaEnabled) {
       String nsId = dfsUri.getHost();
@@ -1248,7 +1328,7 @@ public class DFSAdmin extends FsShell {
 
     DistributedFileSystem dfs = getDFS();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(conf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(conf, dfsUri);
 
     if (isHaEnabled) {
       // Run refreshServiceAcl for all NNs if HA is enabled
@@ -1291,7 +1371,7 @@ public class DFSAdmin extends FsShell {
 
     DistributedFileSystem dfs = getDFS();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(conf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(conf, dfsUri);
 
     if (isHaEnabled) {
       // Run refreshUserToGroupsMapings for all NNs if HA is enabled
@@ -1336,7 +1416,7 @@ public class DFSAdmin extends FsShell {
 
     DistributedFileSystem dfs = getDFS();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(conf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(conf, dfsUri);
 
     if (isHaEnabled) {
       // Run refreshSuperUserGroupsConfiguration for all NNs if HA is enabled
@@ -1375,7 +1455,7 @@ public class DFSAdmin extends FsShell {
 
     DistributedFileSystem dfs = getDFS();
     URI dfsUri = dfs.getUri();
-    boolean isHaEnabled = HAUtil.isLogicalUri(conf, dfsUri);
+    boolean isHaEnabled = HAUtilClient.isLogicalUri(conf, dfsUri);
 
     if (isHaEnabled) {
       // Run refreshCallQueue for all NNs if HA is enabled
@@ -1410,6 +1490,9 @@ public class DFSAdmin extends FsShell {
       return startReconfiguration(nodeType, address);
     } else if ("status".equals(op)) {
       return getReconfigurationStatus(nodeType, address, System.out, System.err);
+    } else if ("properties".equals(op)) {
+      return getReconfigurableProperties(
+          nodeType, address, System.out, System.err);
     }
     System.err.println("Unknown operation: " + op);
     return -1;
@@ -1447,18 +1530,24 @@ public class DFSAdmin extends FsShell {
 
         out.println(" and finished at " +
             new Date(status.getEndTime()).toString() + ".");
+        if (status.getStatus() == null) {
+          // Nothing to report.
+          return 0;
+        }
         for (Map.Entry<PropertyChange, Optional<String>> result :
             status.getStatus().entrySet()) {
           if (!result.getValue().isPresent()) {
-            out.print("SUCCESS: ");
+            out.printf(
+                "SUCCESS: Changed property %s%n\tFrom: \"%s\"%n\tTo: \"%s\"%n",
+                result.getKey().prop, result.getKey().oldVal,
+                result.getKey().newVal);
           } else {
-            out.print("FAILED: ");
-          }
-          out.printf("Change property %s%n\tFrom: \"%s\"%n\tTo: \"%s\"%n",
-              result.getKey().prop, result.getKey().oldVal,
-              result.getKey().newVal);
-          if (result.getValue().isPresent()) {
-            out.println("\tError: " + result.getValue().get() + ".");
+            final String errorMsg = result.getValue().get();
+            out.printf(
+                  "FAILED: Change property %s%n\tFrom: \"%s\"%n\tTo: \"%s\"%n",
+                  result.getKey().prop, result.getKey().oldVal,
+                  result.getKey().newVal);
+            out.println("\tError: " + errorMsg + ".");
           }
         }
       } catch (IOException e) {
@@ -1466,7 +1555,32 @@ public class DFSAdmin extends FsShell {
         return 1;
       }
     } else {
-      err.println("Node type " + nodeType + " does not support reconfiguration.");
+      err.println("Node type " + nodeType +
+          " does not support reconfiguration.");
+      return 1;
+    }
+    return 0;
+  }
+
+  int getReconfigurableProperties(String nodeType, String address,
+      PrintStream out, PrintStream err) throws IOException {
+    if ("datanode".equals(nodeType)) {
+      ClientDatanodeProtocol dnProxy = getDataNodeProxy(address);
+      try {
+        List<String> properties =
+            dnProxy.listReconfigurableProperties();
+        out.println(
+            "Configuration properties that are allowed to be reconfigured:");
+        for (String name : properties) {
+          out.println(name);
+        }
+      } catch (IOException e) {
+        err.println("DataNode reconfiguration: " + e + ".");
+        return 1;
+      }
+    } else {
+      err.println("Node type " + nodeType +
+          " does not support reconfiguration.");
       return 1;
     }
     return 0;
@@ -1537,7 +1651,7 @@ public class DFSAdmin extends FsShell {
           + " [-report] [-live] [-dead] [-decommissioning]");
     } else if ("-safemode".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
-          + " [-safemode enter | leave | get | wait]");
+          + " [-safemode enter | leave | get | wait | forceExit]");
     } else if ("-allowSnapshot".equalsIgnoreCase(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-allowSnapshot <snapshotDir>]");
@@ -1591,7 +1705,7 @@ public class DFSAdmin extends FsShell {
                          + " [-refreshCallQueue]");
     } else if ("-reconfig".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
-                         + " [-reconfig <datanode|...> <host:port> <start|status>]");
+                         + " [-reconfig <datanode|...> <host:port> <start|status|properties>]");
     } else if ("-refresh".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
                          + " [-refresh <hostname:port> <resource_identifier> [arg1..argn]");
@@ -1607,12 +1721,18 @@ public class DFSAdmin extends FsShell {
     } else if ("-setBalancerBandwidth".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
                   + " [-setBalancerBandwidth <bandwidth in bytes per second>]");
+    } else if ("-getBalancerBandwidth".equalsIgnoreCase(cmd)) {
+      System.err.println("Usage: hdfs dfsadmin"
+          + " [-getBalancerBandwidth <datanode_host:ipc_port>]");
     } else if ("-fetchImage".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-fetchImage <local directory>]");
     } else if ("-shutdownDatanode".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-shutdownDatanode <datanode_host:ipc_port> [upgrade]]");
+    } else if ("-evictWriters".equals(cmd)) {
+      System.err.println("Usage: hdfs dfsadmin"
+          + " [-evictWriters <datanode_host:ipc_port>]");
     } else if ("-getDatanodeInfo".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-getDatanodeInfo <datanode_host:ipc_port>]");
@@ -1742,6 +1862,11 @@ public class DFSAdmin extends FsShell {
         printUsage(cmd);
         return exitCode;
       }
+    } else if ("-getBalancerBandwidth".equalsIgnoreCase(cmd)) {
+      if (argv.length != 2) {
+        printUsage(cmd);
+        return exitCode;
+      }
     } else if ("-fetchImage".equals(cmd)) {
       if (argv.length != 2) {
         printUsage(cmd);
@@ -1827,10 +1952,14 @@ public class DFSAdmin extends FsShell {
         exitCode = deleteBlockPool(argv, i);
       } else if ("-setBalancerBandwidth".equals(cmd)) {
         exitCode = setBalancerBandwidth(argv, i);
+      } else if ("-getBalancerBandwidth".equals(cmd)) {
+        exitCode = getBalancerBandwidth(argv, i);
       } else if ("-fetchImage".equals(cmd)) {
         exitCode = fetchImage(argv, i);
       } else if ("-shutdownDatanode".equals(cmd)) {
         exitCode = shutdownDatanode(argv, i);
+      } else if ("-evictWriters".equals(cmd)) {
+        exitCode = evictWriters(argv, i);
       } else if ("-getDatanodeInfo".equals(cmd)) {
         exitCode = getDatanodeInfo(argv, i);
       } else if ("-reconfig".equals(cmd)) {
@@ -1893,7 +2022,7 @@ public class DFSAdmin extends FsShell {
 
     // Create the client
     ClientDatanodeProtocol dnProtocol =     
-        DFSUtil.createClientDatanodeProtocolProxy(datanodeAddr, getUGI(), conf,
+        DFSUtilClient.createClientDatanodeProtocolProxy(datanodeAddr, getUGI(), conf,
             NetUtils.getSocketFactory(conf, ClientDatanodeProtocol.class));
     return dnProtocol;
   }
@@ -1938,14 +2067,25 @@ public class DFSAdmin extends FsShell {
     return 0;
   }
 
+  private int evictWriters(String[] argv, int i) throws IOException {
+    final String dn = argv[i];
+    ClientDatanodeProtocol dnProxy = getDataNodeProxy(dn);
+    try {
+      dnProxy.evictWriters();
+      System.out.println("Requested writer eviction to datanode " + dn);
+    } catch (IOException ioe) {
+      throw new IOException("Datanode unreachable. " + ioe, ioe);
+    }
+    return 0;
+  }
+
   private int getDatanodeInfo(String[] argv, int i) throws IOException {
     ClientDatanodeProtocol dnProxy = getDataNodeProxy(argv[i]);
     try {
       DatanodeLocalInfo dnInfo = dnProxy.getDatanodeInfo();
       System.out.println(dnInfo.getDatanodeLocalReport());
     } catch (IOException ioe) {
-      System.err.println("Datanode unreachable.");
-      return -1;
+      throw new IOException("Datanode unreachable. " + ioe, ioe);
     }
     return 0;
   }

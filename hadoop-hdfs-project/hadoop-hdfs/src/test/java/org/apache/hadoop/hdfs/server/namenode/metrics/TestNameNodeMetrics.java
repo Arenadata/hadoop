@@ -17,20 +17,32 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.metrics;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_AUDIT_LOGGERS_KEY;
+import org.apache.hadoop.crypto.key.JavaKeyStoreProvider;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.FileSystemTestHelper;
+import org.apache.hadoop.fs.FileSystemTestWrapper;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.client.CreateEncryptionZoneFlag;
+import org.apache.hadoop.hdfs.client.HdfsAdmin;
 import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
 import static org.apache.hadoop.test.MetricsAsserts.assertGauge;
 import static org.apache.hadoop.test.MetricsAsserts.assertQuantileGauges;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.io.DataInputStream;
+import java.io.File;
 import java.io.IOException;
+import java.security.NoSuchAlgorithmException;
+import java.util.EnumSet;
 import java.util.Random;
+import com.google.common.collect.ImmutableList;
 
+import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Options.Rename;
 import org.apache.hadoop.fs.Path;
@@ -39,6 +51,7 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
@@ -47,13 +60,14 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
-import org.apache.hadoop.hdfs.server.namenode.top.TopAuditLogger;
+import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.metrics2.MetricsSource;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.MetricsAsserts;
-import org.apache.hadoop.util.Time;
 import org.apache.log4j.Level;
 import org.junit.After;
 import org.junit.Before;
@@ -69,6 +83,7 @@ public class TestNameNodeMetrics {
     new Path("/testNameNodeMetrics");
   private static final String NN_METRICS = "NameNodeActivity";
   private static final String NS_METRICS = "FSNamesystem";
+  public static final Log LOG = LogFactory.getLog(TestNameNodeMetrics.class);
   
   // Number of datanodes in the cluster
   private static final int DATANODE_COUNT = 3; 
@@ -88,8 +103,8 @@ public class TestNameNodeMetrics {
         "" + PERCENTILES_INTERVAL);
     // Enable stale DataNodes checking
     CONF.setBoolean(DFSConfigKeys.DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_READ_KEY, true);
-    ((Log4JLogger)LogFactory.getLog(MetricsAsserts.class))
-      .getLogger().setLevel(Level.DEBUG);
+    GenericTestUtils.setLogLevel(LogFactory.getLog(MetricsAsserts.class),
+        Level.DEBUG);
   }
   
   private MiniDFSCluster cluster;
@@ -119,7 +134,10 @@ public class TestNameNodeMetrics {
       MetricsRecordBuilder rb = getMetrics(source);
       assertQuantileGauges("GetGroups1s", rb);
     }
-    cluster.shutdown();
+    if (cluster != null) {
+      cluster.shutdown();
+      cluster = null;
+    }
   }
   
   /** create a file with a length of <code>fileLen</code> */
@@ -155,7 +173,9 @@ public class TestNameNodeMetrics {
         MetricsAsserts.getLongGauge("CapacityRemaining", rb);
     long capacityUsedNonDFS =
         MetricsAsserts.getLongGauge("CapacityUsedNonDFS", rb);
-    assert(capacityUsed + capacityRemaining + capacityUsedNonDFS ==
+    // There will be 5% space reserved in ext filesystem which is not
+    // considered.
+    assert (capacityUsed + capacityRemaining + capacityUsedNonDFS <=
         capacityTotal);
   }
 
@@ -265,12 +285,17 @@ public class TestNameNodeMetrics {
   public void testExcessBlocks() throws Exception {
     Path file = getTestPath("testExcessBlocks");
     createFile(file, 100, (short)2);
-    long totalBlocks = 1;
     NameNodeAdapter.setReplication(namesystem, file.toString(), (short)1);
     updateMetrics();
     MetricsRecordBuilder rb = getMetrics(NS_METRICS);
-    assertGauge("ExcessBlocks", totalBlocks, rb);
+    assertGauge("ExcessBlocks", 1L, rb);
+
+    // verify ExcessBlocks metric is decremented and
+    // excessReplicateMap is cleared after deleting a file
     fs.delete(file, true);
+    rb = getMetrics(NS_METRICS);
+    assertGauge("ExcessBlocks", 0L, rb);
+    assertTrue(bm.excessReplicateMap.isEmpty());
   }
   
   /** Test to ensure metrics reflects missing blocks */
@@ -398,6 +423,82 @@ public class TestNameNodeMetrics {
   }
   
   /**
+   * Testing TransactionsSinceLastCheckpoint. Need a new cluster as
+   * the other tests in here don't use HA. See HDFS-7501.
+   */
+  @Test(timeout = 300000)
+  public void testTransactionSinceLastCheckpointMetrics() throws Exception {
+    Random random = new Random();
+    int retryCount = 0;
+    while (retryCount < 5) {
+      try {
+        int basePort = 10060 + random.nextInt(100) * 2;
+        MiniDFSNNTopology topology = new MiniDFSNNTopology()
+            .addNameservice(new MiniDFSNNTopology.NSConf("ns1")
+            .addNN(new MiniDFSNNTopology.NNConf("nn1").setHttpPort(basePort))
+            .addNN(new MiniDFSNNTopology.NNConf("nn2").setHttpPort(basePort + 1)));
+
+        HdfsConfiguration conf2 = new HdfsConfiguration();
+        // Lower the checkpoint condition for purpose of testing.
+        conf2.setInt(
+            DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY,
+            100);
+        // Check for checkpoint condition very often, for purpose of testing.
+        conf2.setInt(
+            DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_KEY,
+            1);
+        // Poll and follow ANN txns very often, for purpose of testing.
+        conf2.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+        MiniDFSCluster cluster2 = new MiniDFSCluster.Builder(conf2)
+            .nnTopology(topology).numDataNodes(1).build();
+        cluster2.waitActive();
+        DistributedFileSystem fs2 = cluster2.getFileSystem(0);
+        NameNode nn0 = cluster2.getNameNode(0);
+        NameNode nn1 = cluster2.getNameNode(1);
+        cluster2.transitionToActive(0);
+        fs2.mkdirs(new Path("/tmp-t1"));
+        fs2.mkdirs(new Path("/tmp-t2"));
+        HATestUtil.waitForStandbyToCatchUp(nn0, nn1);
+        // Test to ensure tracking works before the first-ever
+        // checkpoint.
+        assertEquals("SBN failed to track 2 transactions pre-checkpoint.",
+            4L, // 2 txns added further when catch-up is called.
+            cluster2.getNameNode(1).getNamesystem()
+              .getTransactionsSinceLastCheckpoint());
+        // Complete up to the boundary required for
+        // an auto-checkpoint. Using 94 to expect fsimage
+        // rounded at 100, as 4 + 94 + 2 (catch-up call) = 100.
+        for (int i = 1; i <= 94; i++) {
+          fs2.mkdirs(new Path("/tmp-" + i));
+        }
+        HATestUtil.waitForStandbyToCatchUp(nn0, nn1);
+        // Assert 100 transactions in checkpoint.
+        HATestUtil.waitForCheckpoint(cluster2, 1, ImmutableList.of(100));
+        // Test to ensure number tracks the right state of
+        // uncheckpointed edits, and does not go negative
+        // (as fixed in HDFS-7501).
+        assertEquals("Should be zero right after the checkpoint.",
+            0L,
+            cluster2.getNameNode(1).getNamesystem()
+              .getTransactionsSinceLastCheckpoint());
+        fs2.mkdirs(new Path("/tmp-t3"));
+        fs2.mkdirs(new Path("/tmp-t4"));
+        HATestUtil.waitForStandbyToCatchUp(nn0, nn1);
+        // Test to ensure we track the right numbers after
+        // the checkpoint resets it to zero again.
+        assertEquals("SBN failed to track 2 added txns after the ckpt.",
+            4L,
+            cluster2.getNameNode(1).getNamesystem()
+              .getTransactionsSinceLastCheckpoint());
+        cluster2.shutdown();
+        break;
+      } catch (Exception e) {
+        LOG.warn("Unable to set up HA cluster, exception thrown: " + e);
+        retryCount++;
+      }
+    }
+  }
+  /**
    * Test NN checkpoint and transaction-related metrics.
    */
   @Test
@@ -478,5 +579,109 @@ public class TestNameNodeMetrics {
     MetricsRecordBuilder rbNew = getMetrics(NN_METRICS);
     assertTrue(MetricsAsserts.getLongCounter("TransactionsNumOps", rbNew) >
         startWriteCounter);
+  }
+
+  /**
+   * Test metrics indicating the number of active clients and the files under
+   * construction
+   */
+  @Test(timeout = 60000)
+  public void testNumActiveClientsAndFilesUnderConstructionMetrics()
+      throws Exception {
+    final Path file1 = getTestPath("testFileAdd1");
+    createFile(file1, 100, (short) 3);
+    assertGauge("NumActiveClients", 0L, getMetrics(NS_METRICS));
+    assertGauge("NumFilesUnderConstruction", 0L, getMetrics(NS_METRICS));
+
+    Path file2 = new Path("/testFileAdd2");
+    FSDataOutputStream output2 = fs.create(file2);
+    output2.writeBytes("Some test data");
+    assertGauge("NumActiveClients", 1L, getMetrics(NS_METRICS));
+    assertGauge("NumFilesUnderConstruction", 1L, getMetrics(NS_METRICS));
+
+    Path file3 = new Path("/testFileAdd3");
+    FSDataOutputStream output3 = fs.create(file3);
+    output3.writeBytes("Some test data");
+    assertGauge("NumActiveClients", 1L, getMetrics(NS_METRICS));
+    assertGauge("NumFilesUnderConstruction", 2L, getMetrics(NS_METRICS));
+
+    // create another DistributedFileSystem client
+    DistributedFileSystem fs1 = (DistributedFileSystem) cluster
+        .getNewFileSystemInstance(0);
+    try {
+      Path file4 = new Path("/testFileAdd4");
+      FSDataOutputStream output4 = fs1.create(file4);
+      output4.writeBytes("Some test data");
+      assertGauge("NumActiveClients", 2L, getMetrics(NS_METRICS));
+      assertGauge("NumFilesUnderConstruction", 3L, getMetrics(NS_METRICS));
+
+      Path file5 = new Path("/testFileAdd35");
+      FSDataOutputStream output5 = fs1.create(file5);
+      output5.writeBytes("Some test data");
+      assertGauge("NumActiveClients", 2L, getMetrics(NS_METRICS));
+      assertGauge("NumFilesUnderConstruction", 4L, getMetrics(NS_METRICS));
+
+      output2.close();
+      output3.close();
+      assertGauge("NumActiveClients", 1L, getMetrics(NS_METRICS));
+      assertGauge("NumFilesUnderConstruction", 2L, getMetrics(NS_METRICS));
+
+      output4.close();
+      output5.close();
+      assertGauge("NumActiveClients", 0L, getMetrics(NS_METRICS));
+      assertGauge("NumFilesUnderConstruction", 0L, getMetrics(NS_METRICS));
+    } finally {
+      fs1.close();
+    }
+  }
+
+  @Test
+  public void testGenerateEDEKTime() throws IOException,
+      NoSuchAlgorithmException {
+    //Create new MiniDFSCluster with EncryptionZone configurations
+    Configuration conf = new HdfsConfiguration();
+    FileSystemTestHelper fsHelper = new FileSystemTestHelper();
+    // Set up java key store
+    String testRoot = fsHelper.getTestRootDir();
+    File testRootDir = new File(testRoot).getAbsoluteFile();
+    conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_KEY_PROVIDER_PATH,
+        JavaKeyStoreProvider.SCHEME_NAME + "://file" +
+        new Path(testRootDir.toString(), "test.jks").toUri());
+    conf.setBoolean(DFSConfigKeys
+        .DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY, true);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_LIST_ENCRYPTION_ZONES_NUM_RESPONSES,
+        2);
+
+    try (MiniDFSCluster clusterEDEK = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(1).build()) {
+
+      DistributedFileSystem fsEDEK =
+          clusterEDEK.getFileSystem();
+      FileSystemTestWrapper fsWrapper = new FileSystemTestWrapper(
+          fsEDEK);
+      HdfsAdmin dfsAdmin = new HdfsAdmin(clusterEDEK.getURI(),
+          conf);
+      fsEDEK.getClient().setKeyProvider(
+          clusterEDEK.getNameNode().getNamesystem()
+              .getProvider());
+
+      String testKey = "test_key";
+      DFSTestUtil.createKey(testKey, clusterEDEK, conf);
+
+      final Path zoneParent = new Path("/zones");
+      final Path zone1 = new Path(zoneParent, "zone1");
+      fsWrapper.mkdir(zone1, FsPermission.getDirDefault(), true);
+      dfsAdmin.createEncryptionZone(zone1, "test_key", EnumSet.of(
+          CreateEncryptionZoneFlag.NO_TRASH));
+
+      MetricsRecordBuilder rb = getMetrics(NN_METRICS);
+
+      for (int i = 0; i < 3; i++) {
+        Path filePath = new Path("/zones/zone1/testfile-" + i);
+        DFSTestUtil.createFile(fsEDEK, filePath, 1024, (short) 3, 1L);
+
+        assertQuantileGauges("GenerateEDEKTime1s", rb);
+      }
+    }
   }
 }

@@ -21,6 +21,7 @@ import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.anyLong;
 import static org.mockito.Mockito.doReturn;
@@ -31,6 +32,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -41,7 +43,7 @@ import org.apache.hadoop.fs.HdfsBlockLocation;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
-import org.apache.hadoop.hdfs.BlockReaderTestUtil;
+import org.apache.hadoop.hdfs.client.impl.BlockReaderTestUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
@@ -57,7 +59,6 @@ import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetCache;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetCache.PageRounder;
-import org.apache.hadoop.hdfs.server.namenode.EditLogFileOutputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.protocol.BlockIdCommand;
@@ -85,6 +86,8 @@ import org.apache.log4j.LogManager;
 
 import com.google.common.base.Supplier;
 import com.google.common.primitives.Ints;
+
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_FSDATASETCACHE_MAX_THREADS_PER_VOLUME_KEY;
 
 public class TestFsDatasetCache {
   private static final Log LOG = LogFactory.getLog(TestFsDatasetCache.class);
@@ -122,6 +125,7 @@ public class TestFsDatasetCache {
     conf.setLong(DFSConfigKeys.DFS_DATANODE_MAX_LOCKED_MEMORY_KEY,
         CACHE_CAPACITY);
     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    conf.setInt(DFS_DATANODE_FSDATASETCACHE_MAX_THREADS_PER_VOLUME_KEY, 10);
 
     prevCacheManipulator = NativeIO.POSIX.getCacheManipulator();
     NativeIO.POSIX.setCacheManipulator(new NoMlockCacheManipulator());
@@ -136,7 +140,7 @@ public class TestFsDatasetCache {
     dn = cluster.getDataNodes().get(0);
     fsd = dn.getFSDataset();
 
-    spyNN = DataNodeTestUtils.spyOnBposToNN(dn, nn);
+    spyNN = InternalDataNodeTestUtils.spyOnBposToNN(dn, nn);
 
   }
 
@@ -147,9 +151,11 @@ public class TestFsDatasetCache {
     DFSTestUtil.verifyExpectedCacheUsage(0, 0, fsd);
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
     // Restore the original CacheManipulator
     NativeIO.POSIX.setCacheManipulator(prevCacheManipulator);
@@ -159,11 +165,14 @@ public class TestFsDatasetCache {
       throws IOException {
     NNHAStatusHeartbeat ha = new NNHAStatusHeartbeat(HAServiceState.ACTIVE,
         fsImage.getLastAppliedOrWrittenTxId());
-    HeartbeatResponse response = new HeartbeatResponse(cmds, ha, null);
+    HeartbeatResponse response =
+        new HeartbeatResponse(cmds, ha, null,
+            ThreadLocalRandom.current().nextLong() | 1L);
     doReturn(response).when(spyNN).sendHeartbeat(
         (DatanodeRegistration) any(),
         (StorageReport[]) any(), anyLong(), anyLong(),
-        anyInt(), anyInt(), anyInt(), (VolumeFailureSummary) any());
+        anyInt(), anyInt(), anyInt(), (VolumeFailureSummary) any(),
+        anyBoolean());
   }
 
   private static DatanodeCommand[] cacheBlock(HdfsBlockLocation loc) {
@@ -339,7 +348,7 @@ public class TestFsDatasetCache {
     for (int i=0; i<numFiles-1; i++) {
       setHeartbeatResponse(cacheBlocks(fileLocs[i]));
       total = DFSTestUtil.verifyExpectedCacheUsage(
-          rounder.round(total + fileSizes[i]), 4 * (i + 1), fsd);
+          rounder.roundUp(total + fileSizes[i]), 4 * (i + 1), fsd);
     }
 
     // nth file should hit a capacity exception
@@ -365,7 +374,7 @@ public class TestFsDatasetCache {
     int curCachedBlocks = 16;
     for (int i=0; i<numFiles-1; i++) {
       setHeartbeatResponse(uncacheBlocks(fileLocs[i]));
-      long uncachedBytes = rounder.round(fileSizes[i]);
+      long uncachedBytes = rounder.roundUp(fileSizes[i]);
       total -= uncachedBytes;
       curCachedBlocks -= uncachedBytes / BLOCK_SIZE;
       DFSTestUtil.verifyExpectedCacheUsage(total, curCachedBlocks, fsd);
@@ -447,7 +456,7 @@ public class TestFsDatasetCache {
     }, 100, 10000);
   }
 
-  @Test(timeout=60000)
+  @Test(timeout=600000)
   public void testPageRounder() throws Exception {
     // Write a small file
     Path fileName = new Path("/testPageRounder");

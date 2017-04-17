@@ -73,7 +73,7 @@ public class ReplicaUnderRecovery extends ReplicaInfo {
     if (recoveryId > this.recoveryId) {
       this.recoveryId = recoveryId;
     } else {
-      throw new IllegalArgumentException("The new rcovery id: " + recoveryId
+      throw new IllegalArgumentException("The new recovery id: " + recoveryId
           + " must be greater than the current one: " + this.recoveryId);
     }
   }
@@ -84,16 +84,6 @@ public class ReplicaUnderRecovery extends ReplicaInfo {
    */
   public ReplicaInfo getOriginalReplica() {
     return original;
-  }
-
-  @Override //ReplicaInfo
-  public boolean isUnlinked() {
-    return original.isUnlinked();
-  }
-
-  @Override //ReplicaInfo
-  public void setUnlinked() {
-    original.setUnlinked();
   }
   
   @Override //ReplicaInfo

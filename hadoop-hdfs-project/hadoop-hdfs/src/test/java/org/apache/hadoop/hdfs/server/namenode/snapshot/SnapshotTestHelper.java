@@ -43,9 +43,9 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguousUnderConstruction;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockUnderConstructionFeature;
 import org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage;
 import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
@@ -176,9 +176,8 @@ public class SnapshotTestHelper {
    * 
    * Specific information for different types of INode: 
    * {@link INodeDirectory}:childrenSize 
-   * {@link INodeFile}: fileSize, block list. Check {@link BlockInfoContiguous#toString()}
-   * and {@link BlockInfoContiguousUnderConstruction#toString()} for detailed information.
-   * {@link FileWithSnapshot}: next link
+   * {@link INodeFile}: fileSize, block list. Check {@link BlockInfo#toString()}
+   * and {@link BlockUnderConstructionFeature#toString()} for detailed information.
    * </pre>
    * @see INode#dumpTreeRecursively()
    */
@@ -228,8 +227,8 @@ public class SnapshotTestHelper {
           line2 = line2.replaceAll("Quota\\[.*\\]", "Quota[]");
         }
         
-        // skip the specific fields of BlockInfoUnderConstruction when the node
-        // is an INodeFileSnapshot or an INodeFileUnderConstructionSnapshot
+        // skip the specific fields of BlockUnderConstructionFeature when the
+        // node is an INodeFileSnapshot or INodeFileUnderConstructionSnapshot
         if (line1.contains("(INodeFileSnapshot)")
             || line1.contains("(INodeFileUnderConstructionSnapshot)")) {
           line1 = line1.replaceAll(
@@ -470,7 +469,13 @@ public class SnapshotTestHelper {
   public static void dumpTree(String message, MiniDFSCluster cluster
       ) throws UnresolvedLinkException {
     System.out.println("XXX " + message);
-    cluster.getNameNode().getNamesystem().getFSDirectory().getINode("/"
-        ).dumpTreeRecursively(System.out);
+    try {
+      cluster.getNameNode().getNamesystem().getFSDirectory().getINode("/"
+          ).dumpTreeRecursively(System.out);
+    } catch (UnresolvedLinkException ule) {
+      throw ule;
+    } catch (IOException ioe) {
+      throw new RuntimeException(ioe);
+    }
   }
 }

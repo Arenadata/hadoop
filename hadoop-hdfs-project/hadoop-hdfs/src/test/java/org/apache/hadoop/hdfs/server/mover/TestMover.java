@@ -38,6 +38,7 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.balancer.Dispatcher.DBlock;
 import org.apache.hadoop.hdfs.server.balancer.ExitStatus;
 import org.apache.hadoop.hdfs.server.balancer.NameNodeConnector;
+import org.apache.hadoop.hdfs.server.balancer.TestBalancer;
 import org.apache.hadoop.hdfs.server.mover.Mover.MLocation;
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.test.GenericTestUtils;
@@ -46,8 +47,23 @@ import org.junit.Assert;
 import org.junit.Test;
 
 public class TestMover {
+
+  static final int DEFAULT_BLOCK_SIZE = 100;
+
+  static {
+    TestBalancer.initTestSetup();
+  }
+
+  static void initConf(Configuration conf) {
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, DEFAULT_BLOCK_SIZE);
+    conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, DEFAULT_BLOCK_SIZE);
+    conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
+    conf.setLong(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1L);
+    conf.setLong(DFSConfigKeys.DFS_BALANCER_MOVEDWINWIDTH_KEY, 2000L);
+  }
+
   static Mover newMover(Configuration conf) throws IOException {
-    final Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+    final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
     Assert.assertEquals(1, namenodes.size());
     Map<URI, List<Path>> nnMap = Maps.newHashMap();
     for (URI nn : namenodes) {
@@ -97,6 +113,7 @@ public class TestMover {
   @Test
   public void testScheduleBlockWithinSameNode() throws Exception {
     final Configuration conf = new HdfsConfiguration();
+    initConf(conf);
     final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(3)
         .storageTypes(
@@ -165,7 +182,7 @@ public class TestMover {
       }
 
       Map<URI, List<Path>> movePaths = Mover.Cli.getNameNodePathsToMove(conf);
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       Assert.assertEquals(1, namenodes.size());
       Assert.assertEquals(1, movePaths.size());
       URI nn = namenodes.iterator().next();
@@ -173,7 +190,7 @@ public class TestMover {
       Assert.assertNull(movePaths.get(nn));
 
       movePaths = Mover.Cli.getNameNodePathsToMove(conf, "-p", "/foo", "/bar");
-      namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      namenodes = DFSUtil.getInternalNsRpcUris(conf);
       Assert.assertEquals(1, movePaths.size());
       nn = namenodes.iterator().next();
       Assert.assertTrue(movePaths.containsKey(nn));
@@ -194,7 +211,7 @@ public class TestMover {
     try {
       Map<URI, List<Path>> movePaths = Mover.Cli.getNameNodePathsToMove(conf,
           "-p", "/foo", "/bar");
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       Assert.assertEquals(1, namenodes.size());
       Assert.assertEquals(1, movePaths.size());
       URI nn = namenodes.iterator().next();
@@ -215,7 +232,7 @@ public class TestMover {
     final Configuration conf = new HdfsConfiguration();
     DFSTestUtil.setFederatedConfiguration(cluster, conf);
     try {
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       Assert.assertEquals(3, namenodes.size());
 
       try {
@@ -263,7 +280,7 @@ public class TestMover {
     final Configuration conf = new HdfsConfiguration();
     DFSTestUtil.setFederatedHAConfiguration(cluster, conf);
     try {
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       Assert.assertEquals(3, namenodes.size());
 
       Iterator<URI> iter = namenodes.iterator();
@@ -285,6 +302,7 @@ public class TestMover {
   public void testTwoReplicaSameStorageTypeShouldNotSelect() throws Exception {
     // HDFS-8147
     final Configuration conf = new HdfsConfiguration();
+    initConf(conf);
     final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(3)
         .storageTypes(
@@ -328,10 +346,40 @@ public class TestMover {
     }
   }
 
+  @Test(timeout = 300000)
+  public void testMoveWhenStoragePolicyNotSatisfying() throws Exception {
+    // HDFS-8147
+    final Configuration conf = new HdfsConfiguration();
+    final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(3)
+        .storageTypes(
+            new StorageType[][] { { StorageType.DISK }, { StorageType.DISK },
+                { StorageType.DISK } }).build();
+    try {
+      cluster.waitActive();
+      final DistributedFileSystem dfs = cluster.getFileSystem();
+      final String file = "/testMoveWhenStoragePolicyNotSatisfying";
+      // write to DISK
+      final FSDataOutputStream out = dfs.create(new Path(file));
+      out.writeChars("testMoveWhenStoragePolicyNotSatisfying");
+      out.close();
+
+      // move to ARCHIVE
+      dfs.setStoragePolicy(new Path(file), "COLD");
+      int rc = ToolRunner.run(conf, new Mover.Cli(),
+          new String[] { "-p", file.toString() });
+      int exitcode = ExitStatus.NO_MOVE_BLOCK.getExitCode();
+      Assert.assertEquals("Exit code should be " + exitcode, exitcode, rc);
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
   @Test
   public void testMoverFailedRetry() throws Exception {
     // HDFS-8147
     final Configuration conf = new HdfsConfiguration();
+    initConf(conf);
     conf.set(DFSConfigKeys.DFS_MOVER_RETRY_MAX_ATTEMPTS_KEY, "2");
     final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(3)
@@ -356,7 +404,7 @@ public class TestMover {
       int rc = ToolRunner.run(conf, new Mover.Cli(),
           new String[] {"-p", file.toString()});
       Assert.assertEquals("Movement should fail after some retry",
-          ExitStatus.IO_EXCEPTION.getExitCode(), rc);
+          ExitStatus.NO_MOVE_PROGRESS.getExitCode(), rc);
     } finally {
       cluster.shutdown();
     }

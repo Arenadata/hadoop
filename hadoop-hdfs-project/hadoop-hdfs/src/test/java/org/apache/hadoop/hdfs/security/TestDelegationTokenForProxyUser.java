@@ -40,7 +40,9 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.hdfs.web.WebHdfsConstants;
 import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
 import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
 import org.apache.hadoop.security.TestDoAsEffectiveUser;
@@ -97,7 +99,7 @@ public class TestDelegationTokenForProxyUser {
   @BeforeClass
   public static void setUp() throws Exception {
     config = new HdfsConfiguration();
-    config.setBoolean(DFSConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
+    config.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
     config.setLong(
         DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_MAX_LIFETIME_KEY, 10000);
     config.setLong(
@@ -150,7 +152,7 @@ public class TestDelegationTokenForProxyUser {
   public void testWebHdfsDoAs() throws Exception {
     WebHdfsTestUtil.LOG.info("START: testWebHdfsDoAs()");
     WebHdfsTestUtil.LOG.info("ugi.getShortUserName()=" + ugi.getShortUserName());
-    final WebHdfsFileSystem webhdfs = WebHdfsTestUtil.getWebHdfsFileSystemAs(ugi, config, WebHdfsFileSystem.SCHEME);
+    final WebHdfsFileSystem webhdfs = WebHdfsTestUtil.getWebHdfsFileSystemAs(ugi, config, WebHdfsConstants.WEBHDFS_SCHEME);
     
     final Path root = new Path("/");
     cluster.getFileSystem().setPermission(root, new FsPermission((short)0777));

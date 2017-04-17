@@ -36,8 +36,9 @@ import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 public class DatanodeStorageInfo {
   public static final DatanodeStorageInfo[] EMPTY_ARRAY = {};
 
-  public static DatanodeInfo[] toDatanodeInfos(DatanodeStorageInfo[] storages) {
-    return toDatanodeInfos(Arrays.asList(storages));
+  public static DatanodeInfo[] toDatanodeInfos(
+      DatanodeStorageInfo[] storages) {
+    return storages == null ? null: toDatanodeInfos(Arrays.asList(storages));
   }
   static DatanodeInfo[] toDatanodeInfos(List<DatanodeStorageInfo> storages) {
     final DatanodeInfo[] datanodes = new DatanodeInfo[storages.size()];
@@ -57,6 +58,9 @@ public class DatanodeStorageInfo {
   }
 
   public static String[] toStorageIDs(DatanodeStorageInfo[] storages) {
+    if (storages == null) {
+      return null;
+    }
     String[] storageIDs = new String[storages.length];
     for(int i = 0; i < storageIDs.length; i++) {
       storageIDs[i] = storages[i].getStorageID();
@@ -65,6 +69,9 @@ public class DatanodeStorageInfo {
   }
 
   public static StorageType[] toStorageTypes(DatanodeStorageInfo[] storages) {
+    if (storages == null) {
+      return null;
+    }
     StorageType[] storageTypes = new StorageType[storages.length];
     for(int i = 0; i < storageTypes.length; i++) {
       storageTypes[i] = storages[i].getStorageType();
@@ -80,10 +87,10 @@ public class DatanodeStorageInfo {
   /**
    * Iterates over the list of blocks belonging to the data-node.
    */
-  class BlockIterator implements Iterator<BlockInfoContiguous> {
-    private BlockInfoContiguous current;
+  class BlockIterator implements Iterator<BlockInfo> {
+    private BlockInfo current;
 
-    BlockIterator(BlockInfoContiguous head) {
+    BlockIterator(BlockInfo head) {
       this.current = head;
     }
 
@@ -91,8 +98,8 @@ public class DatanodeStorageInfo {
       return current != null;
     }
 
-    public BlockInfoContiguous next() {
-      BlockInfoContiguous res = current;
+    public BlockInfo next() {
+      BlockInfo res = current;
       current = current.getNext(current.findStorageInfo(DatanodeStorageInfo.this));
       return res;
     }
@@ -109,14 +116,12 @@ public class DatanodeStorageInfo {
 
   private long capacity;
   private long dfsUsed;
+  private long nonDfsUsed;
   private volatile long remaining;
   private long blockPoolUsed;
 
-  private volatile BlockInfoContiguous blockList = null;
+  private volatile BlockInfo blockList = null;
   private int numBlocks = 0;
-
-  // The ID of the last full block report which updated this storage.
-  private long lastBlockReportId = 0;
 
   /** The number of block reports received */
   private int blockReportCount = 0;
@@ -144,7 +149,7 @@ public class DatanodeStorageInfo {
     this.state = s.getState();
   }
 
-  int getBlockReportCount() {
+  public int getBlockReportCount() {
     return blockReportCount;
   }
 
@@ -152,7 +157,7 @@ public class DatanodeStorageInfo {
     this.blockReportCount = blockReportCount;
   }
 
-  boolean areBlockContentsStale() {
+  public boolean areBlockContentsStale() {
     return blockContentsStale;
   }
 
@@ -182,14 +187,6 @@ public class DatanodeStorageInfo {
     this.blockPoolUsed = blockPoolUsed;
   }
 
-  long getLastBlockReportId() {
-    return lastBlockReportId;
-  }
-
-  void setLastBlockReportId(long lastBlockReportId) {
-    this.lastBlockReportId = lastBlockReportId;
-  }
-
   State getState() {
     return this.state;
   }
@@ -202,7 +199,7 @@ public class DatanodeStorageInfo {
     return getState() == State.FAILED && numBlocks != 0;
   }
 
-  String getStorageID() {
+  public String getStorageID() {
     return storageID;
   }
 
@@ -218,6 +215,10 @@ public class DatanodeStorageInfo {
     return dfsUsed;
   }
 
+  long getNonDfsUsed() {
+    return nonDfsUsed;
+  }
+
   long getRemaining() {
     return remaining;
   }
@@ -226,7 +227,7 @@ public class DatanodeStorageInfo {
     return blockPoolUsed;
   }
 
-  public AddBlockResult addBlock(BlockInfoContiguous b) {
+  public AddBlockResult addBlock(BlockInfo b) {
     // First check whether the block belongs to a different storage
     // on the same DN.
     AddBlockResult result = AddBlockResult.ADDED;
@@ -251,7 +252,7 @@ public class DatanodeStorageInfo {
     return result;
   }
 
-  public boolean removeBlock(BlockInfoContiguous b) {
+  public boolean removeBlock(BlockInfo b) {
     blockList = b.listRemove(blockList, this);
     if (b.removeStorage(this)) {
       numBlocks--;
@@ -265,7 +266,7 @@ public class DatanodeStorageInfo {
     return numBlocks;
   }
   
-  Iterator<BlockInfoContiguous> getBlockIterator() {
+  Iterator<BlockInfo> getBlockIterator() {
     return new BlockIterator(blockList);
 
   }
@@ -274,7 +275,7 @@ public class DatanodeStorageInfo {
    * Move block to the head of the list of blocks belonging to the data-node.
    * @return the index of the head of the blockList
    */
-  int moveBlockToHead(BlockInfoContiguous b, int curIndex, int headIndex) {
+  int moveBlockToHead(BlockInfo b, int curIndex, int headIndex) {
     blockList = b.moveBlockToHead(blockList, this, curIndex, headIndex);
     return curIndex;
   }
@@ -284,13 +285,14 @@ public class DatanodeStorageInfo {
    * @return the head of the blockList
    */
   @VisibleForTesting
-  BlockInfoContiguous getBlockListHeadForTesting(){
+  BlockInfo getBlockListHeadForTesting(){
     return blockList;
   }
 
   void updateState(StorageReport r) {
     capacity = r.getCapacity();
     dfsUsed = r.getDfsUsed();
+    nonDfsUsed = r.getNonDfsUsed();
     remaining = r.getRemaining();
     blockPoolUsed = r.getBlockPoolUsed();
   }
@@ -303,6 +305,16 @@ public class DatanodeStorageInfo {
   public static void incrementBlocksScheduled(DatanodeStorageInfo... storages) {
     for (DatanodeStorageInfo s : storages) {
       s.getDatanodeDescriptor().incrementBlocksScheduled(s.getStorageType());
+    }
+  }
+
+  /**
+   * Decrement the number of blocks scheduled for each given storage. This will
+   * be called during abandon block or delete of UC block.
+   */
+  public static void decrementBlocksScheduled(DatanodeStorageInfo... storages) {
+    for (DatanodeStorageInfo s : storages) {
+      s.getDatanodeDescriptor().decrementBlocksScheduled(s.getStorageType());
     }
   }
 
@@ -330,7 +342,7 @@ public class DatanodeStorageInfo {
   StorageReport toStorageReport() {
     return new StorageReport(
         new DatanodeStorage(storageID, state, storageType),
-        false, capacity, dfsUsed, remaining, blockPoolUsed);
+        false, capacity, dfsUsed, remaining, blockPoolUsed, nonDfsUsed);
   }
 
   static Iterable<StorageType> toStorageTypes(
@@ -371,6 +383,6 @@ public class DatanodeStorageInfo {
   }
 
   static enum AddBlockResult {
-    ADDED, REPLACED, ALREADY_EXIST;
+    ADDED, REPLACED, ALREADY_EXIST
   }
 }

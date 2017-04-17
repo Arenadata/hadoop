@@ -18,11 +18,13 @@
 
 package org.apache.hadoop.fs.s3;
 
+import java.io.IOException;
 import java.net.URI;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.s3native.S3xLoginHelper;
 
 /**
  * <p>
@@ -31,31 +33,30 @@ import org.apache.hadoop.conf.Configuration;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
+@Deprecated
 public class S3Credentials {
   
   private String accessKey;
   private String secretAccessKey; 
 
   /**
+   * @param uri bucket URI optionally containing username and password.
+   * @param conf configuration
    * @throws IllegalArgumentException if credentials for S3 cannot be
    * determined.
+   * @throws IOException if credential providers are misconfigured and we have
+   *                     to talk to them.
    */
-  public void initialize(URI uri, Configuration conf) {
+  public void initialize(URI uri, Configuration conf) throws IOException {
     if (uri.getHost() == null) {
       throw new IllegalArgumentException("Invalid hostname in URI " + uri);
     }
-    
-    String userInfo = uri.getUserInfo();
-    if (userInfo != null) {
-      int index = userInfo.indexOf(':');
-      if (index != -1) {
-        accessKey = userInfo.substring(0, index);
-        secretAccessKey = userInfo.substring(index + 1);
-      } else {
-        accessKey = userInfo;
-      }
+    S3xLoginHelper.Login login =
+        S3xLoginHelper.extractLoginDetailsWithWarnings(uri);
+    if (login.hasLogin()) {
+      accessKey = login.getUser();
+      secretAccessKey = login.getPassword();
     }
-    
     String scheme = uri.getScheme();
     String accessKeyProperty = String.format("fs.%s.awsAccessKeyId", scheme);
     String secretAccessKeyProperty =
@@ -64,29 +65,28 @@ public class S3Credentials {
       accessKey = conf.getTrimmed(accessKeyProperty);
     }
     if (secretAccessKey == null) {
-      secretAccessKey = conf.getTrimmed(secretAccessKeyProperty);
+      final char[] pass = conf.getPassword(secretAccessKeyProperty);
+      if (pass != null) {
+        secretAccessKey = (new String(pass)).trim();
+      }
     }
     if (accessKey == null && secretAccessKey == null) {
       throw new IllegalArgumentException("AWS " +
                                          "Access Key ID and Secret Access " +
-                                         "Key must be specified as the " +
-                                         "username or password " +
-                                         "(respectively) of a " + scheme +
-                                         " URL, or by setting the " +
-                                         accessKeyProperty + " or " +
+                                         "Key must be specified " +
+                                         "by setting the " +
+                                         accessKeyProperty + " and " +
                                          secretAccessKeyProperty +
                                          " properties (respectively).");
     } else if (accessKey == null) {
       throw new IllegalArgumentException("AWS " +
                                          "Access Key ID must be specified " +
-                                         "as the username of a " + scheme +
-                                         " URL, or by setting the " +
+                                         "by setting the " +
                                          accessKeyProperty + " property.");
     } else if (secretAccessKey == null) {
       throw new IllegalArgumentException("AWS " +
                                          "Secret Access Key must be " +
-                                         "specified as the password of a " +
-                                         scheme + " URL, or by setting the " +
+                                         "specified by setting the " +
                                          secretAccessKeyProperty +
                                          " property.");       
     }

@@ -49,6 +49,11 @@ public interface MRJobConfig {
 
   public static final String TASK_CLEANUP_NEEDED = "mapreduce.job.committer.task.cleanup.needed";
 
+  public static final String TASK_LOCAL_WRITE_LIMIT_BYTES =
+          "mapreduce.task.local-fs.write-limit.bytes";
+  // negative values disable the limit
+  public static final long DEFAULT_TASK_LOCAL_WRITE_LIMIT_BYTES = -1;
+
   public static final String JAR = "mapreduce.job.jar";
 
   public static final String ID = "mapreduce.job.id";
@@ -62,6 +67,26 @@ public interface MRJobConfig {
   public static final String PRIORITY = "mapreduce.job.priority";
 
   public static final String QUEUE_NAME = "mapreduce.job.queuename";
+
+  /**
+   *  Node Label expression applicable for all Job containers.
+   */
+  public static final String JOB_NODE_LABEL_EXP = "mapreduce.job.node-label-expression";
+
+  /**
+   * Node Label expression applicable for AM containers.
+   */
+  public static final String AM_NODE_LABEL_EXP = "mapreduce.job.am.node-label-expression";
+
+  /**
+   *  Node Label expression applicable for map containers.
+   */
+  public static final String MAP_NODE_LABEL_EXP = "mapreduce.map.node-label-expression";
+
+  /**
+   * Node Label expression applicable for reduce containers.
+   */
+  public static final String REDUCE_NODE_LABEL_EXP = "mapreduce.reduce.node-label-expression";
 
   public static final String RESERVATION_ID = "mapreduce.job.reservation.id";
 
@@ -180,6 +205,11 @@ public interface MRJobConfig {
 
   public static final String MAPREDUCE_JOB_CLASSLOADER_SYSTEM_CLASSES = "mapreduce.job.classloader.system.classes";
 
+  public static final String MAPREDUCE_JVM_SYSTEM_PROPERTIES_TO_LOG = "mapreduce.jvm.system-properties-to-log";
+  public static final String DEFAULT_MAPREDUCE_JVM_SYSTEM_PROPERTIES_TO_LOG =
+    "os.name,os.version,java.home,java.runtime.version,java.vendor," +
+    "java.version,java.vm.name,java.class.path,java.io.tmpdir,user.dir,user.name";
+
   public static final String IO_SORT_FACTOR = "mapreduce.task.io.sort.factor";
 
   public static final String IO_SORT_MB = "mapreduce.task.io.sort.mb";
@@ -220,9 +250,21 @@ public interface MRJobConfig {
   public static final String TASK_REDUCE_PROFILE_PARAMS = "mapreduce.task.profile.reduce.params";
   
   public static final String TASK_TIMEOUT = "mapreduce.task.timeout";
+  long DEFAULT_TASK_TIMEOUT_MILLIS = 5 * 60 * 1000L;
+
+  String TASK_PROGRESS_REPORT_INTERVAL =
+      "mapreduce.task.progress-report.interval";
 
   public static final String TASK_TIMEOUT_CHECK_INTERVAL_MS = "mapreduce.task.timeout.check-interval-ms";
-  
+
+  public static final String TASK_EXIT_TIMEOUT = "mapreduce.task.exit.timeout";
+
+  public static final int TASK_EXIT_TIMEOUT_DEFAULT = 60 * 1000;
+
+  public static final String TASK_EXIT_TIMEOUT_CHECK_INTERVAL_MS = "mapreduce.task.exit.timeout.check-interval-ms";
+
+  public static final int TASK_EXIT_TIMEOUT_CHECK_INTERVAL_MS_DEFAULT = 20 * 1000;
+
   public static final String TASK_ID = "mapreduce.task.id";
 
   public static final String TASK_OUTPUT_DIR = "mapreduce.task.output.dir";
@@ -300,6 +342,7 @@ public interface MRJobConfig {
     = "mapreduce.reduce.shuffle.memory.limit.percent";
 
   public static final String SHUFFLE_MERGE_PERCENT = "mapreduce.reduce.shuffle.merge.percent";
+  public static final float DEFAULT_SHUFFLE_MERGE_PERCENT = 0.66f;
 
   public static final String REDUCE_FAILURES_MAXPERCENT = "mapreduce.reduce.failures.maxpercent";
 
@@ -355,6 +398,8 @@ public interface MRJobConfig {
   public static final String COMBINE_RECORDS_BEFORE_PROGRESS = "mapreduce.task.combine.progress.records";
 
   public static final String JOB_NAMENODES = "mapreduce.job.hdfs-servers";
+
+  public static final String JOB_NAMENODES_TOKEN_RENEWAL_EXCLUDE = "mapreduce.job.hdfs-servers.token-renewal.exclude";
 
   public static final String JOB_JOBTRACKER_ID = "mapreduce.job.kerberos.jtprinicipal";
 
@@ -662,10 +707,18 @@ public interface MRJobConfig {
       10 * 1000l;
 
   /**
-   * The threshold in terms of seconds after which an unsatisfied mapper request
-   * triggers reducer preemption to free space. Default 0 implies that the reduces
-   * should be preempted immediately after allocation if there is currently no
-   * room for newly allocated mappers.
+   * Duration to wait before forcibly preempting a reducer to allow
+   * allocating new mappers, even when YARN reports positive headroom.
+   */
+  public static final String MR_JOB_REDUCER_UNCONDITIONAL_PREEMPT_DELAY_SEC =
+      "mapreduce.job.reducer.unconditional-preempt.delay.sec";
+
+  public static final int
+      DEFAULT_MR_JOB_REDUCER_UNCONDITIONAL_PREEMPT_DELAY_SEC = 5 * 60;
+
+  /**
+   * Duration to wait before preempting a reducer, when there is no headroom
+   * to allocate new mappers.
    */
   public static final String MR_JOB_REDUCER_PREEMPT_DELAY_SEC =
       "mapreduce.job.reducer.preempt.delay.sec";
@@ -676,6 +729,16 @@ public interface MRJobConfig {
   
   public static final String MR_AM_ADMIN_USER_ENV =
       MR_AM_PREFIX + "admin.user.env";
+
+  // although the AM admin user env default should be the same as the task user
+  // env default, there are problems in making it work on Windows currently
+  // MAPREDUCE-6588 should address the issue and set it to a proper non-empty
+  // value
+  public static final String DEFAULT_MR_AM_ADMIN_USER_ENV =
+      Shell.WINDOWS ?
+          "" :
+          "LD_LIBRARY_PATH=" + Apps.crossPlatformify("HADOOP_COMMON_HOME") +
+              "/lib/native";
 
   public static final String MR_AM_PROFILE = MR_AM_PREFIX + "profile";
   public static final boolean DEFAULT_MR_AM_PROFILE = false;
@@ -700,10 +763,13 @@ public interface MRJobConfig {
   public static final String MAPRED_ADMIN_USER_ENV =
       "mapreduce.admin.user.env";
 
-  public final String DEFAULT_MAPRED_ADMIN_USER_ENV = 
-      Shell.WINDOWS ? 
-          "PATH=%PATH%;%HADOOP_COMMON_HOME%\\bin":
-          "LD_LIBRARY_PATH=$HADOOP_COMMON_HOME/lib/native";
+  // the "%...%" macros can be expanded prematurely and are probably not OK
+  // this should be addressed by MAPREDUCE-6588
+  public static final String DEFAULT_MAPRED_ADMIN_USER_ENV =
+      Shell.WINDOWS ?
+          "PATH=%PATH%;%HADOOP_COMMON_HOME%\\bin" :
+          "LD_LIBRARY_PATH=" + Apps.crossPlatformify("HADOOP_COMMON_HOME") +
+              "/lib/native";
 
   public static final String WORKDIR = "work";
 
@@ -875,4 +941,8 @@ public interface MRJobConfig {
   public static final int DEFAULT_MR_ENCRYPTED_INTERMEDIATE_DATA_BUFFER_KB =
           128;
 
+  /**
+   * A comma-separated list of properties whose value will be redacted.
+   */
+  String MR_JOB_REDACTED_PROPERTIES = "mapreduce.job.redacted-properties";
 }

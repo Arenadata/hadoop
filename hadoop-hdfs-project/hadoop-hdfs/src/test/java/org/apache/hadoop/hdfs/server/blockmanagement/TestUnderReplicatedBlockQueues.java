@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
+import java.util.Iterator;
+
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.junit.Test;
 
@@ -28,6 +30,10 @@ import static org.junit.Assert.fail;
 
 public class TestUnderReplicatedBlockQueues {
 
+  private BlockInfo genBlockInfo(long id) {
+    return new BlockInfoContiguous(new Block(id), (short) 3);
+  }
+
   /**
    * Test that adding blocks with different replication counts puts them
    * into different queues
@@ -36,11 +42,11 @@ public class TestUnderReplicatedBlockQueues {
   @Test
   public void testBlockPriorities() throws Throwable {
     UnderReplicatedBlocks queues = new UnderReplicatedBlocks();
-    Block block1 = new Block(1);
-    Block block2 = new Block(2);
-    Block block_very_under_replicated = new Block(3);
-    Block block_corrupt = new Block(4);
-    Block block_corrupt_repl_one = new Block(5);
+    BlockInfo block1 = genBlockInfo(1);
+    BlockInfo block2 = genBlockInfo(2);
+    BlockInfo block_very_under_replicated = genBlockInfo(3);
+    BlockInfo block_corrupt = genBlockInfo(4);
+    BlockInfo block_corrupt_repl_one = genBlockInfo(5);
 
     //add a block with a single entry
     assertAdded(queues, block1, 1, 0, 3);
@@ -49,7 +55,7 @@ public class TestUnderReplicatedBlockQueues {
     assertEquals(1, queues.size());
     assertInLevel(queues, block1, UnderReplicatedBlocks.QUEUE_HIGHEST_PRIORITY);
     //repeated additions fail
-    assertFalse(queues.add(block1, 1, 0, 3));
+    assertFalse(queues.add(block1, 1, 0, 0, 3));
 
     //add a second block with two replicas
     assertAdded(queues, block2, 2, 0, 3);
@@ -73,22 +79,22 @@ public class TestUnderReplicatedBlockQueues {
     assertAdded(queues, block_corrupt_repl_one, 0, 0, 1);
     assertEquals(2, queues.getCorruptBlockSize());
     assertEquals(1, queues.getCorruptReplOneBlockSize());
-    queues.update(block_corrupt_repl_one, 0, 0, 3, 0, 2);
+    queues.update(block_corrupt_repl_one, 0, 0, 0, 3, 0, 2);
     assertEquals(0, queues.getCorruptReplOneBlockSize());
-    queues.update(block_corrupt, 0, 0, 1, 0, -2);
+    queues.update(block_corrupt, 0, 0, 0, 1, 0, -2);
     assertEquals(1, queues.getCorruptReplOneBlockSize());
-    queues.update(block_very_under_replicated, 0, 0, 1, -4, -24);
+    queues.update(block_very_under_replicated, 0, 0, 0, 1, -4, -24);
     assertEquals(2, queues.getCorruptReplOneBlockSize());
   }
 
   private void assertAdded(UnderReplicatedBlocks queues,
-                           Block block,
+                           BlockInfo block,
                            int curReplicas,
                            int decomissionedReplicas,
                            int expectedReplicas) {
     assertTrue("Failed to add " + block,
                queues.add(block,
-                          curReplicas,
+                          curReplicas, 0,
                           decomissionedReplicas,
                           expectedReplicas));
   }
@@ -106,7 +112,7 @@ public class TestUnderReplicatedBlockQueues {
   private void assertInLevel(UnderReplicatedBlocks queues,
                              Block block,
                              int level) {
-    UnderReplicatedBlocks.BlockIterator bi = queues.iterator(level);
+    final Iterator<BlockInfo> bi = queues.iterator(level);
     while (bi.hasNext()) {
       Block next = bi.next();
       if (block.equals(next)) {

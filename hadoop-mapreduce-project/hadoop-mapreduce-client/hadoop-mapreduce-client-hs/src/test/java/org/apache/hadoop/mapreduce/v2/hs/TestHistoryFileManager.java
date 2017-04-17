@@ -35,7 +35,12 @@ import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.mapreduce.JobID;
+import org.apache.hadoop.mapreduce.TypeConverter;
+import org.apache.hadoop.mapreduce.v2.api.records.JobId;
+import org.apache.hadoop.mapreduce.v2.hs.HistoryFileManager.HistoryFileInfo;
 import org.apache.hadoop.mapreduce.v2.jobhistory.JHAdminConfig;
+import org.apache.hadoop.mapreduce.v2.jobhistory.JobIndexInfo;
 import org.apache.hadoop.test.CoreTestDriver;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
@@ -66,8 +71,9 @@ public class TestHistoryFileManager {
     Configuration conf = new HdfsConfiguration();
     Configuration conf2 = new HdfsConfiguration();
     dfsCluster = new MiniDFSCluster.Builder(conf).build();
-    conf2.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR,
-            conf.get(MiniDFSCluster.HDFS_MINIDFS_BASEDIR) + "_2");
+    conf2.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR, conf.get(
+        MiniDFSCluster.HDFS_MINIDFS_BASEDIR, MiniDFSCluster.getBaseDirectory())
+        + "_2");
     dfsCluster2 = new MiniDFSCluster.Builder(conf2).build();
   }
 
@@ -221,4 +227,34 @@ public class TestHistoryFileManager {
 
   }
 
+  @Test
+  public void testHistoryFileInfoSummaryFileNotExist() throws Exception {
+    HistoryFileManagerTest hmTest = new HistoryFileManagerTest();
+    String job = "job_1410889000000_123456";
+    Path summaryFile = new Path(job + ".summary");
+    JobIndexInfo jobIndexInfo = new JobIndexInfo();
+    jobIndexInfo.setJobId(TypeConverter.toYarn(JobID.forName(job)));
+    Configuration conf = dfsCluster.getConfiguration(0);
+    conf.set(JHAdminConfig.MR_HISTORY_DONE_DIR,
+        "/" + UUID.randomUUID());
+    conf.set(JHAdminConfig.MR_HISTORY_INTERMEDIATE_DONE_DIR,
+        "/" + UUID.randomUUID());
+    hmTest.serviceInit(conf);
+    HistoryFileInfo info = hmTest.getHistoryFileInfo(null, null,
+        summaryFile, jobIndexInfo, false);
+    info.moveToDone();
+    Assert.assertFalse(info.didMoveFail());
+  }
+
+  static class HistoryFileManagerTest extends HistoryFileManager {
+    public HistoryFileManagerTest() {
+      super();
+    }
+    public HistoryFileInfo getHistoryFileInfo(Path historyFile,
+        Path confFile, Path summaryFile, JobIndexInfo jobIndexInfo,
+        boolean isInDone) {
+      return new HistoryFileInfo(historyFile, confFile, summaryFile,
+          jobIndexInfo, isInDone);
+    }
+  }
 }

@@ -54,11 +54,11 @@ public class FsDatasetTestUtil {
     return FsDatasetUtil.getMetaFile(getBlockFile(fsd, bpid, b), b
         .getGenerationStamp());
   }
-  
-  public static boolean unlinkBlock(FsDatasetSpi<?> fsd,
-      ExtendedBlock block, int numLinks) throws IOException {
+
+  public static boolean breakHardlinksIfNeeded(FsDatasetSpi<?> fsd,
+      ExtendedBlock block) throws IOException {
     final ReplicaInfo info = ((FsDatasetImpl)fsd).getReplicaInfo(block);
-    return info.unlinkBlock(numLinks);
+    return info.breakHardLinksIfNeeded();
   }
 
   public static ReplicaInfo fetchReplicaInfo (final FsDatasetSpi<?> fsd,

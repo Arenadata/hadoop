@@ -82,21 +82,7 @@ public class TestAMRestart {
 
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
     int NUM_CONTAINERS = 3;
-    // allocate NUM_CONTAINERS containers
-    am1.allocate("127.0.0.1", 1024, NUM_CONTAINERS,
-      new ArrayList<ContainerId>());
-    nm1.nodeHeartbeat(true);
-
-    // wait for containers to be allocated.
-    List<Container> containers =
-        am1.allocate(new ArrayList<ResourceRequest>(),
-          new ArrayList<ContainerId>()).getAllocatedContainers();
-    while (containers.size() != NUM_CONTAINERS) {
-      nm1.nodeHeartbeat(true);
-      containers.addAll(am1.allocate(new ArrayList<ResourceRequest>(),
-        new ArrayList<ContainerId>()).getAllocatedContainers());
-      Thread.sleep(200);
-    }
+    allocateContainers(nm1, am1, NUM_CONTAINERS);
 
     // launch the 2nd container, for testing running container transferred.
     nm1.nodeHeartbeat(am1.getApplicationAttemptId(), 2, ContainerState.RUNNING);
@@ -164,11 +150,10 @@ public class TestAMRestart {
     Assert.assertFalse(newAttemptId.equals(am1.getApplicationAttemptId()));
 
     // launch the new AM
-    RMAppAttempt attempt2 = app1.getCurrentAppAttempt();
-    nm1.nodeHeartbeat(true);
-    MockAM am2 = rm1.sendAMLaunched(attempt2.getAppAttemptId());
+    MockAM am2 = rm1.launchAM(app1, rm1, nm1);
     RegisterApplicationMasterResponse registerResponse =
         am2.registerAppAttempt();
+
 
     // Assert two containers are running: container2 and container3;
     Assert.assertEquals(2, registerResponse.getContainersFromPreviousAttempts()
@@ -244,10 +229,33 @@ public class TestAMRestart {
     rm1.stop();
   }
 
+  public static List<Container> allocateContainers(MockNM nm1, MockAM am1,
+      int NUM_CONTAINERS) throws Exception {
+    // allocate NUM_CONTAINERS containers
+    am1.allocate("127.0.0.1", 1024, NUM_CONTAINERS,
+      new ArrayList<ContainerId>());
+    nm1.nodeHeartbeat(true);
+
+    // wait for containers to be allocated.
+    List<Container> containers =
+        am1.allocate(new ArrayList<ResourceRequest>(),
+          new ArrayList<ContainerId>()).getAllocatedContainers();
+    while (containers.size() != NUM_CONTAINERS) {
+      nm1.nodeHeartbeat(true);
+      containers.addAll(am1.allocate(new ArrayList<ResourceRequest>(),
+        new ArrayList<ContainerId>()).getAllocatedContainers());
+      Thread.sleep(200);
+    }
+
+    Assert.assertEquals("Did not get all containers allocated",
+        NUM_CONTAINERS, containers.size());
+    return containers;
+  }
+
   private void waitForContainersToFinish(int expectedNum, RMAppAttempt attempt)
       throws InterruptedException {
     int count = 0;
-    while (attempt.getJustFinishedContainers().size() != expectedNum
+    while (attempt.getJustFinishedContainers().size() < expectedNum
         && count < 500) {
       Thread.sleep(100);
       count++;
@@ -258,6 +266,11 @@ public class TestAMRestart {
   public void testNMTokensRebindOnAMRestart() throws Exception {
     YarnConfiguration conf = new YarnConfiguration();
     conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 3);
+    // To prevent test from blacklisting nm1 for AM, we sit threshold to half
+    // of 2 nodes which is 1
+    conf.setFloat(
+        YarnConfiguration.AM_SCHEDULING_NODE_BLACKLISTING_DISABLE_THRESHOLD,
+        0.5f);
 
     MockRM rm1 = new MockRM(conf);
     rm1.start();
@@ -312,11 +325,15 @@ public class TestAMRestart {
     MockAM am2 = MockRM.launchAM(app1, rm1, nm1);
     RegisterApplicationMasterResponse registerResponse =
         am2.registerAppAttempt();
-    rm1.waitForState(app1.getApplicationId(), RMAppState.RUNNING);
+    rm1.waitForState(am2.getApplicationAttemptId(), RMAppAttemptState.RUNNING);
 
     // check am2 get the nm token from am1.
-    Assert.assertEquals(expectedNMTokens,
-      registerResponse.getNMTokensFromPreviousAttempts());
+    Assert.assertEquals(expectedNMTokens.size(),
+        registerResponse.getNMTokensFromPreviousAttempts().size());
+    for (int i = 0; i < expectedNMTokens.size(); i++) {
+      Assert.assertTrue(expectedNMTokens.get(i)
+          .equals(registerResponse.getNMTokensFromPreviousAttempts().get(i)));
+    }
 
     // am2 allocate 1 container on nm2
     containers = new ArrayList<Container>();
@@ -346,7 +363,7 @@ public class TestAMRestart {
     // restart am
     MockAM am3 = MockRM.launchAM(app1, rm1, nm1);
     registerResponse = am3.registerAppAttempt();
-    rm1.waitForState(app1.getApplicationId(), RMAppState.RUNNING);
+    rm1.waitForState(am3.getApplicationAttemptId(), RMAppAttemptState.RUNNING);
 
     // check am3 get the NM token from both am1 and am2;
     List<NMToken> transferredTokens = registerResponse.getNMTokensFromPreviousAttempts();
@@ -381,7 +398,7 @@ public class TestAMRestart {
     ContainerId amContainer =
         ContainerId.newContainerId(am1.getApplicationAttemptId(), 1);
     // Preempt the first attempt;
-    scheduler.killContainer(scheduler.getRMContainer(amContainer));
+    scheduler.markContainerForKillable(scheduler.getRMContainer(amContainer));
 
     am1.waitForState(RMAppAttemptState.FAILED);
     Assert.assertTrue(! attempt1.shouldCountTowardsMaxAttemptRetry());
@@ -397,7 +414,7 @@ public class TestAMRestart {
     // Preempt the second attempt.
     ContainerId amContainer2 =
         ContainerId.newContainerId(am2.getApplicationAttemptId(), 1);
-    scheduler.killContainer(scheduler.getRMContainer(amContainer2));
+    scheduler.markContainerForKillable(scheduler.getRMContainer(amContainer2));
 
     am2.waitForState(RMAppAttemptState.FAILED);
     Assert.assertTrue(! attempt2.shouldCountTowardsMaxAttemptRetry());
@@ -444,7 +461,6 @@ public class TestAMRestart {
       appState.getAttempt(am4.getApplicationAttemptId())
         .getAMContainerExitStatus());
     // launch next AM in nm2
-    nm2.nodeHeartbeat(true);
     MockAM am5 =
         rm1.waitForNewAMToLaunchAndRegister(app1.getApplicationId(), 5, nm2);
     RMAppAttempt attempt5 = app1.getCurrentAppAttempt();
@@ -492,7 +508,7 @@ public class TestAMRestart {
         ContainerId.newContainerId(am1.getApplicationAttemptId(), 1);
 
     // Forcibly preempt the am container;
-    scheduler.killContainer(scheduler.getRMContainer(amContainer));
+    scheduler.markContainerForKillable(scheduler.getRMContainer(amContainer));
 
     am1.waitForState(RMAppAttemptState.FAILED);
     Assert.assertTrue(! attempt1.shouldCountTowardsMaxAttemptRetry());
@@ -592,7 +608,7 @@ public class TestAMRestart {
     rm2.stop();
   }
 
-  @Test (timeout = 50000)
+  @Test (timeout = 120000)
   public void testRMAppAttemptFailuresValidityInterval() throws Exception {
     YarnConfiguration conf = new YarnConfiguration();
     conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
@@ -612,10 +628,10 @@ public class TestAMRestart {
         new MockNM("127.0.0.1:1234", 8000, rm1.getResourceTrackerService());
     nm1.registerNode();
 
-    // set window size to a larger number : 20s
+    // set window size to a larger number : 60s
     // we will verify the app should be failed if
-    // two continuous attempts failed in 20s.
-    RMApp app = rm1.submitApp(200, 20000);
+    // two continuous attempts failed in 60s.
+    RMApp app = rm1.submitApp(200, 60000);
     
     MockAM am = MockRM.launchAM(app, rm1, nm1);
     // Fail current attempt normally
@@ -636,8 +652,8 @@ public class TestAMRestart {
     rm1.waitForState(app.getApplicationId(), RMAppState.FAILED);
 
     ControlledClock clock = new ControlledClock(new SystemClock());
-    // set window size to 6s
-    RMAppImpl app1 = (RMAppImpl)rm1.submitApp(200, 6000);;
+    // set window size to 10s
+    RMAppImpl app1 = (RMAppImpl)rm1.submitApp(200, 10000);;
     app1.setSystemClock(clock);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
@@ -655,8 +671,8 @@ public class TestAMRestart {
     MockAM am2 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
     am2.waitForState(RMAppAttemptState.RUNNING);
 
-    // wait for 6 seconds
-    clock.setTime(System.currentTimeMillis() + 6*1000);
+    // wait for 10 seconds
+    clock.setTime(System.currentTimeMillis() + 10*1000);
     // Fail attempt2 normally
     nm1.nodeHeartbeat(am2.getApplicationAttemptId(),
       1, ContainerState.COMPLETE);
@@ -693,8 +709,8 @@ public class TestAMRestart {
     MockAM am4 =
         rm2.waitForNewAMToLaunchAndRegister(app1.getApplicationId(), 4, nm1);
 
-    // wait for 6 seconds
-    clock.setTime(System.currentTimeMillis() + 6*1000);
+    // wait for 10 seconds
+    clock.setTime(System.currentTimeMillis() + 10*1000);
     // Fail attempt4 normally
     nm1
       .nodeHeartbeat(am4.getApplicationAttemptId(), 1, ContainerState.COMPLETE);
@@ -716,5 +732,109 @@ public class TestAMRestart {
     rm2.waitForState(app1.getApplicationId(), RMAppState.FAILED);
     rm1.stop();
     rm2.stop();
+  }
+
+  private boolean isContainerIdInContainerStatus(
+      List<ContainerStatus> containerStatuses, ContainerId containerId) {
+    for (ContainerStatus status : containerStatuses) {
+      if (status.getContainerId().equals(containerId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @Test(timeout = 30000)
+  public void testAMRestartNotLostContainerCompleteMsg() throws Exception {
+    YarnConfiguration conf = new YarnConfiguration();
+    conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 2);
+
+    MockRM rm1 = new MockRM(conf);
+    rm1.start();
+    RMApp app1 =
+        rm1.submitApp(200, "name", "user",
+            new HashMap<ApplicationAccessType, String>(), false, "default", -1,
+            null, "MAPREDUCE", false, true);
+    MockNM nm1 =
+        new MockNM("127.0.0.1:1234", 10240, rm1.getResourceTrackerService());
+    nm1.registerNode();
+
+    MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
+    allocateContainers(nm1, am1, 1);
+
+    nm1.nodeHeartbeat(
+        am1.getApplicationAttemptId(), 2, ContainerState.RUNNING);
+    ContainerId containerId2 =
+        ContainerId.newContainerId(am1.getApplicationAttemptId(), 2);
+    rm1.waitForState(nm1, containerId2, RMContainerState.RUNNING);
+
+    // container complete
+    nm1.nodeHeartbeat(
+        am1.getApplicationAttemptId(), 2, ContainerState.COMPLETE);
+    rm1.waitForState(nm1, containerId2, RMContainerState.COMPLETED);
+
+    // make sure allocate() get complete container,
+    // before this msg pass to AM, AM may crash
+    while (true) {
+      AllocateResponse response = am1.allocate(
+          new ArrayList<ResourceRequest>(), new ArrayList<ContainerId>());
+      List<ContainerStatus> containerStatuses =
+          response.getCompletedContainersStatuses();
+      if (isContainerIdInContainerStatus(
+          containerStatuses, containerId2) == false) {
+        Thread.sleep(100);
+        continue;
+      }
+
+      // is containerId still in justFinishedContainer?
+      containerStatuses =
+          app1.getCurrentAppAttempt().getJustFinishedContainers();
+      if (isContainerIdInContainerStatus(containerStatuses,
+          containerId2)) {
+        Assert.fail();
+      }
+      break;
+    }
+
+    // fail the AM by sending CONTAINER_FINISHED event without registering.
+    nm1.nodeHeartbeat(
+        am1.getApplicationAttemptId(), 1, ContainerState.COMPLETE);
+    am1.waitForState(RMAppAttemptState.FAILED);
+
+    // wait for app to start a new attempt.
+    rm1.waitForState(app1.getApplicationId(), RMAppState.ACCEPTED);
+    // assert this is a new AM.
+    ApplicationAttemptId newAttemptId =
+        app1.getCurrentAppAttempt().getAppAttemptId();
+    Assert.assertFalse(newAttemptId.equals(am1.getApplicationAttemptId()));
+
+    // launch the new AM
+    RMAppAttempt attempt2 = app1.getCurrentAppAttempt();
+    MockAM am2 = rm1.launchAndRegisterAM(app1, rm1, nm1);
+
+    // whether new AM could get container complete msg
+    AllocateResponse allocateResponse = am2.allocate(
+        new ArrayList<ResourceRequest>(), new ArrayList<ContainerId>());
+    List<ContainerStatus> containerStatuses =
+        allocateResponse.getCompletedContainersStatuses();
+    if (isContainerIdInContainerStatus(containerStatuses,
+        containerId2) == false) {
+      Assert.fail();
+    }
+    containerStatuses = attempt2.getJustFinishedContainers();
+    if (isContainerIdInContainerStatus(containerStatuses, containerId2)) {
+      Assert.fail();
+    }
+
+    // the second allocate should not get container complete msg
+    allocateResponse = am2.allocate(
+        new ArrayList<ResourceRequest>(), new ArrayList<ContainerId>());
+    containerStatuses =
+        allocateResponse.getCompletedContainersStatuses();
+    if (isContainerIdInContainerStatus(containerStatuses, containerId2)) {
+      Assert.fail();
+    }
+
+    rm1.stop();
   }
 }

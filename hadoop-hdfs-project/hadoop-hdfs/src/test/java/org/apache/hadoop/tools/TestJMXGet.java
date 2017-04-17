@@ -31,6 +31,7 @@ import java.io.PrintStream;
 import java.lang.management.ManagementFactory;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.TimeoutException;
 
 import javax.management.MBeanServerConnection;
 import javax.management.ObjectName;
@@ -41,6 +42,7 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.tools.JMXGet;
@@ -54,6 +56,7 @@ import org.junit.Test;
  * 
  */
 public class TestJMXGet {
+  public static final String WRONG_METRIC_VALUE_ERROR_MSG = "Unable to get the correct value for %s.";
 
   private Configuration config;
   private MiniDFSCluster cluster;
@@ -85,13 +88,16 @@ public class TestJMXGet {
    */
   @After
   public void tearDown() throws Exception {
-    if(cluster.isClusterUp())
-      cluster.shutdown();
-
-    File data_dir = new File(cluster.getDataDirectory());
-    if(data_dir.exists() && !FileUtil.fullyDelete(data_dir)) {
-      throw new IOException("Could not delete hdfs directory in tearDown '"
-          + data_dir + "'");
+    if (cluster != null) {
+      if (cluster.isClusterUp()) {
+        cluster.shutdown();
+      }
+      File data_dir = new File(cluster.getDataDirectory());
+      if (data_dir.exists() && !FileUtil.fullyDelete(data_dir)) {
+        throw new IOException(
+            "Could not delete hdfs directory in tearDown '" + data_dir + "'");
+      }
+      cluster = null;
     }
   }
 
@@ -114,12 +120,14 @@ public class TestJMXGet {
     assertTrue("error printAllValues", checkPrintAllValues(jmx));
 
     //get some data from different source
-    assertEquals(numDatanodes, Integer.parseInt(
+    try {
+      DFSTestUtil.waitForMetric(jmx, "NumLiveDataNodes", numDatanodes);
+    } catch (TimeoutException e) {
+    assertEquals(String.format(WRONG_METRIC_VALUE_ERROR_MSG, "NumLiveDataNodes"),numDatanodes, Integer.parseInt(
         jmx.getValue("NumLiveDataNodes")));
+    }
     assertGauge("CorruptBlocks", Long.parseLong(jmx.getValue("CorruptBlocks")),
                 getMetrics("FSNamesystem"));
-    assertEquals(numDatanodes, Integer.parseInt(
-        jmx.getValue("NumOpenConnections")));
 
     cluster.shutdown();
     MBeanServerConnection mbsc = ManagementFactory.getPlatformMBeanServer();
@@ -134,14 +142,19 @@ public class TestJMXGet {
     String pattern = "List of all the available keys:";
     PipedOutputStream pipeOut = new PipedOutputStream();
     PipedInputStream pipeIn = new PipedInputStream(pipeOut);
+    PrintStream oldErr = System.err;
     System.setErr(new PrintStream(pipeOut));
-    jmx.printAllValues();
-    if ((size = pipeIn.available()) != 0) {
-      bytes = new byte[size];
-      pipeIn.read(bytes, 0, bytes.length);            
+    try {
+      jmx.printAllValues();
+      if ((size = pipeIn.available()) != 0) {
+        bytes = new byte[size];
+        pipeIn.read(bytes, 0, bytes.length);
+      }
+      pipeOut.close();
+      pipeIn.close();
+    } finally {
+      System.setErr(oldErr);
     }
-    pipeOut.close();
-    pipeIn.close();
     return bytes != null ? new String(bytes).contains(pattern) : false;
   }
   
@@ -161,7 +174,11 @@ public class TestJMXGet {
     String serviceName = "DataNode";
     jmx.setService(serviceName);
     jmx.init();
-    assertEquals(fileSize, Integer.parseInt(jmx.getValue("BytesWritten")));
+    try {
+      DFSTestUtil.waitForMetric(jmx, "BytesWritten", fileSize);
+    } catch (TimeoutException e) {
+      assertEquals(String.format(WRONG_METRIC_VALUE_ERROR_MSG, "BytesWritten"), fileSize, Integer.parseInt(jmx.getValue("BytesWritten")));
+    }
 
     cluster.shutdown();
     MBeanServerConnection mbsc = ManagementFactory.getPlatformMBeanServer();

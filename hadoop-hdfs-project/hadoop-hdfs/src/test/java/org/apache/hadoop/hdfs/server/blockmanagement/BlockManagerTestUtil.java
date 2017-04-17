@@ -69,9 +69,10 @@ public class BlockManagerTestUtil {
     final BlockManager bm = namesystem.getBlockManager();
     namesystem.readLock();
     try {
+      final BlockInfo storedBlock = bm.getStoredBlock(b);
       return new int[]{getNumberOfRacks(bm, b),
-          bm.countNodes(b).liveReplicas(),
-          bm.neededReplications.contains(b) ? 1 : 0};
+          bm.countNodes(storedBlock).liveReplicas(),
+          bm.neededReplications.contains(storedBlock) ? 1 : 0};
     } finally {
       namesystem.readUnlock();
     }
@@ -212,7 +213,9 @@ public class BlockManagerTestUtil {
    * @param bm the BlockManager to manipulate
    */
   public static void checkHeartbeat(BlockManager bm) {
-    bm.getDatanodeManager().getHeartbeatManager().heartbeatCheck();
+    HeartbeatManager hbm = bm.getDatanodeManager().getHeartbeatManager();
+    hbm.restartHeartbeatStopWatch();
+    hbm.heartbeatCheck();
   }
 
   /**
@@ -291,7 +294,7 @@ public class BlockManagerTestUtil {
       StorageReport report = new StorageReport(
           dns ,false, storage.getCapacity(),
           storage.getDfsUsed(), storage.getRemaining(),
-          storage.getBlockPoolUsed());
+          storage.getBlockPoolUsed(), 0);
       reports.add(report);
     }
     return reports.toArray(StorageReport.EMPTY_ARRAY);
@@ -303,6 +306,19 @@ public class BlockManagerTestUtil {
    */
   public static void recheckDecommissionState(DatanodeManager dm)
       throws ExecutionException, InterruptedException {
-    dm.getDecomManager().runMonitor();
+    dm.getDecomManager().runMonitorForTest();
+  }
+
+  /**
+   * Check if a given Datanode (specified by uuid) is removed. Removed means the
+   * Datanode is no longer present in HeartbeatManager and NetworkTopology.
+   * @param nn Namenode
+   * @param dnUuid Datanode UUID
+   * @return true if datanode is removed.
+   */
+  public static boolean isDatanodeRemoved(NameNode nn, String dnUuid){
+      final DatanodeManager dnm =
+          nn.getNamesystem().getBlockManager().getDatanodeManager();
+      return !dnm.getNetworkTopology().contains(dnm.getDatanode(dnUuid));
   }
 }

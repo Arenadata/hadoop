@@ -49,6 +49,8 @@ import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.timeline.TimelineDataManager;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineACLsManager;
+import org.apache.hadoop.yarn.api.records.timeline.TimelineAbout;
+import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
 import org.apache.hadoop.yarn.webapp.JerseyTestBase;
 import org.apache.hadoop.yarn.webapp.WebServicesTestUtils;
@@ -57,6 +59,7 @@ import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -87,10 +90,12 @@ public class TestAHSWebServices extends JerseyTestBase {
     TimelineStore store =
         TestApplicationHistoryManagerOnTimelineStore.createStore(MAX_APPS);
     TimelineACLsManager aclsManager = new TimelineACLsManager(conf);
+    aclsManager.setTimelineStore(store);
     TimelineDataManager dataManager =
         new TimelineDataManager(store, aclsManager);
     conf.setBoolean(YarnConfiguration.YARN_ACL_ENABLE, true);
     conf.set(YarnConfiguration.YARN_ADMIN_ACL, "foo");
+    dataManager.init(conf);
     ApplicationACLsManager appAclsManager = new ApplicationACLsManager(conf);
     ApplicationHistoryManagerOnTimelineStore historyManager =
         new ApplicationHistoryManagerOnTimelineStore(dataManager, appAclsManager);
@@ -274,6 +279,34 @@ public class TestAHSWebServices extends JerseyTestBase {
       WebServicesTestUtils.checkStringMatch(
         "error string exists and shouldn't", "", responseStr);
     }
+  }
+
+  @Test
+  public void testAbout() throws Exception {
+    WebResource r = resource();
+    ClientResponse response = r
+        .path("ws").path("v1").path("applicationhistory").path("about")
+        .queryParam("user.name", USERS[round])
+        .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
+    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    TimelineAbout actualAbout = response.getEntity(TimelineAbout.class);
+    TimelineAbout expectedAbout =
+        TimelineUtils.createTimelineAbout("Generic History Service API");
+    Assert.assertNotNull(
+        "Timeline service about response is null", actualAbout);
+    Assert.assertEquals(expectedAbout.getAbout(), actualAbout.getAbout());
+    Assert.assertEquals(expectedAbout.getTimelineServiceVersion(),
+        actualAbout.getTimelineServiceVersion());
+    Assert.assertEquals(expectedAbout.getTimelineServiceBuildVersion(),
+        actualAbout.getTimelineServiceBuildVersion());
+    Assert.assertEquals(expectedAbout.getTimelineServiceVersionBuiltOn(),
+        actualAbout.getTimelineServiceVersionBuiltOn());
+    Assert.assertEquals(expectedAbout.getHadoopVersion(),
+        actualAbout.getHadoopVersion());
+    Assert.assertEquals(expectedAbout.getHadoopBuildVersion(),
+        actualAbout.getHadoopBuildVersion());
+    Assert.assertEquals(expectedAbout.getHadoopVersionBuiltOn(),
+        actualAbout.getHadoopVersionBuiltOn());
   }
 
   @Test

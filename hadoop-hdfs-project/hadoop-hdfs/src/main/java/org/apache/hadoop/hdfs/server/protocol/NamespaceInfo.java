@@ -22,7 +22,8 @@ import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NodeType;
@@ -44,21 +45,31 @@ public class NamespaceInfo extends StorageInfo {
   String blockPoolID = "";    // id of the block pool
   String softwareVersion;
   long capabilities;
+  HAServiceState state;
 
   // only authoritative on the server-side to determine advertisement to
   // clients.  enum will update the supported values
-  private static long CAPABILITIES_SUPPORTED = 0;
+  private static final long CAPABILITIES_SUPPORTED = getSupportedCapabilities();
+
+  private static long getSupportedCapabilities() {
+    long mask = 0;
+    for (Capability c : Capability.values()) {
+      if (c.supported) {
+        mask |= c.mask;
+      }
+    }
+    return mask;
+  }
 
   public enum Capability {
     UNKNOWN(false),
     STORAGE_BLOCK_REPORT_BUFFERS(true); // use optimized ByteString buffers
+    private final boolean supported;
     private final long mask;
     Capability(boolean isSupported) {
+      supported = isSupported;
       int bits = ordinal() - 1;
       mask = (bits < 0) ? 0 : (1L << bits);
-      if (isSupported) {
-        CAPABILITIES_SUPPORTED |= mask;
-      }
     }
     public long getMask() {
       return mask;
@@ -79,11 +90,19 @@ public class NamespaceInfo extends StorageInfo {
         CAPABILITIES_SUPPORTED);
   }
 
+  public NamespaceInfo(int nsID, String clusterID, String bpID,
+      long cT, String buildVersion, String softwareVersion,
+      long capabilities, HAServiceState st) {
+    this(nsID, clusterID, bpID, cT, buildVersion, softwareVersion,
+        capabilities);
+    this.state = st;
+  }
+
   // for use by server and/or client
   public NamespaceInfo(int nsID, String clusterID, String bpID,
       long cT, String buildVersion, String softwareVersion,
       long capabilities) {
-    super(HdfsConstants.NAMENODE_LAYOUT_VERSION, nsID, clusterID, cT,
+    super(HdfsServerConstants.NAMENODE_LAYOUT_VERSION, nsID, clusterID, cT,
         NodeType.NAME_NODE);
     blockPoolID = bpID;
     this.buildVersion = buildVersion;
@@ -96,6 +115,13 @@ public class NamespaceInfo extends StorageInfo {
     this(nsID, clusterID, bpID, cT, Storage.getBuildVersion(),
         VersionInfo.getVersion());
   }
+
+  public NamespaceInfo(int nsID, String clusterID, String bpID,
+      long cT, HAServiceState st) {
+    this(nsID, clusterID, bpID, cT, Storage.getBuildVersion(),
+        VersionInfo.getVersion());
+    this.state = st;
+  }
   
   public long getCapabilities() {
     return capabilities;
@@ -104,6 +130,11 @@ public class NamespaceInfo extends StorageInfo {
   @VisibleForTesting
   public void setCapabilities(long capabilities) {
     this.capabilities = capabilities;
+  }
+
+  @VisibleForTesting
+  public void setState(HAServiceState state) {
+    this.state = state;
   }
 
   public boolean isCapabilitySupported(Capability capability) {
@@ -123,6 +154,10 @@ public class NamespaceInfo extends StorageInfo {
   
   public String getSoftwareVersion() {
     return softwareVersion;
+  }
+
+  public HAServiceState getState() {
+    return state;
   }
 
   @Override

@@ -28,16 +28,16 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CreateFlag;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -58,7 +58,6 @@ public class TestFileAppend2 {
   }
 
   static final int numBlocks = 5;
-  final boolean simulatedStorage = false;
 
   private byte[] fileContents = null;
 
@@ -80,9 +79,6 @@ public class TestFileAppend2 {
   @Test
   public void testSimpleAppend() throws IOException {
     final Configuration conf = new HdfsConfiguration();
-    if (simulatedStorage) {
-      SimulatedFSDataset.setFactory(conf);
-    }
     conf.setInt(DFSConfigKeys.DFS_DATANODE_HANDLER_COUNT_KEY, 50);
     fileContents = AppendTestUtil.initBuffer(AppendTestUtil.FILE_SIZE);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
@@ -232,9 +228,6 @@ public class TestFileAppend2 {
   @Test
   public void testSimpleAppend2() throws Exception {
     final Configuration conf = new HdfsConfiguration();
-    if (simulatedStorage) {
-      SimulatedFSDataset.setFactory(conf);
-    }
     conf.setInt(DFSConfigKeys.DFS_DATANODE_HANDLER_COUNT_KEY, 50);
     fileContents = AppendTestUtil.initBuffer(AppendTestUtil.FILE_SIZE);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
@@ -489,8 +482,8 @@ public class TestFileAppend2 {
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 2000);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 2);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 2);
-    conf.setInt(DFSConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 30000);
-    conf.setInt(DFSConfigKeys.DFS_DATANODE_SOCKET_WRITE_TIMEOUT_KEY, 30000);
+    conf.setInt(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 30000);
+    conf.setInt(HdfsClientConfigKeys.DFS_DATANODE_SOCKET_WRITE_TIMEOUT_KEY, 30000);
     conf.setInt(DFSConfigKeys.DFS_DATANODE_HANDLER_COUNT_KEY, 50);
 
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
@@ -548,5 +541,41 @@ public class TestFileAppend2 {
   @Test
   public void testComplexAppend2() throws IOException {
     testComplexAppend(true);
+  }
+
+  /**
+   * Make sure when the block length after appending is less than 512 bytes, the
+   * checksum re-calculation and overwrite are performed correctly.
+   */
+  @Test
+  public void testAppendLessThanChecksumChunk() throws Exception {
+    final byte[] buf = new byte[1024];
+    final MiniDFSCluster cluster = new MiniDFSCluster
+        .Builder(new HdfsConfiguration()).numDataNodes(1).build();
+    cluster.waitActive();
+
+    try (DistributedFileSystem fs = cluster.getFileSystem()) {
+      final int len1 = 200;
+      final int len2 = 300;
+      final Path p = new Path("/foo");
+
+      FSDataOutputStream out = fs.create(p);
+      out.write(buf, 0, len1);
+      out.close();
+
+      out = fs.append(p);
+      out.write(buf, 0, len2);
+      // flush but leave open
+      out.hflush();
+
+      // read data to verify the replica's content and checksum are correct
+      FSDataInputStream in = fs.open(p);
+      final int length = in.read(0, buf, 0, len1 + len2);
+      assertTrue(length > 0);
+      in.close();
+      out.close();
+    } finally {
+      cluster.shutdown();
+    }
   }
 }

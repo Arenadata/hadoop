@@ -21,6 +21,7 @@ import org.apache.hadoop.conf.Configuration;
 
 import java.io.IOException;
 import java.net.URL;
+import java.util.ServiceConfigurationError;
 
 import org.junit.Test;
 import static org.junit.Assert.*;
@@ -41,6 +42,17 @@ public class TestFileSystemInitialization {
     catch (IOException ok) {
       // we might get an exception but this not related to infinite loop problem
       assertFalse(false);
+    }
+  }
+
+  @Test
+  public void testMissingLibraries() {
+    try {
+      Configuration conf = new Configuration();
+      Class<? extends FileSystem> fs = FileSystem.getFileSystemClass("s3a",
+          conf);
+      fail("Expected an exception, got a filesystem: " + fs);
+    } catch (Exception | ServiceConfigurationError expected) {
     }
   }
 }

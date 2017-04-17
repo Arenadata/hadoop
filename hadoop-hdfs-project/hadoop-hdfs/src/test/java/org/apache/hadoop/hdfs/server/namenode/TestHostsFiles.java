@@ -20,12 +20,14 @@ package org.apache.hadoop.hdfs.server.namenode;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.management.ManagementFactory;
+import java.io.File;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileSystem;
@@ -81,8 +83,8 @@ public class TestHostsFiles {
 
     // Configure an excludes file
     FileSystem localFileSys = FileSystem.getLocal(conf);
-    Path workingDir = localFileSys.getWorkingDirectory();
-    Path dir = new Path(workingDir, "build/test/data/temp/decommission");
+    Path workingDir = new Path(MiniDFSCluster.getBaseDirectory());
+    Path dir = new Path(workingDir, "temp/decommission");
     Path excludeFile = new Path(dir, "exclude");
     Path includeFile = new Path(dir, "include");
     assertTrue(localFileSys.mkdirs(dir));
@@ -126,7 +128,12 @@ public class TestHostsFiles {
       assertTrue("Live nodes should contain the decommissioned node",
           nodes.contains("Decommissioned"));
     } finally {
-      cluster.shutdown();
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+      if (localFileSys.exists(dir)) {
+        FileUtils.deleteQuietly(new File(dir.toUri().getPath()));
+      }
     }
   }
 
@@ -136,8 +143,8 @@ public class TestHostsFiles {
 
     // Configure an excludes file
     FileSystem localFileSys = FileSystem.getLocal(conf);
-    Path workingDir = localFileSys.getWorkingDirectory();
-    Path dir = new Path(workingDir, "build/test/data/temp/decommission");
+    Path workingDir = new Path(MiniDFSCluster.getBaseDirectory());
+    Path dir = new Path(workingDir, "temp/decommission");
     Path excludeFile = new Path(dir, "exclude");
     Path includeFile = new Path(dir, "include");
     assertTrue(localFileSys.mkdirs(dir));
@@ -166,6 +173,9 @@ public class TestHostsFiles {
     } finally {
       if (cluster != null) {
         cluster.shutdown();
+      }
+      if (localFileSys.exists(dir)) {
+        FileUtils.deleteQuietly(new File(dir.toUri().getPath()));
       }
     }
   }

@@ -31,9 +31,9 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HAUtil;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolPB;
 import org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolTranslatorPB;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.EditLogInputException;
 import org.apache.hadoop.hdfs.server.namenode.EditLogInputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLog;
@@ -42,6 +42,8 @@ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.ipc.RPC;
+import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.security.SecurityUtil;
 
 import static org.apache.hadoop.util.Time.monotonicNow;
@@ -73,12 +75,12 @@ public class EditLogTailer {
   /**
    * The last transaction ID at which an edit log roll was initiated.
    */
-  private long lastRollTriggerTxId = HdfsConstants.INVALID_TXID;
+  private long lastRollTriggerTxId = HdfsServerConstants.INVALID_TXID;
   
   /**
    * The highest transaction ID loaded by the Standby.
    */
-  private long lastLoadedTxnId = HdfsConstants.INVALID_TXID;
+  private long lastLoadedTxnId = HdfsServerConstants.INVALID_TXID;
 
   /**
    * The last time we successfully loaded a non-zero number of edits from the
@@ -235,7 +237,7 @@ public class EditLogTailer {
         throw elie;
       } finally {
         if (editsLoaded > 0 || LOG.isDebugEnabled()) {
-          LOG.info(String.format("Loaded %d edits starting from txid %d ",
+          LOG.debug(String.format("Loaded %d edits starting from txid %d ",
               editsLoaded, lastTxnId));
         }
       }
@@ -273,6 +275,15 @@ public class EditLogTailer {
       getActiveNodeProxy().rollEditLog();
       lastRollTriggerTxId = lastLoadedTxnId;
     } catch (IOException ioe) {
+      if (ioe instanceof RemoteException) {
+        ioe = ((RemoteException)ioe).unwrapRemoteException();
+        if (ioe instanceof StandbyException) {
+          LOG.info("Skipping log roll. Remote node is not in Active state: " +
+              ioe.getMessage().split("\n")[0]);
+          return;
+        }
+      }
+
       LOG.warn("Unable to trigger a roll of the active NN", ioe);
     }
   }
@@ -332,6 +343,8 @@ public class EditLogTailer {
           } finally {
             namesystem.cpUnlock();
           }
+          //Update NameDirSize Metric
+          namesystem.getFSImage().getStorage().updateNameDirSize();
         } catch (EditLogInputException elie) {
           LOG.warn("Error while reading edits from disk. Will try again.", elie);
         } catch (InterruptedException ie) {
@@ -351,5 +364,4 @@ public class EditLogTailer {
       }
     }
   }
-
 }

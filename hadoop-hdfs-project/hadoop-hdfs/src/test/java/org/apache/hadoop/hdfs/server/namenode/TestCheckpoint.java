@@ -48,7 +48,6 @@ import com.google.common.io.Files;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -110,7 +109,7 @@ import com.google.common.primitives.Ints;
 public class TestCheckpoint {
 
   static {
-    ((Log4JLogger)FSImage.LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(FSImage.LOG, Level.ALL);
   }
 
   static final Log LOG = LogFactory.getLog(TestCheckpoint.class); 
@@ -1040,6 +1039,7 @@ public class TestCheckpoint {
    */
   @Test
   public void testCheckpoint() throws IOException {
+    Path tmpDir = new Path("/tmp_tmp");
     Path file1 = new Path("checkpoint.dat");
     Path file2 = new Path("checkpoint2.dat");
     Configuration conf = new HdfsConfiguration();
@@ -1066,6 +1066,11 @@ public class TestCheckpoint {
       writeFile(fileSys, file1, replication);
       checkFile(fileSys, file1, replication);
 
+      for(int i=0; i < 1000; i++) {
+        fileSys.mkdirs(tmpDir);
+        fileSys.delete(tmpDir, true);
+      }
+
       //
       // Take a checkpoint
       //
@@ -1090,7 +1095,6 @@ public class TestCheckpoint {
     //
     // Restart cluster and verify that file1 still exist.
     //
-    Path tmpDir = new Path("/tmp_tmp");
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDatanodes)
           .format(false).build();
@@ -2005,7 +2009,7 @@ public class TestCheckpoint {
         .when(dstImage).toColonSeparatedString();
 
       try {
-        TransferFsImage.downloadImageToStorage(fsName, 0, dstImage, false);
+        TransferFsImage.downloadImageToStorage(fsName, 0, dstImage, false, false);
         fail("Storage info was not verified");
       } catch (IOException ioe) {
         String msg = StringUtils.stringifyException(ioe);

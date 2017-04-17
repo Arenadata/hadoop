@@ -19,9 +19,11 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
@@ -30,7 +32,6 @@ import java.util.ArrayList;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.ReconfigurationException;
 import org.apache.hadoop.fs.FileSystem;
@@ -45,6 +46,7 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.log4j.Level;
 import org.junit.After;
 import org.junit.Before;
@@ -57,7 +59,8 @@ public class TestDataNodeVolumeFailureReporting {
 
   private static final Log LOG = LogFactory.getLog(TestDataNodeVolumeFailureReporting.class);
   {
-    ((Log4JLogger)TestDataNodeVolumeFailureReporting.LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(TestDataNodeVolumeFailureReporting.LOG,
+        Level.ALL);
   }
 
   private FileSystem fs;
@@ -76,9 +79,8 @@ public class TestDataNodeVolumeFailureReporting {
 
   @Before
   public void setUp() throws Exception {
-    // These tests simulate volume failures by denying execute permission on the
-    // volume's path.  On Windows, the owner of an object is always allowed
-    // access, so we can't run these tests on Windows.
+    // These tests use DataNodeTestUtils#injectDataDirFailure() to simulate
+    // volume failures which is currently not supported on Windows.
     assumeTrue(!Path.WINDOWS);
     // Allow a single volume failure (there are two volumes)
     initCluster(1, 2, 1);
@@ -89,6 +91,7 @@ public class TestDataNodeVolumeFailureReporting {
     IOUtils.cleanup(LOG, fs);
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
 
@@ -590,8 +593,11 @@ public class TestDataNodeVolumeFailureReporting {
       dnNewDataDirs.append(newVol.getAbsolutePath());
     }
     try {
-      dn.reconfigurePropertyImpl(DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY,
-          dnNewDataDirs.toString());
+      assertThat(
+          dn.reconfigurePropertyImpl(
+              DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY,
+              dnNewDataDirs.toString()),
+          is(dn.getConf().get(DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY)));
     } catch (ReconfigurationException e) {
       // This can be thrown if reconfiguration tries to use a failed volume.
       // We need to swallow the exception, because some of our tests want to

@@ -28,6 +28,7 @@ import static org.mockito.Mockito.when;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 
 import org.apache.hadoop.conf.Configuration;
@@ -119,6 +120,10 @@ public class TestRMWebApp {
         YarnApplicationState.RUNNING.toString()));
     rmViewInstance.render();
     WebAppTests.flushOutput(injector);
+    Map<String, String> moreParams =
+        rmViewInstance.context().requestContext().moreParams();
+    String appsTableColumnsMeta = moreParams.get("ui.dataTables.apps.init");
+    Assert.assertTrue(appsTableColumnsMeta.indexOf("natural") != -1);
   }
 
   @Test public void testNodesPage() {
@@ -173,10 +178,10 @@ public class TestRMWebApp {
     
     final List<RMNode> deactivatedNodes =
         MockNodes.deactivatedNodes(racks, numNodes, newResource(mbsPerNode));
-    final ConcurrentMap<String, RMNode> deactivatedNodesMap =
+    final ConcurrentMap<NodeId, RMNode> deactivatedNodesMap =
         Maps.newConcurrentMap();
     for (RMNode node : deactivatedNodes) {
-      deactivatedNodesMap.put(node.getHostName(), node);
+      deactivatedNodesMap.put(node.getNodeID(), node);
     }
 
     RMContextImpl rmContext = new RMContextImpl(null, null, null, null,
@@ -186,7 +191,7 @@ public class TestRMWebApp {
          return applicationsMaps;
        }
        @Override
-       public ConcurrentMap<String, RMNode> getInactiveRMNodes() {
+       public ConcurrentMap<NodeId, RMNode> getInactiveRMNodes() {
          return deactivatedNodesMap;
        }
        @Override

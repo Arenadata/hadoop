@@ -116,55 +116,39 @@ public abstract class AbstractMapWritable implements Writable, Configurable {
         DataInputBuffer in = new DataInputBuffer();
         in.reset(out.getData(), out.getLength());
         readFields(in);
-        
+
       } catch (IOException e) {
         throw new IllegalArgumentException("map cannot be copied: " +
             e.getMessage());
       }
-      
+
     } else {
       throw new IllegalArgumentException("source map cannot be null");
     }
   }
-  
+
   /** constructor. */
   protected AbstractMapWritable() {
     this.conf = new AtomicReference<Configuration>();
 
-    addToMap(ArrayWritable.class,
-        Byte.valueOf(Integer.valueOf(-127).byteValue())); 
-    addToMap(BooleanWritable.class,
-        Byte.valueOf(Integer.valueOf(-126).byteValue()));
-    addToMap(BytesWritable.class,
-        Byte.valueOf(Integer.valueOf(-125).byteValue()));
-    addToMap(FloatWritable.class,
-        Byte.valueOf(Integer.valueOf(-124).byteValue()));
-    addToMap(IntWritable.class,
-        Byte.valueOf(Integer.valueOf(-123).byteValue()));
-    addToMap(LongWritable.class,
-        Byte.valueOf(Integer.valueOf(-122).byteValue()));
-    addToMap(MapWritable.class,
-        Byte.valueOf(Integer.valueOf(-121).byteValue()));
-    addToMap(MD5Hash.class,
-        Byte.valueOf(Integer.valueOf(-120).byteValue()));
-    addToMap(NullWritable.class,
-        Byte.valueOf(Integer.valueOf(-119).byteValue()));
-    addToMap(ObjectWritable.class,
-        Byte.valueOf(Integer.valueOf(-118).byteValue()));
-    addToMap(SortedMapWritable.class,
-        Byte.valueOf(Integer.valueOf(-117).byteValue()));
-    addToMap(Text.class,
-        Byte.valueOf(Integer.valueOf(-116).byteValue()));
-    addToMap(TwoDArrayWritable.class,
-        Byte.valueOf(Integer.valueOf(-115).byteValue()));
-    
+    addToMap(ArrayWritable.class, (byte)-127);
+    addToMap(BooleanWritable.class, (byte)-126);
+    addToMap(BytesWritable.class, (byte)-125);
+    addToMap(FloatWritable.class, (byte)-124);
+    addToMap(IntWritable.class, (byte)-123);
+    addToMap(LongWritable.class, (byte)-122);
+    addToMap(MapWritable.class, (byte)-121);
+    addToMap(MD5Hash.class, (byte)-120);
+    addToMap(NullWritable.class, (byte)-119);
+    addToMap(ObjectWritable.class, (byte)-118);
+    addToMap(SortedMapWritable.class, (byte)-117);
+    addToMap(Text.class, (byte)-116);
+    addToMap(TwoDArrayWritable.class, (byte)-115);
+
     // UTF8 is deprecated so we don't support it
 
-    addToMap(VIntWritable.class,
-        Byte.valueOf(Integer.valueOf(-114).byteValue()));
-    addToMap(VLongWritable.class,
-        Byte.valueOf(Integer.valueOf(-113).byteValue()));
-
+    addToMap(VIntWritable.class, (byte)-114);
+    addToMap(VLongWritable.class, (byte)-113);
   }
 
   /** @return the conf */
@@ -197,20 +181,22 @@ public abstract class AbstractMapWritable implements Writable, Configurable {
   public void readFields(DataInput in) throws IOException {
     
     // Get the number of "unknown" classes
-    
     newClasses = in.readByte();
-    
+
+    // Use the classloader of the current thread to load classes instead of the
+    // system-classloader so as to support both client-only and inside-a-MR-job
+    // use-cases. The context-loader by default eventually falls back to the
+    // system one, so there should be no cases where changing this is an issue.
+    ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+
     // Then read in the class names and add them to our tables
-    
     for (int i = 0; i < newClasses; i++) {
       byte id = in.readByte();
       String className = in.readUTF();
       try {
-        addToMap(Class.forName(className), id);
-        
+        addToMap(classLoader.loadClass(className), id);
       } catch (ClassNotFoundException e) {
-        throw new IOException("can't find class: " + className + " because "+
-            e.getMessage());
+        throw new IOException(e);
       }
     }
   }    

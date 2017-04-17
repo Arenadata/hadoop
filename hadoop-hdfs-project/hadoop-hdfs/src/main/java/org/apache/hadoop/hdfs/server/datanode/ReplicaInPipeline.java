@@ -20,7 +20,9 @@ package org.apache.hadoop.hdfs.server.datanode;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
@@ -43,7 +45,7 @@ public class ReplicaInPipeline extends ReplicaInfo
   private long bytesAcked;
   private long bytesOnDisk;
   private byte[] lastChecksum;  
-  private Thread writer;
+  private AtomicReference<Thread> writer = new AtomicReference<Thread>();
 
   /**
    * Bytes reserved for this replica on the containing volume.
@@ -51,7 +53,8 @@ public class ReplicaInPipeline extends ReplicaInfo
    * the bytes already written to this block.
    */
   private long bytesReserved;
-  
+  private final long originalBytesReserved;
+
   /**
    * Constructor for a zero length replica
    * @param blockId block id
@@ -95,8 +98,9 @@ public class ReplicaInPipeline extends ReplicaInfo
     super( blockId, len, genStamp, vol, dir);
     this.bytesAcked = len;
     this.bytesOnDisk = len;
-    this.writer = writer;
+    this.writer.set(writer);
     this.bytesReserved = bytesToReserve;
+    this.originalBytesReserved = bytesToReserve;
   }
 
   /**
@@ -107,8 +111,9 @@ public class ReplicaInPipeline extends ReplicaInfo
     super(from);
     this.bytesAcked = from.getBytesAcked();
     this.bytesOnDisk = from.getBytesOnDisk();
-    this.writer = from.writer;
+    this.writer.set(from.writer.get());
     this.bytesReserved = from.bytesReserved;
+    this.originalBytesReserved = from.originalBytesReserved;
   }
 
   @Override
@@ -149,8 +154,14 @@ public class ReplicaInPipeline extends ReplicaInfo
   }
   
   @Override
+  public long getOriginalBytesReserved() {
+    return originalBytesReserved;
+  }
+
+  @Override
   public void releaseAllBytesReserved() {  // ReplicaInPipelineInterface
     getVolume().releaseReservedSpace(bytesReserved);
+    getVolume().releaseLockedMemory(bytesReserved);
     bytesReserved = 0;
   }
 
@@ -165,31 +176,49 @@ public class ReplicaInPipeline extends ReplicaInfo
     return new ChunkChecksum(getBytesOnDisk(), lastChecksum);
   }
 
-  /**
-   * Set the thread that is writing to this replica
-   * @param writer a thread writing to this replica
-   */
-  public void setWriter(Thread writer) {
-    this.writer = writer;
+  public void interruptThread() {
+    Thread thread = writer.get();
+    if (thread != null && thread != Thread.currentThread() 
+        && thread.isAlive()) {
+      thread.interrupt();
+    }
   }
-  
+
   @Override  // Object
   public boolean equals(Object o) {
     return super.equals(o);
   }
   
   /**
+   * Attempt to set the writer to a new value.
+   */
+  public boolean attemptToSetWriter(Thread prevWriter, Thread newWriter) {
+    return writer.compareAndSet(prevWriter, newWriter);
+  }
+
+  /**
    * Interrupt the writing thread and wait until it dies
    * @throws IOException the waiting is interrupted
    */
   public void stopWriter(long xceiverStopTimeout) throws IOException {
-    if (writer != null && writer != Thread.currentThread() && writer.isAlive()) {
-      writer.interrupt();
+    while (true) {
+      Thread thread = writer.get();
+      if ((thread == null) || (thread == Thread.currentThread()) ||
+          (!thread.isAlive())) {
+        if (writer.compareAndSet(thread, null) == true) {
+          return; // Done
+        }
+        // The writer changed.  Go back to the start of the loop and attempt to
+        // stop the new writer.
+        continue;
+      }
+      thread.interrupt();
       try {
-        writer.join(xceiverStopTimeout);
-        if (writer.isAlive()) {
-          final String msg = "Join on writer thread " + writer + " timed out";
-          DataNode.LOG.warn(msg + "\n" + StringUtils.getStackTrace(writer));
+        thread.join(xceiverStopTimeout);
+        if (thread.isAlive()) {
+          // Our thread join timed out.
+          final String msg = "Join on writer thread " + thread + " timed out";
+          DataNode.LOG.warn(msg + "\n" + StringUtils.getStackTrace(thread));
           throw new IOException(msg);
         }
       } catch (InterruptedException e) {
@@ -197,7 +226,7 @@ public class ReplicaInPipeline extends ReplicaInfo
       }
     }
   }
-  
+
   @Override  // Object
   public int hashCode() {
     return super.hashCode();
@@ -278,7 +307,19 @@ public class ReplicaInPipeline extends ReplicaInfo
       throw e;
     }
   }
-  
+
+  @Override
+  public OutputStream createRestartMetaStream() throws IOException {
+    File blockFile = getBlockFile();
+    File restartMeta = new File(blockFile.getParent()  +
+        File.pathSeparator + "." + blockFile.getName() + ".restart");
+    if (restartMeta.exists() && !restartMeta.delete()) {
+      DataNode.LOG.warn("Failed to delete restart meta file: " +
+          restartMeta.getPath());
+    }
+    return new FileOutputStream(restartMeta);
+  }
+
   @Override
   public String toString() {
     return super.toString()

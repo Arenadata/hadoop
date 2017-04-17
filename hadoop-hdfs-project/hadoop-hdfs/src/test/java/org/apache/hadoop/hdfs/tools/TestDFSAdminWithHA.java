@@ -43,8 +43,8 @@ public class TestDFSAdminWithHA {
   private MiniQJMHACluster cluster;
   private Configuration conf;
   private DFSAdmin admin;
-  private PrintStream originOut;
-  private PrintStream originErr;
+  private static final PrintStream oldOut = System.out;
+  private static final PrintStream oldErr = System.err;
 
   private static final String NSID = "ns1";
   private static String newLine = System.getProperty("line.separator");
@@ -89,18 +89,19 @@ public class TestDFSAdminWithHA {
     admin.setConf(conf);
     assertTrue(HAUtil.isHAEnabled(conf, "ns1"));
 
-    originOut = System.out;
-    originErr = System.err;
     System.setOut(new PrintStream(out));
     System.setErr(new PrintStream(err));
   }
 
   @After
   public void tearDown() throws Exception {
-    System.out.flush();
-    System.err.flush();
-    System.setOut(originOut);
-    System.setErr(originErr);
+    try {
+      System.out.flush();
+      System.err.flush();
+    } finally {
+      System.setOut(oldOut);
+      System.setErr(oldErr);
+    }
     if (admin != null) {
       admin.close();
     }
@@ -190,6 +191,13 @@ public class TestDFSAdminWithHA {
     assertEquals(err.toString().trim(), 0, exitCode);
     String message = "Balancer bandwidth is set to 10 for.*";
     assertOutputMatches(message + newLine + message + newLine);
+  }
+
+  @Test (timeout = 30000)
+  public void testSetNegativeBalancerBandwidth() throws Exception {
+    setUpHaCluster(false);
+    int exitCode = admin.run(new String[] {"-setBalancerBandwidth", "-10"});
+    assertEquals("Negative bandwidth value must fail the command", -1, exitCode);
   }
 
   @Test (timeout = 30000)

@@ -79,6 +79,33 @@
 </property>
 
 <property>
+  <name>dfs.namenode.lifeline.rpc-address</name>
+  <value></value>
+  <description>
+    NameNode RPC lifeline address.  This is an optional separate RPC address
+    that can be used to isolate health checks and liveness to protect against
+    resource exhaustion in the main RPC handler pool.  In the case of
+    HA/Federation where multiple NameNodes exist, the name service ID is added
+    to the name e.g. dfs.namenode.lifeline.rpc-address.ns1.  The value of this
+    property will take the form of nn-host1:rpc-port.  If this property is not
+    defined, then the NameNode will not start a lifeline RPC server.  By
+    default, the property is not defined.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.lifeline.rpc-bind-host</name>
+  <value></value>
+  <description>
+    The actual address the lifeline RPC server will bind to.  If this optional
+    address is set, it overrides only the hostname portion of
+    dfs.namenode.lifeline.rpc-address.  It can also be specified per name node
+    or name service for HA/Federation.  This is useful for making the name node
+    listen on all interfaces by setting it to 0.0.0.0.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.secondary.http-address</name>
   <value>0.0.0.0:50090</value>
   <description>
@@ -225,19 +252,28 @@
 </property>
 
  <property>
-  <name>dfs.datanode.dns.interface</name>
-  <value>default</value>
-  <description>The name of the Network Interface from which a data node should 
-  report its IP address.
-  </description>
+   <name>dfs.datanode.dns.interface</name>
+   <value>default</value>
+   <description>
+     The name of the Network Interface from which a data node should
+     report its IP address. e.g. eth2. This setting may be required for some
+     multi-homed nodes where the DataNodes are assigned multiple hostnames
+     and it is desirable for the DataNodes to use a non-default hostname.
+
+     Prefer using hadoop.security.dns.interface over
+     dfs.datanode.dns.interface.
+   </description>
  </property>
  
 <property>
   <name>dfs.datanode.dns.nameserver</name>
   <value>default</value>
-  <description>The host name or IP address of the name server (DNS)
-  which a DataNode should use to determine the host name used by the
-  NameNode for communication and display purposes.
+  <description>
+    The host name or IP address of the name server (DNS) which a DataNode
+    should use to determine its own host name.
+
+    Prefer using hadoop.security.dns.nameserver over
+    dfs.datanode.dns.nameserver.
   </description>
  </property>
  
@@ -265,6 +301,15 @@
   <description>Decide if chooseTarget considers the target's load or not
   </description>
 </property>
+
+  <property>
+    <name>dfs.namenode.replication.considerLoad.factor</name>
+    <value>2.0</value>
+    <description>The factor by which a node's load can exceed the average
+      before being rejected for writes, only if considerLoad is true.
+    </description>
+  </property>
+
 <property>
   <name>dfs.default.chunk.view.size</name>
   <value>32768</value>
@@ -276,6 +321,11 @@
   <name>dfs.datanode.du.reserved</name>
   <value>0</value>
   <description>Reserved space in bytes per volume. Always leave this much space free for non dfs use.
+      Specific storage type based reservation is also supported. The property can be followed with
+      corresponding storage types ([ssd]/[disk]/[archive]/[ram_disk]) for cluster with heterogeneous storage.
+      For example, reserved space for RAM_DISK storage can be configured using property
+      'dfs.datanode.du.reserved.ram_disk'. If specific storage type reservation is not configured
+      then dfs.datanode.du.reserved will be used.
   </description>
 </property>
 
@@ -339,6 +389,15 @@
 </property>
 
 <property>
+  <name>dfs.namenode.edits.dir.required</name>
+  <value></value>
+  <description>This should be a subset of dfs.namenode.edits.dir,
+      to ensure that the transaction (edits) file
+      in these places is always up-to-date.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.shared.edits.dir</name>
   <value></value>
   <description>A directory on shared storage between the multiple namenodes
@@ -369,17 +428,24 @@
 <property>
   <name>dfs.permissions.superusergroup</name>
   <value>supergroup</value>
-  <description>The name of the group of super-users.</description>
+  <description>The name of the group of super-users.
+    The value should be a single group name.
+  </description>
 </property>
-<!--
+
 <property>
    <name>dfs.cluster.administrators</name>
-   <value>ACL for the admins</value>
-   <description>This configuration is used to control who can access the
-                default servlets in the namenode, etc.
+   <value></value>
+   <description>ACL for the admins, this configuration is used to control
+     who can access the default servlets in the namenode, etc. The value
+     should be a comma separated list of users and groups. The user list
+     comes first and is separated by a space followed by the group list,
+     e.g. "user1,user2 group1,group2". Both users and groups are optional,
+     so "user1", " group1", "", "user1 group1", "user1,user2 group1,group2"
+     are all valid (note the leading space in " group1"). '*' grants access
+     to all users and groups, e.g. '*', '* ' and ' *' are all valid.
    </description>
 </property>
--->
 
 <property>
   <name>dfs.namenode.acls.enabled</name>
@@ -466,6 +532,18 @@
   <name>dfs.namenode.replication.min</name>
   <value>1</value>
   <description>Minimal block replication. 
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.safemode.replication.min</name>
+  <value></value>
+  <description>
+      a separate minimum replication factor for calculating safe block count.
+      This is an expert level setting.
+      Setting this lower than the dfs.namenode.replication.min
+      is not recommend and/or dangerous for production setups.
+      When it's not set it takes value from dfs.namenode.replication.min
   </description>
 </property>
 
@@ -578,6 +656,27 @@
 </property>
 
 <property>
+  <name>dfs.namenode.max.full.block.report.leases</name>
+  <value>6</value>
+  <description>The maximum number of leases for full block reports that the
+    NameNode will issue at any given time.  This prevents the NameNode from
+    being flooded with full block reports that use up all the RPC handler
+    threads.  This number should never be more than the number of RPC handler
+    threads or less than 1.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.full.block.report.lease.length.ms</name>
+  <value>300000</value>
+  <description>
+    The number of milliseconds that the NameNode will wait before invalidating
+    a full block report lease.  This prevents a crashed DataNode from
+    permanently using up a full block report lease.
+  </description>
+</property>
+
+<property>
   <name>dfs.datanode.directoryscan.interval</name>
   <value>21600</value>
   <description>Interval in seconds for Datanode to scan data directories and
@@ -594,15 +693,97 @@
 </property>
 
 <property>
+  <name>dfs.datanode.directoryscan.throttle.limit.ms.per.sec</name>
+  <value>1000</value>
+  <description>The report compilation threads are limited to only running for
+  a given number of milliseconds per second, as configured by the
+  property. The limit is taken per thread, not in aggregate, e.g. setting
+  a limit of 100ms for 4 compiler threads will result in each thread being
+  limited to 100ms, not 25ms.
+
+  Note that the throttle does not interrupt the report compiler threads, so the
+  actual running time of the threads per second will typically be somewhat
+  higher than the throttle limit, usually by no more than 20%.
+
+  Setting this limit to 1000 disables compiler thread throttling. Only
+  values between 1 and 1000 are valid. Setting an invalid value will result
+  in the throttle being disbled and an error message being logged. 1000 is
+  the default setting.
+  </description>
+</property>
+
+<property>
   <name>dfs.heartbeat.interval</name>
   <value>3</value>
   <description>Determines datanode heartbeat interval in seconds.</description>
 </property>
 
 <property>
+  <name>dfs.datanode.lifeline.interval.seconds</name>
+  <value></value>
+  <description>
+    Sets the interval in seconds between sending DataNode Lifeline Protocol
+    messages from the DataNode to the NameNode.  The value must be greater than
+    the value of dfs.heartbeat.interval.  If this property is not defined, then
+    the default behavior is to calculate the interval as 3x the value of
+    dfs.heartbeat.interval.  Note that normal heartbeat processing may cause the
+    DataNode to postpone sending lifeline messages if they are not required.
+    Under normal operations with speedy heartbeat processing, it is possible
+    that no lifeline messages will need to be sent at all.  This property has no
+    effect if dfs.namenode.lifeline.rpc-address is not defined.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.handler.count</name>
   <value>10</value>
-  <description>The number of server threads for the namenode.</description>
+  <description>The number of Namenode RPC server threads that listen to
+  requests from clients.
+  If dfs.namenode.servicerpc-address is not configured then
+  Namenode RPC server threads listen to requests from all nodes.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.service.handler.count</name>
+  <value>10</value>
+  <description>The number of Namenode RPC server threads that listen to
+  requests from DataNodes and from all other non-client nodes.
+  dfs.namenode.service.handler.count will be valid only if
+  dfs.namenode.servicerpc-address is configured.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.lifeline.handler.ratio</name>
+  <value>0.10</value>
+  <description>
+    A ratio applied to the value of dfs.namenode.handler.count, which then
+    provides the number of RPC server threads the NameNode runs for handling the
+    lifeline RPC server.  For example, if dfs.namenode.handler.count is 100, and
+    dfs.namenode.lifeline.handler.factor is 0.10, then the NameNode starts
+    100 * 0.10 = 10 threads for handling the lifeline RPC server.  It is common
+    to tune the value of dfs.namenode.handler.count as a function of the number
+    of DataNodes in a cluster.  Using this property allows for the lifeline RPC
+    server handler threads to be tuned automatically without needing to touch a
+    separate property.  Lifeline message processing is lightweight, so it is
+    expected to require many fewer threads than the main NameNode RPC server.
+    This property is not used if dfs.namenode.lifeline.handler.count is defined,
+    which sets an absolute thread count.  This property has no effect if
+    dfs.namenode.lifeline.rpc-address is not defined.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.lifeline.handler.count</name>
+  <value></value>
+  <description>
+    Sets an absolute number of RPC server threads the NameNode runs for handling
+    the DataNode Lifeline Protocol and HA health check requests from ZKFC.  If
+    this property is defined, then it overrides the behavior of
+    dfs.namenode.lifeline.handler.ratio.  By default, it is not defined.  This
+    property has no effect if dfs.namenode.lifeline.rpc-address is not defined.
+  </description>
 </property>
 
 <property>
@@ -680,11 +861,25 @@
 
 <property>
   <name>dfs.datanode.balance.bandwidthPerSec</name>
-  <value>1048576</value>
+  <value>10m</value>
   <description>
         Specifies the maximum amount of bandwidth that each datanode
         can utilize for the balancing purpose in term of
-        the number of bytes per second.
+        the number of bytes per second. You can use the following
+        suffix (case insensitive):
+        k(kilo), m(mega), g(giga), t(tera), p(peta), e(exa)to specify the size
+        (such as 128k, 512m, 1g, etc.).
+        Or provide complete size in bytes (such as 134217728 for 128 MB).
+  </description>
+</property>
+
+ <property>
+  <name>dfs.mover.max-no-move-interval</name>
+  <value>60000</value>
+  <description>
+    If this specified amount of time has elapsed and no block has been moved
+    out of a source DataNode, on more effort will be made to move blocks out of
+    this DataNode in the current Mover iteration.
   </description>
 </property>
 
@@ -789,6 +984,18 @@
   <description>Comma-separated list of namenode plug-ins to be activated.
   </description>
 </property>
+
+<property>
+  <name>dfs.namenode.block-placement-policy.default.prefer-local-node</name>
+  <value>true</value>
+  <description>Controls how the default block placement policy places
+  the first replica of a block. When true, it will prefer the node where
+  the client is running.  When false, it will prefer a node in the same rack
+  as the client. Setting to false avoids situations where entire copies of
+  large files end up on a single node, thus creating hotspots.
+  </description>
+</property>
+
 
 <property>
   <name>dfs.stream-buffer-size</name>
@@ -985,14 +1192,30 @@
   <name>dfs.image.transfer.bandwidthPerSec</name>
   <value>0</value>
   <description>
-        Maximum bandwidth used for image transfer in bytes per second.
+        Maximum bandwidth used for regular image transfers (instead of
+        bootstrapping the standby namenode), in bytes per second.
         This can help keep normal namenode operations responsive during
         checkpointing. The maximum bandwidth and timeout in
         dfs.image.transfer.timeout should be set such that normal image
         transfers can complete successfully.
-        A default value of 0 indicates that throttling is disabled. 
+        A default value of 0 indicates that throttling is disabled.
+        The maximum bandwidth used for bootstrapping standby namenode is
+        configured with dfs.image.transfer-bootstrap-standby.bandwidthPerSec.
   </description>
 </property>
+
+  <property>
+    <name>dfs.image.transfer-bootstrap-standby.bandwidthPerSec</name>
+    <value>0</value>
+    <description>
+      Maximum bandwidth used for transferring image to bootstrap standby
+      namenode, in bytes per second.
+      A default value of 0 indicates that throttling is disabled. This default
+      value should be used in most cases, to ensure timely HA operations.
+      The maximum bandwidth used for regular image transfers is configured
+      with dfs.image.transfer.bandwidthPerSec.
+    </description>
+  </property>
 
 <property>
   <name>dfs.image.transfer.chunksize</name>
@@ -1317,13 +1540,137 @@
 </property>
 
 <property>
+  <name>dfs.namenode.kerberos.principal</name>
+  <value></value>
+  <description>
+    The NameNode service principal. This is typically set to
+    nn/_HOST@REALM.TLD. Each NameNode will substitute _HOST with its
+    own fully qualified hostname at startup. The _HOST placeholder
+    allows using the same configuration setting on both NameNodes
+    in an HA setup.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.keytab.file</name>
+  <value></value>
+  <description>
+    The keytab file used by each NameNode daemon to login as its
+    service principal. The principal name is configured with
+    dfs.namenode.kerberos.principal.
+  </description>
+</property>
+
+<property>
+  <name>dfs.datanode.kerberos.principal</name>
+  <value></value>
+  <description>
+    The DataNode service principal. This is typically set to
+    dn/_HOST@REALM.TLD. Each DataNode will substitute _HOST with its
+    own fully qualified hostname at startup. The _HOST placeholder
+    allows using the same configuration setting on all DataNodes.
+  </description>
+</property>
+
+<property>
+  <name>dfs.datanode.keytab.file</name>
+  <value></value>
+  <description>
+    The keytab file used by each DataNode daemon to login as its
+    service principal. The principal name is configured with
+    dfs.datanode.kerberos.principal.
+  </description>
+</property>
+
+<property>
+  <name>dfs.journalnode.kerberos.principal</name>
+  <value></value>
+  <description>
+    The JournalNode service principal. This is typically set to
+    jn/_HOST@REALM.TLD. Each JournalNode will substitute _HOST with its
+    own fully qualified hostname at startup. The _HOST placeholder
+    allows using the same configuration setting on all JournalNodes.
+  </description>
+</property>
+
+<property>
+  <name>dfs.journalnode.keytab.file</name>
+  <value></value>
+  <description>
+    The keytab file used by each JournalNode daemon to login as its
+    service principal. The principal name is configured with
+    dfs.journalnode.kerberos.principal.
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.kerberos.internal.spnego.principal</name>
   <value>${dfs.web.authentication.kerberos.principal}</value>
+  <description>
+    The server principal used by the NameNode for web UI SPNEGO
+    authentication when Kerberos security is enabled. This is
+    typically set to HTTP/_HOST@REALM.TLD The SPNEGO server principal
+    begins with the prefix HTTP/ by convention.
+
+    If the value is '*', the web server will attempt to login with
+    every principal specified in the keytab file
+    dfs.web.authentication.kerberos.keytab.
+</description>
+</property>
+
+<property>
+  <name>dfs.journalnode.kerberos.internal.spnego.principal</name>
+  <value></value>
+  <description>
+    The server principal used by the JournalNode HTTP Server for
+    SPNEGO authentication when Kerberos security is enabled. This is
+    typically set to HTTP/_HOST@REALM.TLD. The SPNEGO server principal
+    begins with the prefix HTTP/ by convention.
+
+    If the value is '*', the web server will attempt to login with
+    every principal specified in the keytab file
+    dfs.web.authentication.kerberos.keytab.
+
+    For most deployments this can be set to ${dfs.web.authentication.kerberos.principal}
+    i.e use the value of dfs.web.authentication.kerberos.principal.
+  </description>
 </property>
 
 <property>
   <name>dfs.secondary.namenode.kerberos.internal.spnego.principal</name>
   <value>${dfs.web.authentication.kerberos.principal}</value>
+  <description>
+    The server principal used by the Secondary NameNode for web UI SPNEGO
+    authentication when Kerberos security is enabled. Like all other
+    Secondary NameNode settings, it is ignored in an HA setup.
+
+    If the value is '*', the web server will attempt to login with
+    every principal specified in the keytab file
+    dfs.web.authentication.kerberos.keytab.
+  </description>
+</property>
+
+<property>
+  <name>dfs.web.authentication.kerberos.principal</name>
+  <value></value>
+  <description>
+    The server principal used by the NameNode for WebHDFS SPNEGO
+    authentication.
+
+    Required when WebHDFS and security are enabled. In most secure clusters this
+    setting is also used to specify the values for
+    dfs.namenode.kerberos.internal.spnego.principal and
+    dfs.journalnode.kerberos.internal.spnego.principal.
+  </description>
+</property>
+
+<property>
+  <name>dfs.web.authentication.kerberos.keytab</name>
+  <value></value>
+  <description>
+    The keytab file for the principal corresponding to
+    dfs.web.authentication.kerberos.principal.
+  </description>
 </property>
 
 <property>
@@ -1525,6 +1872,30 @@
     The number of seconds between cache expiry checks in fuse_dfs. Lower values
     will result in fuse_dfs noticing changes to Kerberos ticket caches more
     quickly.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.metrics.logger.period.seconds</name>
+  <value>600</value>
+  <description>
+    This setting controls how frequently the NameNode logs its metrics. The
+    logging configuration must also define one or more appenders for
+    NameNodeMetricsLog for the metrics to be logged.
+    NameNode metrics logging is disabled if this value is set to zero or
+    less than zero.
+  </description>
+</property>
+
+<property>
+  <name>dfs.datanode.metrics.logger.period.seconds</name>
+  <value>600</value>
+  <description>
+    This setting controls how frequently the DataNode logs its metrics. The
+    logging configuration must also define one or more appenders for
+    DataNodeMetricsLog for the metrics to be logged.
+    DataNode metrics logging is disabled if this value is set to zero or
+    less than zero.
   </description>
 </property>
 
@@ -2019,6 +2390,33 @@
 </property>
 
 <property>
+  <name>dfs.webhdfs.socket.connect-timeout</name>
+  <value>60s</value>
+  <description>
+    Socket timeout for connecting to WebHDFS servers. This prevents a
+    WebHDFS client from hanging if the server hostname is
+    misconfigured, or the server does not response before the timeout
+    expires. Value is followed by a unit specifier: ns, us, ms, s, m,
+    h, d for nanoseconds, microseconds, milliseconds, seconds,
+    minutes, hours, days respectively. Values should provide units,
+    but milliseconds are assumed.
+  </description>
+</property>
+
+<property>
+  <name>dfs.webhdfs.socket.read-timeout</name>
+  <value>60s</value>
+  <description>
+    Socket timeout for reading data from WebHDFS servers. This
+    prevents a WebHDFS client from hanging if the server stops sending
+    data. Value is followed by a unit specifier: ns, us, ms, s, m, h,
+    d for nanoseconds, microseconds, milliseconds, seconds, minutes,
+    hours, days respectively. Values should provide units,
+    but milliseconds are assumed.
+  </description>
+</property>
+
+<property>
   <name>dfs.client.context</name>
   <value>default</value>
   <description>
@@ -2034,6 +2432,18 @@
   <value>false</value>
   <description>
     This configuration parameter turns on short-circuit local reads.
+  </description>
+</property>
+
+<property>
+  <name>dfs.client.socket.send.buffer.size</name>
+  <value>131072</value>
+  <description>
+    Socket send buffer size for a write pipeline in DFSClient side.
+    This may affect TCP connection throughput.
+    If it is set to zero or negative value,
+    no buffer size will be set explicitly,
+    thus enable tcp auto-tuning on some system.
   </description>
 </property>
 
@@ -2066,7 +2476,7 @@
   <value>256</value>
   <description>
     The DFSClient maintains a cache of recently opened file descriptors.
-    This parameter controls the size of that cache.
+    This parameter controls the maximum number of file descriptors in the cache.
     Setting this higher will use more file descriptors,
     but potentially provide better performance on workloads
     involving lots of seeks.
@@ -2092,6 +2502,15 @@
     The client and the DataNode exchange information via
     this shared memory segment.
     It tries paths in order until creation of shared memory segment succeeds.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.audit.log.debug.cmdlist</name>
+  <value></value>
+  <description>
+    A comma separated list of NameNode commands that are written to the HDFS
+    namenode audit log only if the audit log level is debug.
   </description>
 </property>
 
@@ -2179,7 +2598,53 @@
   <name>dfs.namenode.fs-limits.max-xattr-size</name>
   <value>16384</value>
   <description>
-    The maximum combined size of the name and value of an extended attribute in bytes.
+    The maximum combined size of the name and value of an extended attribute
+    in bytes. It should be larger than 0, and less than or equal to maximum
+    size hard limit which is 32768.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.lease-recheck-interval-ms</name>
+  <value>2000</value>
+  <description>During the release of lease a lock is hold that make any
+    operations on the namenode stuck. In order to not block them during
+    a too long duration we stop releasing lease after this max lock limit.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.max-lock-hold-to-release-lease-ms</name>
+  <value>25</value>
+  <description>During the release of lease a lock is hold that make any
+    operations on the namenode stuck. In order to not block them during
+    a too long duration we stop releasing lease after this max lock limit.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.write-lock-reporting-threshold-ms</name>
+  <value>1000</value>
+  <description>When a write lock is held on the namenode for a long time,
+    this will be logged as the lock is released. This sets how long the
+    lock must be held for logging to occur.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.read-lock-reporting-threshold-ms</name>
+  <value>5000</value>
+  <description>When a read lock is held on the namenode for a long time,
+    this will be logged as the lock is released. This sets how long the
+    lock must be held for logging to occur.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.lock.detailed-metrics.enabled</name>
+  <value>false</value>
+  <description>If true, the namenode will keep track of how long various
+    operations hold the Namesystem lock for and emit this as metrics.
   </description>
 </property>
 
@@ -2201,6 +2666,24 @@
   <description>When listing encryption zones, the maximum number of zones
     that will be returned in a batch. Fetching the list incrementally in
     batches improves namenode performance.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.edekcacheloader.interval.ms</name>
+  <value>1000</value>
+  <description>When KeyProvider is configured, the interval time of warming
+    up edek cache on NN starts up / becomes active. All edeks will be loaded
+    from KMS into provider cache. The edek cache loader will try to warm up the
+    cache until succeed or NN leaves active state.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.edekcacheloader.initial.delay.ms</name>
+  <value>3000</value>
+  <description>When KeyProvider is configured, the time delayed until the first
+    attempt to warm up edek cache on NN start up / become active.
   </description>
 </property>
 
@@ -2252,14 +2735,6 @@
 </property>
 
 <property>
-  <name>dfs.encryption.key.provider.uri</name>
-  <description>
-    The KeyProvider to use when interacting with encryption keys used
-    when reading and writing to an encryption zone.
-  </description>
-</property>
-
-<property>
   <name>dfs.storage.policy.enabled</name>
   <value>true</value>
   <description>
@@ -2307,6 +2782,14 @@
 </property>
 
 <property>
+    <name>dfs.webhdfs.ugi.expire.after.access</name>
+    <value>600000</value>
+    <description>How long in milliseconds after the last access
+      the cached UGI will expire. With 0, never expire.
+    </description>
+</property>
+
+<property>
   <name>dfs.namenode.blocks.per.postponedblocks.rescan</name>
   <value>10000</value>
   <description>Number of blocks to rescan for each iteration of
@@ -2320,4 +2803,304 @@
     <description>Whether pin blocks on favored DataNode.</description>
   </property>
 
+<property>
+  <name>dfs.client.block.write.locateFollowingBlock.initial.delay.ms</name>
+  <value>400</value>
+  <description>The initial delay (unit is ms) for locateFollowingBlock,
+    the delay time will increase exponentially(double) for each retry.
+  </description>
+</property>
+
+<property>
+  <name>dfs.ha.zkfc.nn.http.timeout.ms</name>
+  <value>20000</value>
+  <description>
+    The HTTP connection and read timeout value (unit is ms ) when DFS ZKFC
+    tries to get local NN thread dump after local NN becomes
+    SERVICE_NOT_RESPONDING or SERVICE_UNHEALTHY.
+    If it is set to zero, DFS ZKFC won't get local NN thread dump.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.quota.init-threads</name>
+  <value>4</value>
+  <description>
+    The number of concurrent threads to be used in quota initialization. The
+    speed of quota initialization also affects the namenode fail-over latency.
+    If the size of name space is big, try increasing this.
+  </description>
+</property>
+
+<property>
+  <name>dfs.datanode.transfer.socket.send.buffer.size</name>
+  <value>131072</value>
+  <description>
+    Socket send buffer size for DataXceiver (mirroring packets to downstream
+    in pipeline). This may affect TCP connection throughput.
+    If it is set to zero or negative value, no buffer size will be set
+    explicitly, thus enable tcp auto-tuning on some system.
+  </description>
+</property>
+
+<property>
+  <name>dfs.datanode.transfer.socket.recv.buffer.size</name>
+  <value>131072</value>
+  <description>
+    Socket receive buffer size for DataXceiver (receiving packets from client
+    during block writing). This may affect TCP connection throughput.
+    If it is set to zero or negative value, no buffer size will be set
+    explicitly, thus enable tcp auto-tuning on some system.
+  </description>
+</property>
+
+<property>
+  <name>dfs.namenode.upgrade.domain.factor</name>
+  <value>${dfs.replication}</value>
+  <description>
+    This is valid only when block placement policy is set to
+    BlockPlacementPolicyWithUpgradeDomain. It defines the number of
+    unique upgrade domains any block's replicas should have.
+    When the number of replicas is less or equal to this value, the policy
+    ensures each replica has an unique upgrade domain. When the number of
+    replicas is greater than this value, the policy ensures the number of
+    unique domains is at least this value.
+  </description>
+</property>
+
+<property>
+  <name>dfs.datanode.bp-ready.timeout</name>
+  <value>20</value>
+  <description>
+    The maximum wait time for datanode to be ready before failing the
+    received request. Setting this to 0 fails requests right away if the
+    datanode is not yet registered with the namenode. This wait time
+    reduces initial request failures after datanode restart.
+  </description>
+</property>
+
+<property>
+  <name>dfs.webhdfs.rest-csrf.enabled</name>
+  <value>false</value>
+  <description>
+    If true, then enables WebHDFS protection against cross-site request forgery
+    (CSRF).  The WebHDFS client also uses this property to determine whether or
+    not it needs to send the custom CSRF prevention header in its HTTP requests.
+  </description>
+</property>
+
+<property>
+  <name>dfs.webhdfs.rest-csrf.custom-header</name>
+  <value>X-XSRF-HEADER</value>
+  <description>
+    The name of a custom header that HTTP requests must send when protection
+    against cross-site request forgery (CSRF) is enabled for WebHDFS by setting
+    dfs.webhdfs.rest-csrf.enabled to true.  The WebHDFS client also uses this
+    property to determine whether or not it needs to send the custom CSRF
+    prevention header in its HTTP requests.
+  </description>
+</property>
+
+<property>
+  <name>dfs.webhdfs.rest-csrf.methods-to-ignore</name>
+  <value>GET,OPTIONS,HEAD,TRACE</value>
+  <description>
+    A comma-separated list of HTTP methods that do not require HTTP requests to
+    include a custom header when protection against cross-site request forgery
+    (CSRF) is enabled for WebHDFS by setting dfs.webhdfs.rest-csrf.enabled to
+    true.  The WebHDFS client also uses this property to determine whether or
+    not it needs to send the custom CSRF prevention header in its HTTP requests.
+  </description>
+</property>
+
+<property>
+  <name>dfs.webhdfs.rest-csrf.browser-useragents-regex</name>
+  <value>^Mozilla.*,^Opera.*</value>
+  <description>
+    A comma-separated list of regular expressions used to match against an HTTP
+    request's User-Agent header when protection against cross-site request
+    forgery (CSRF) is enabled for WebHDFS by setting
+    dfs.webhdfs.reset-csrf.enabled to true.  If the incoming User-Agent matches
+    any of these regular expressions, then the request is considered to be sent
+    by a browser, and therefore CSRF prevention is enforced.  If the request's
+    User-Agent does not match any of these regular expressions, then the request
+    is considered to be sent by something other than a browser, such as scripted
+    automation.  In this case, CSRF is not a potential attack vector, so
+    the prevention is not enforced.  This helps achieve backwards-compatibility
+    with existing automation that has not been updated to send the CSRF
+    prevention header.
+  </description>
+</property>
+
+  <property>
+    <name>dfs.xframe.enabled</name>
+    <value>true</value>
+    <description>
+      If true, then enables protection against clickjacking by returning
+      X_FRAME_OPTIONS header value set to SAMEORIGIN.
+      Clickjacking protection prevents an attacker from using transparent or
+      opaque layers to trick a user into clicking on a button
+      or link on another page.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.xframe.value</name>
+    <value>SAMEORIGIN</value>
+    <description>
+      This configration value allows user to specify the value for the
+      X-FRAME-OPTIONS. The possible values for this field are
+      DENY, SAMEORIGIN and ALLOW-FROM. Any other value will throw an
+      exception when namenode and datanodes are starting up.
+    </description>
+  </property>
+
+
+<property>
+  <name>dfs.http.client.retry.policy.enabled</name>
+  <value>false</value>
+  <description>
+    If "true", enable the retry policy of WebHDFS client.
+    If "false", retry policy is turned off.
+    Enabling the retry policy can be quite useful while using WebHDFS to
+    copy large files between clusters that could timeout, or
+    copy files between HA clusters that could failover during the copy.
+  </description>
+</property>
+
+<property>
+  <name>dfs.http.client.retry.policy.spec</name>
+  <value>10000,6,60000,10</value>
+  <description>
+    Specify a policy of multiple linear random retry for WebHDFS client,
+    e.g. given pairs of number of retries and sleep time (n0, t0), (n1, t1),
+    ..., the first n0 retries sleep t0 milliseconds on average,
+    the following n1 retries sleep t1 milliseconds on average, and so on.
+  </description>
+</property>
+
+<property>
+  <name>dfs.http.client.failover.max.attempts</name>
+  <value>15</value>
+  <description>
+    Specify the max number of failover attempts for WebHDFS client
+    in case of network exception.
+  </description>
+</property>
+
+<property>
+  <name>dfs.http.client.retry.max.attempts</name>
+  <value>10</value>
+  <description>
+    Specify the max number of retry attempts for WebHDFS client,
+    if the difference between retried attempts and failovered attempts is
+    larger than the max number of retry attempts, there will be no more
+    retries.
+  </description>
+</property>
+
+<property>
+  <name>dfs.http.client.failover.sleep.base.millis</name>
+  <value>500</value>
+  <description>
+    Specify the base amount of time in milliseconds upon which the
+    exponentially increased sleep time between retries or failovers
+    is calculated for WebHDFS client.
+  </description>
+</property>
+
+<property>
+  <name>dfs.http.client.failover.sleep.max.millis</name>
+  <value>15000</value>
+  <description>
+    Specify the upper bound of sleep time in milliseconds between
+    retries or failovers for WebHDFS client.
+  </description>
+</property>
+  <property>
+    <name>dfs.balancer.keytab.enabled</name>
+    <value>false</value>
+    <description>
+      Set to true to enable login using a keytab for Kerberized Hadoop.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.balancer.address</name>
+    <value>0.0.0.0:0</value>
+    <description>
+      The hostname used for a keytab based Kerberos login. Keytab based login
+      can be enabled with dfs.balancer.keytab.enabled.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.balancer.keytab.file</name>
+    <value></value>
+    <description>
+      The keytab file used by the Balancer to login as its
+      service principal. The principal name is configured with
+      dfs.balancer.kerberos.principal. Keytab based login can be
+      enabled with dfs.balancer.keytab.enabled.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.balancer.kerberos.principal</name>
+    <value></value>
+    <description>
+      The Balancer principal. This is typically set to
+      balancer/_HOST@REALM.TLD. The Balancer will substitute _HOST with its
+      own fully qualified hostname at startup. The _HOST placeholder
+      allows using the same configuration setting on different servers.
+      Keytab based login can be enabled with dfs.balancer.keytab.enabled.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.balancer.block-move.timeout</name>
+    <value>0</value>
+    <description>
+      Maximum amount of time in milliseconds for a block to move. If this is set
+      greater than 0, Balancer will stop waiting for a block move completion
+      after this time. In typical clusters, a 3 to 5 minute timeout is reasonable.
+      If timeout happens to a large proportion of block moves, this needs to be
+      increased. It could also be that too much work is dispatched and many nodes
+      are constantly exceeding the bandwidth limit as a result. In that case,
+      other balancer parameters might need to be adjusted.
+      It is disabled (0) by default.
+    </description>
+  </property>
+
+<property>
+  <name>dfs.balancer.max-no-move-interval</name>
+  <value>60000</value>
+  <description>
+    If this specified amount of time has elapsed and no block has been moved
+    out of a source DataNode, on more effort will be made to move blocks out of
+    this DataNode in the current Balancer iteration.
+  </description>
+</property>
+
+<property>
+  <name>dfs.lock.suppress.warning.interval</name>
+  <value>10s</value>
+  <description>Instrumentation reporting long critical sections will suppress
+    consecutive warnings within this interval.</description>
+</property>
+
+  <property>
+    <name>dfs.webhdfs.use.ipc.callq</name>
+    <value>true</value>
+    <description>Enables routing of webhdfs calls through rpc
+      call queue</description>
+  </property>
+
+  <property>
+    <name>httpfs.buffer.size</name>
+    <value>4096</value>
+    <description>
+    The size buffer to be used when creating or opening httpfs filesystem IO stream.
+    </description>
+  </property>
 </configuration>

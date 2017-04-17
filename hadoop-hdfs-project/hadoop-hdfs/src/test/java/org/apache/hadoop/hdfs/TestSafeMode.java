@@ -90,9 +90,11 @@ public class TestSafeMode {
   public void tearDown() throws IOException {
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
 
@@ -198,7 +200,7 @@ public class TestSafeMode {
     
     String status = nn.getNamesystem().getSafemode();
     assertEquals("Safe mode is ON. The reported blocks 0 needs additional " +
-        "15 blocks to reach the threshold 0.9990 of total blocks 15." + NEWLINE +
+        "14 blocks to reach the threshold 0.9990 of total blocks 15." + NEWLINE +
         "The number of live datanodes 0 has reached the minimum number 0. " +
         "Safe mode will be turned off automatically once the thresholds " +
         "have been reached.", status);
@@ -295,8 +297,8 @@ public class TestSafeMode {
       fail(msg);
     } catch (RemoteException re) {
       assertEquals(SafeModeException.class.getName(), re.getClassName());
-      GenericTestUtils.assertExceptionContains(
-          "Name node is in safe mode", re);
+      GenericTestUtils.assertExceptionContains("Name node is in safe mode", re);
+    } catch (SafeModeException ignored) {
     } catch (IOException ioe) {
       fail(msg + " " + StringUtils.stringifyException(ioe));
     }
@@ -480,6 +482,7 @@ public class TestSafeMode {
    * Tests some utility methods that surround the SafeMode's state.
    * @throws IOException when there's an issue connecting to the test DFS.
    */
+  @Test
   public void testSafeModeUtils() throws IOException {
     dfs = cluster.getFileSystem();
 

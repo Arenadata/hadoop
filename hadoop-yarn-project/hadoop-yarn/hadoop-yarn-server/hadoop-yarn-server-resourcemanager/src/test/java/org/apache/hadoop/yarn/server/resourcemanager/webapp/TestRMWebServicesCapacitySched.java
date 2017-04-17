@@ -19,7 +19,9 @@
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.StringReader;
 
@@ -41,6 +43,7 @@ import org.apache.hadoop.yarn.webapp.WebServicesTestUtils;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.w3c.dom.Document;
@@ -314,11 +317,14 @@ public class TestRMWebServicesCapacitySched extends JerseyTestBase {
     JSONObject info = json.getJSONObject("scheduler");
     assertEquals("incorrect number of elements", 1, info.length());
     info = info.getJSONObject("schedulerInfo");
-    assertEquals("incorrect number of elements", 6, info.length());
+    assertEquals("incorrect number of elements", 8, info.length());
     verifyClusterSchedulerGeneric(info.getString("type"),
         (float) info.getDouble("usedCapacity"),
         (float) info.getDouble("capacity"),
         (float) info.getDouble("maxCapacity"), info.getString("queueName"));
+    JSONObject health = info.getJSONObject("health");
+    assertNotNull(health);
+    assertEquals("incorrect number of elements", 3, health.length());
 
     JSONArray arr = info.getJSONObject("queues").getJSONArray("queue");
     assertEquals("incorrect number of elements", 2, arr.length());
@@ -344,10 +350,10 @@ public class TestRMWebServicesCapacitySched extends JerseyTestBase {
   private void verifySubQueue(JSONObject info, String q, 
       float parentAbsCapacity, float parentAbsMaxCapacity)
       throws JSONException, Exception {
-    int numExpectedElements = 13;
+    int numExpectedElements = 18;
     boolean isParentQueue = true;
     if (!info.has("queues")) {
-      numExpectedElements = 25;
+      numExpectedElements = 31;
       isParentQueue = false;
     }
     assertEquals("incorrect number of elements", numExpectedElements, info.length());
@@ -374,6 +380,8 @@ public class TestRMWebServicesCapacitySched extends JerseyTestBase {
         verifySubQueue(obj, q2, qi.absoluteCapacity, qi.absoluteMaxCapacity);
       }
     } else {
+      Assert.assertEquals("\"type\" field is incorrect",
+          "capacitySchedulerLeafQueueInfo", info.getString("type"));
       LeafQueueInfo lqi = (LeafQueueInfo) qi;
       lqi.numActiveApplications = info.getInt("numActiveApplications");
       lqi.numPendingApplications = info.getInt("numPendingApplications");
@@ -430,8 +438,9 @@ public class TestRMWebServicesCapacitySched extends JerseyTestBase {
 
     int maxSystemApps = csConf.getMaximumSystemApplications();
     int expectedMaxApps = (int)(maxSystemApps * (info.absoluteCapacity/100));
-    int expectedMaxAppsPerUser =
-      (int)(expectedMaxApps * (info.userLimit/100.0f) * info.userLimitFactor);
+    int expectedMaxAppsPerUser = Math.min(expectedMaxApps,
+        (int)(expectedMaxApps * (info.userLimit/100.0f) *
+        info.userLimitFactor));
 
     // TODO: would like to use integer comparisons here but can't due to
     //       roundoff errors in absolute capacity calculations
@@ -570,6 +579,15 @@ public class TestRMWebServicesCapacitySched extends JerseyTestBase {
         user.getInt("numActiveApplications");
         user.getInt("numPendingApplications");
         checkResourcesUsed(user);
+      }
+
+      // Verify 'queues' field is omitted from CapacitySchedulerLeafQueueInfo.
+      try {
+        b1.getJSONObject("queues");
+        fail("CapacitySchedulerQueueInfo should omit field 'queues'" +
+             "if child queue is empty.");
+      } catch (JSONException je) {
+        assertEquals("JSONObject[\"queues\"] not found.", je.getMessage());
       }
     } finally {
       rm.stop();

@@ -21,17 +21,16 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 
 import org.apache.commons.logging.Log;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.log4j.Level;
@@ -47,7 +46,7 @@ public class TestWebHdfsWithMultipleNameNodes {
   static final Log LOG = WebHdfsTestUtil.LOG;
 
   static private void setLogLevel() {
-    ((Log4JLogger)LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(LOG, Level.ALL);
     GenericTestUtils.setLogLevel(NamenodeWebHdfsMethods.LOG, Level.ALL);
 
     DFSTestUtil.setNameNodeLogLevel(Level.ALL);
@@ -71,7 +70,7 @@ public class TestWebHdfsWithMultipleNameNodes {
       throws Exception {
     LOG.info("nNameNodes=" + nNameNodes + ", nDataNodes=" + nDataNodes);
 
-    conf.setBoolean(DFSConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
+    conf.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
 
     cluster = new MiniDFSCluster.Builder(conf)
         .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(nNameNodes))
@@ -82,7 +81,7 @@ public class TestWebHdfsWithMultipleNameNodes {
     webhdfs = new WebHdfsFileSystem[nNameNodes];
     for(int i = 0; i < webhdfs.length; i++) {
       final InetSocketAddress addr = cluster.getNameNode(i).getHttpAddress();
-      final String uri = WebHdfsFileSystem.SCHEME  + "://"
+      final String uri = WebHdfsConstants.WEBHDFS_SCHEME + "://"
           + addr.getHostName() + ":" + addr.getPort() + "/";
       webhdfs[i] = (WebHdfsFileSystem)FileSystem.get(new URI(uri), conf);
     }

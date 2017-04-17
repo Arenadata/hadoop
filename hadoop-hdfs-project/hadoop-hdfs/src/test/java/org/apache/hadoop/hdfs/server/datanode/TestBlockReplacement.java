@@ -45,8 +45,10 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.client.BlockReportOptions;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
@@ -55,7 +57,6 @@ import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.BlockOpResponseP
 import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.Status;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.util.DataTransferThrottler;
 import org.apache.hadoop.io.IOUtils;
@@ -80,7 +81,6 @@ public class TestBlockReplacement {
     long bytesToSend = TOTAL_BYTES; 
     long start = Time.monotonicNow();
     DataTransferThrottler throttler = new DataTransferThrottler(bandwidthPerSec);
-    long totalBytes = 0L;
     long bytesSent = 1024*512L; // 0.5MB
     throttler.throttle(bytesSent);
     bytesToSend -= bytesSent;
@@ -92,7 +92,7 @@ public class TestBlockReplacement {
     } catch (InterruptedException ignored) {}
     throttler.throttle(bytesToSend);
     long end = Time.monotonicNow();
-    assertTrue(totalBytes*1000/(end-start)<=bandwidthPerSec);
+    assertTrue(TOTAL_BYTES * 1000 / (end - start) <= bandwidthPerSec);
   }
   
   @Test
@@ -106,7 +106,7 @@ public class TestBlockReplacement {
     final Random r = new Random();
     
     CONF.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, DEFAULT_BLOCK_SIZE);
-    CONF.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, DEFAULT_BLOCK_SIZE/2);
+    CONF.setInt(HdfsClientConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, DEFAULT_BLOCK_SIZE/2);
     CONF.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY,500);
     cluster = new MiniDFSCluster.Builder(CONF).numDataNodes(REPLICATION_FACTOR)
                                               .racks(INITIAL_RACKS).build();
@@ -197,9 +197,10 @@ public class TestBlockReplacement {
       LOG.info("Testcase 4: invalid del hint " + proxies.get(0) );
       assertTrue(replaceBlock(b, proxies.get(0), proxies.get(1), source));
       // after cluster has time to resolve the over-replication,
-      // block locations should contain two proxies,
-      // and either source or newNode, but not both.
-      checkBlocks(proxies.toArray(new DatanodeInfo[proxies.size()]), 
+      // block locations should contain any 3 of the blocks, since after the
+      // deletion the number of racks is still >=2 for sure.
+      // See HDFS-9314 for details, espacially the comment on 18/Nov/15 14:09.
+      checkBlocks(new DatanodeInfo[]{},
           fileName.toString(), 
           DEFAULT_BLOCK_SIZE, REPLICATION_FACTOR, client);
     } finally {
@@ -325,7 +326,7 @@ public class TestBlockReplacement {
     Socket sock = new Socket();
     try {
       sock.connect(NetUtils.createSocketAddr(destination.getXferAddr()),
-          HdfsServerConstants.READ_TIMEOUT);
+          HdfsConstants.READ_TIMEOUT);
       sock.setKeepAlive(true);
       // sendRequest
       DataOutputStream out = new DataOutputStream(sock.getOutputStream());
@@ -410,11 +411,19 @@ public class TestBlockReplacement {
           (DatanodeInfo)sourceDnDesc, (DatanodeInfo)sourceDnDesc,
           (DatanodeInfo)destDnDesc));
       // Waiting for the FsDatasetAsyncDsikService to delete the block
-      Thread.sleep(3000);
-      // Triggering the incremental block report to report the deleted block to
-      // namnemode
-      cluster.getDataNodes().get(0).triggerBlockReport(
-         new BlockReportOptions.Factory().setIncremental(true).build());
+      for (int tries = 0; tries < 20; tries++) {
+        Thread.sleep(1000);
+        // Triggering the deletion block report to report the deleted block
+        // to namnemode
+        DataNodeTestUtils.triggerDeletionReport(cluster.getDataNodes().get(0));
+        locatedBlocks =
+            client.getNamenode().getBlockLocations("/tmp.txt", 0, 10L)
+                .getLocatedBlocks();
+        // If block was deleted and only on 1 datanode then break out
+        if (locatedBlocks.get(0).getLocations().length == 1) {
+          break;
+        }
+      }
 
       cluster.transitionToStandby(0);
       cluster.transitionToActive(1);

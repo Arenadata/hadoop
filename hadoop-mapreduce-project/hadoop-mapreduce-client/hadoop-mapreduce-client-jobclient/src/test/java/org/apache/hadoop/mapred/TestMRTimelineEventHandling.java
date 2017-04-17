@@ -19,20 +19,69 @@
 package org.apache.hadoop.mapred;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.jobhistory.EventType;
 import org.apache.hadoop.mapreduce.jobhistory.TestJobHistoryEventHandler;
 import org.apache.hadoop.mapreduce.v2.MiniMRYarnCluster;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.MiniYARNCluster;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 
 import org.junit.Assert;
 import org.junit.Test;
 
 public class TestMRTimelineEventHandling {
+
+  @Test
+  public void testTimelineServiceStartInMiniCluster() throws Exception {
+    Configuration conf = new YarnConfiguration();
+
+    /*
+     * Timeline service should not start if the config is set to false
+     * Regardless to the value of MAPREDUCE_JOB_EMIT_TIMELINE_DATA
+     */
+    conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, false);
+    conf.setBoolean(MRJobConfig.MAPREDUCE_JOB_EMIT_TIMELINE_DATA, true);
+    MiniMRYarnCluster cluster = null;
+    try {
+      cluster = new MiniMRYarnCluster(
+          TestJobHistoryEventHandler.class.getSimpleName(), 1);
+      cluster.init(conf);
+      cluster.start();
+
+      //verify that the timeline service is not started.
+      Assert.assertNull("Timeline Service should not have been started",
+          cluster.getApplicationHistoryServer());
+    }
+    finally {
+      if(cluster != null) {
+        cluster.stop();
+      }
+    }
+    conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, false);
+    conf.setBoolean(MRJobConfig.MAPREDUCE_JOB_EMIT_TIMELINE_DATA, false);
+    cluster = null;
+    try {
+      cluster = new MiniMRYarnCluster(
+          TestJobHistoryEventHandler.class.getSimpleName(), 1);
+      cluster.init(conf);
+      cluster.start();
+
+      //verify that the timeline service is not started.
+      Assert.assertNull("Timeline Service should not have been started",
+          cluster.getApplicationHistoryServer());
+    }
+    finally {
+      if(cluster != null) {
+        cluster.stop();
+      }
+    }
+  }
 
   @Test
   public void testMRTimelineEventHandling() throws Exception {
@@ -42,14 +91,18 @@ public class TestMRTimelineEventHandling {
     MiniMRYarnCluster cluster = null;
     try {
       cluster = new MiniMRYarnCluster(
-              TestJobHistoryEventHandler.class.getSimpleName(), 1, true);
+          TestJobHistoryEventHandler.class.getSimpleName(), 1);
       cluster.init(conf);
       cluster.start();
+      conf.set(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
+          MiniYARNCluster.getHostname() + ":"
+          + cluster.getApplicationHistoryServer().getPort());
       TimelineStore ts = cluster.getApplicationHistoryServer()
               .getTimelineStore();
-
-      Path inDir = new Path("input");
-      Path outDir = new Path("output");
+      String localPathRoot = System.getProperty("test.build.data",
+          "build/test/data");
+      Path inDir = new Path(localPathRoot, "input");
+      Path outDir = new Path(localPathRoot, "output");
       RunningJob job =
               UtilsForTests.runJobSucceed(new JobConf(conf), inDir, outDir);
       Assert.assertEquals(JobStatus.SUCCEEDED,
@@ -94,16 +147,21 @@ public class TestMRTimelineEventHandling {
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setBoolean(MRJobConfig.MAPREDUCE_JOB_EMIT_TIMELINE_DATA, false);
     MiniMRYarnCluster cluster = null;
+    FileSystem fs = null;
+    Path inDir = new Path(GenericTestUtils.getTempPath("input"));
+    Path outDir = new Path(GenericTestUtils.getTempPath("output"));
     try {
+      fs = FileSystem.get(conf);
       cluster = new MiniMRYarnCluster(
-          TestJobHistoryEventHandler.class.getSimpleName(), 1, true);
+          TestJobHistoryEventHandler.class.getSimpleName(), 1);
       cluster.init(conf);
       cluster.start();
+      conf.set(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
+          MiniYARNCluster.getHostname() + ":"
+              + cluster.getApplicationHistoryServer().getPort());
       TimelineStore ts = cluster.getApplicationHistoryServer()
           .getTimelineStore();
 
-      Path inDir = new Path("input");
-      Path outDir = new Path("output");
       RunningJob job =
           UtilsForTests.runJobSucceed(new JobConf(conf), inDir, outDir);
       Assert.assertEquals(JobStatus.SUCCEEDED,
@@ -125,6 +183,7 @@ public class TestMRTimelineEventHandling {
       if (cluster != null) {
         cluster.stop();
       }
+      deletePaths(fs, inDir, outDir);
     }
 
     conf = new YarnConfiguration();
@@ -133,14 +192,14 @@ public class TestMRTimelineEventHandling {
     cluster = null;
     try {
       cluster = new MiniMRYarnCluster(
-          TestJobHistoryEventHandler.class.getSimpleName(), 1, true);
+          TestJobHistoryEventHandler.class.getSimpleName(), 1);
       cluster.init(conf);
       cluster.start();
+      conf.set(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
+          MiniYARNCluster.getHostname() + ":"
+              + cluster.getApplicationHistoryServer().getPort());
       TimelineStore ts = cluster.getApplicationHistoryServer()
           .getTimelineStore();
-
-      Path inDir = new Path("input");
-      Path outDir = new Path("output");
 
       conf.setBoolean(MRJobConfig.MAPREDUCE_JOB_EMIT_TIMELINE_DATA, false);
       RunningJob job =
@@ -163,6 +222,20 @@ public class TestMRTimelineEventHandling {
     } finally {
       if (cluster != null) {
         cluster.stop();
+      }
+      deletePaths(fs, inDir, outDir);
+    }
+  }
+
+  /** Delete input paths recursively. Paths should not be null. */
+  private void deletePaths(FileSystem fs, Path... paths) {
+    if (fs == null) {
+      return;
+    }
+    for (Path path : paths) {
+      try {
+        fs.delete(path, true);
+      } catch (Exception ignored) {
       }
     }
   }

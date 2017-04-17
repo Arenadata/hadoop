@@ -49,9 +49,11 @@ public class TestAclCLI extends CLITestHelperDFS {
     super.tearDown();
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
 
@@ -73,7 +75,7 @@ public class TestAclCLI extends CLITestHelperDFS {
 
   @Override
   protected Result execute(CLICommand cmd) throws Exception {
-    return cmd.getExecutor(namenode).executeCommand(cmd.getCmd());
+    return cmd.getExecutor(namenode, conf).executeCommand(cmd.getCmd());
   }
 
   @Test

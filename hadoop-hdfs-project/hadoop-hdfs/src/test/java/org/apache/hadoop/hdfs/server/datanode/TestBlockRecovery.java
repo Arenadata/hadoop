@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hdfs.server.datanode;
 
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyBoolean;
@@ -39,11 +40,16 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
+import com.google.common.collect.Iterators;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -64,7 +70,7 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.RecoveryInProgressException;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
-import org.apache.hadoop.hdfs.server.datanode.DataNode.BlockRecord;
+import org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker.BlockRecord;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.ReplicaOutputStreams;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
@@ -79,16 +85,21 @@ import org.apache.hadoop.hdfs.server.protocol.ReplicaRecoveryInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.AutoCloseableLock;
 import org.apache.hadoop.util.DataChecksum;
+import org.apache.hadoop.util.Time;
 import org.apache.log4j.Level;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TestName;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+
+import com.google.common.base.Supplier;
 
 /**
  * This tests if sync all replicas in block recovery works correctly
@@ -98,6 +109,8 @@ public class TestBlockRecovery {
   private static final String DATA_DIR =
     MiniDFSCluster.getBaseDirectory() + "data";
   private DataNode dn;
+  private DataNode spyDN;
+  private BlockRecoveryWorker recoveryWorker;
   private Configuration conf;
   private final static long RECOVERY_ID = 3000L;
   private final static String CLUSTER_ID = "testClusterID";
@@ -111,11 +124,17 @@ public class TestBlockRecovery {
   private final static long REPLICA_LEN2 = 5000L;
   private final static ExtendedBlock block = new ExtendedBlock(POOL_ID,
       BLOCK_ID, BLOCK_LEN, GEN_STAMP);
-  
+
+  @Rule
+  public TestName currentTestName = new TestName();
+
   static {
-    ((Log4JLogger)LogFactory.getLog(FSNamesystem.class)).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger)LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(FSNamesystem.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(LOG, Level.ALL);
   }
+
+  private final long
+      TEST_STOP_WORKER_XCEIVER_STOP_TIMEOUT_MILLIS = 1000000000L;
 
   /**
    * Starts an instance of DataNode
@@ -128,6 +147,11 @@ public class TestBlockRecovery {
     conf.set(DFSConfigKeys.DFS_DATANODE_ADDRESS_KEY, "0.0.0.0:0");
     conf.set(DFSConfigKeys.DFS_DATANODE_HTTP_ADDRESS_KEY, "0.0.0.0:0");
     conf.set(DFSConfigKeys.DFS_DATANODE_IPC_ADDRESS_KEY, "0.0.0.0:0");
+    if (currentTestName.getMethodName().contains("DoesNotHoldLock")) {
+      // This test requires a very long value for the xceiver stop timeout.
+      conf.setLong(DFSConfigKeys.DFS_DATANODE_XCEIVER_STOP_TIMEOUT_MILLIS_KEY,
+          TEST_STOP_WORKER_XCEIVER_STOP_TIMEOUT_MILLIS);
+    }
     conf.setInt(CommonConfigurationKeys.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 0);
     FileSystem.setDefaultUri(conf,
         "hdfs://" + NN_ADDR.getHostName() + ":" + NN_ADDR.getPort());
@@ -160,11 +184,12 @@ public class TestBlockRecovery {
             Mockito.anyInt(),
             Mockito.anyInt(),
             Mockito.anyInt(),
-            Mockito.any(VolumeFailureSummary.class)))
+            Mockito.any(VolumeFailureSummary.class),
+            Mockito.anyBoolean()))
         .thenReturn(new HeartbeatResponse(
             new DatanodeCommand[0],
             new NNHAStatusHeartbeat(HAServiceState.ACTIVE, 1),
-            null));
+            null, ThreadLocalRandom.current().nextLong() | 1L));
 
     dn = new DataNode(conf, locations, null) {
       @Override
@@ -175,7 +200,34 @@ public class TestBlockRecovery {
       }
     };
     // Trigger a heartbeat so that it acknowledges the NN as active.
-    dn.getAllBpOs()[0].triggerHeartbeatForTests();
+    dn.getAllBpOs().get(0).triggerHeartbeatForTests();
+    waitForActiveNN();
+
+    spyDN = spy(dn);
+    recoveryWorker = new BlockRecoveryWorker(spyDN);
+  }
+
+  /**
+   * Wait for active NN up to 15 seconds.
+   */
+  private void waitForActiveNN() {
+    try {
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          return dn.getAllBpOs().get(0).getActiveNN() != null;
+        }
+      }, 1000, 15 * 1000);
+    } catch (TimeoutException e) {
+      // Here its not failing, will again do the assertions for activeNN after
+      // this waiting period and fails there if BPOS has not acknowledged
+      // any NN as active.
+      LOG.warn("Failed to get active NN", e);
+    } catch (InterruptedException e) {
+      LOG.warn("InterruptedException while waiting to see active NN", e);
+    }
+    Assert.assertNotNull("Failed to get ActiveNN",
+        dn.getAllBpOs().get(0).getActiveNN());
   }
 
   /**
@@ -221,7 +273,10 @@ public class TestBlockRecovery {
         anyLong(), anyLong())).thenReturn("storage1");
     when(dn2.updateReplicaUnderRecovery((ExtendedBlock)anyObject(), anyLong(),
         anyLong(), anyLong())).thenReturn("storage2");
-    dn.syncBlock(rBlock, syncList);
+
+    BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+        recoveryWorker.new RecoveryTaskContiguous(rBlock);
+    RecoveryTaskContiguous.syncBlock(syncList);
   }
   
   /**
@@ -229,7 +284,7 @@ public class TestBlockRecovery {
    * Two replicas are in Finalized state
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testFinalizedReplicas () throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
@@ -268,7 +323,7 @@ public class TestBlockRecovery {
    * One replica is Finalized and another is RBW. 
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testFinalizedRbwReplicas() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
@@ -309,7 +364,7 @@ public class TestBlockRecovery {
    * One replica is Finalized and another is RWR. 
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testFinalizedRwrReplicas() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
@@ -351,7 +406,7 @@ public class TestBlockRecovery {
    * Two replicas are RBW.
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testRBWReplicas() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
@@ -375,7 +430,7 @@ public class TestBlockRecovery {
    * One replica is RBW and another is RWR. 
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testRBW_RWRReplicas() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
@@ -400,7 +455,7 @@ public class TestBlockRecovery {
    * Two replicas are RWR.
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testRWRReplicas() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
@@ -436,19 +491,23 @@ public class TestBlockRecovery {
    * @throws IOException
    *           in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testRecoveryInProgressException()
     throws IOException, InterruptedException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
     }
-    DataNode spyDN = spy(dn);
     doThrow(new RecoveryInProgressException("Replica recovery is in progress")).
        when(spyDN).initReplicaRecovery(any(RecoveringBlock.class));
-    Daemon d = spyDN.recoverBlocks("fake NN", initRecoveringBlocks());
-    d.join();
-    verify(spyDN, never()).syncBlock(
-        any(RecoveringBlock.class), anyListOf(BlockRecord.class));
+
+    for(RecoveringBlock rBlock: initRecoveringBlocks()){
+      BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+          recoveryWorker.new RecoveryTaskContiguous(rBlock);
+      BlockRecoveryWorker.RecoveryTaskContiguous spyTask
+          = spy(RecoveryTaskContiguous);
+      spyTask.recover();
+      verify(spyTask, never()).syncBlock(anyListOf(BlockRecord.class));
+    }
   }
 
   /**
@@ -457,18 +516,26 @@ public class TestBlockRecovery {
    * @throws IOException
    *           in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testErrorReplicas() throws IOException, InterruptedException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
     }
-    DataNode spyDN = spy(dn);
     doThrow(new IOException()).
        when(spyDN).initReplicaRecovery(any(RecoveringBlock.class));
-    Daemon d = spyDN.recoverBlocks("fake NN", initRecoveringBlocks());
-    d.join();
-    verify(spyDN, never()).syncBlock(
-        any(RecoveringBlock.class), anyListOf(BlockRecord.class));
+
+    for(RecoveringBlock rBlock: initRecoveringBlocks()){
+      BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+          recoveryWorker.new RecoveryTaskContiguous(rBlock);
+      BlockRecoveryWorker.RecoveryTaskContiguous spyTask = spy(RecoveryTaskContiguous);
+      try {
+        spyTask.recover();
+        fail();
+      } catch(IOException e){
+        GenericTestUtils.assertExceptionContains("All datanodes failed", e);
+      }
+      verify(spyTask, never()).syncBlock(anyListOf(BlockRecord.class));
+    }
   }
 
   /**
@@ -476,18 +543,23 @@ public class TestBlockRecovery {
    *
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testZeroLenReplicas() throws IOException, InterruptedException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
     }
-    DataNode spyDN = spy(dn);
     doReturn(new ReplicaRecoveryInfo(block.getBlockId(), 0,
         block.getGenerationStamp(), ReplicaState.FINALIZED)).when(spyDN).
         initReplicaRecovery(any(RecoveringBlock.class));
-    Daemon d = spyDN.recoverBlocks("fake NN", initRecoveringBlocks());
-    d.join();
-    DatanodeProtocol dnP = dn.getActiveNamenodeForBP(POOL_ID);
+
+    for(RecoveringBlock rBlock: initRecoveringBlocks()){
+      BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+          recoveryWorker.new RecoveryTaskContiguous(rBlock);
+      BlockRecoveryWorker.RecoveryTaskContiguous spyTask
+          = spy(RecoveryTaskContiguous);
+      spyTask.recover();
+    }
+    DatanodeProtocol dnP = recoveryWorker.getActiveNamenodeForBP(POOL_ID);
     verify(dnP).commitBlockSynchronization(
         block, RECOVERY_ID, 0, true, true, DatanodeID.EMPTY_ARRAY, null);
   }
@@ -511,16 +583,17 @@ public class TestBlockRecovery {
    *
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testFailedReplicaUpdate() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
     }
-    DataNode spyDN = spy(dn);
     doThrow(new IOException()).when(spyDN).updateReplicaUnderRecovery(
         block, RECOVERY_ID, BLOCK_ID, block.getNumBytes());
     try {
-      spyDN.syncBlock(rBlock, initBlockRecords(spyDN));
+      BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+          recoveryWorker.new RecoveryTaskContiguous(rBlock);
+      RecoveryTaskContiguous.syncBlock(initBlockRecords(spyDN));
       fail("Sync should fail");
     } catch (IOException e) {
       e.getMessage().startsWith("Cannot recover ");
@@ -532,19 +605,21 @@ public class TestBlockRecovery {
    *
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testNoReplicaUnderRecovery() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
     }
     dn.data.createRbw(StorageType.DEFAULT, block, false);
+    BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+        recoveryWorker.new RecoveryTaskContiguous(rBlock);
     try {
-      dn.syncBlock(rBlock, initBlockRecords(dn));
+      RecoveryTaskContiguous.syncBlock(initBlockRecords(dn));
       fail("Sync should fail");
     } catch (IOException e) {
       e.getMessage().startsWith("Cannot recover ");
     }
-    DatanodeProtocol namenode = dn.getActiveNamenodeForBP(POOL_ID);
+    DatanodeProtocol namenode = recoveryWorker.getActiveNamenodeForBP(POOL_ID);
     verify(namenode, never()).commitBlockSynchronization(
         any(ExtendedBlock.class), anyLong(), anyLong(), anyBoolean(),
         anyBoolean(), any(DatanodeID[].class), any(String[].class));
@@ -555,7 +630,7 @@ public class TestBlockRecovery {
    *
    * @throws IOException in case of an error
    */
-  @Test
+  @Test(timeout=60000)
   public void testNotMatchedReplicaID() throws IOException {
     if(LOG.isDebugEnabled()) {
       LOG.debug("Running " + GenericTestUtils.getMethodName());
@@ -568,13 +643,15 @@ public class TestBlockRecovery {
           DataChecksum.newDataChecksum(DataChecksum.Type.CRC32, 512));
       streams.getChecksumOut().write('a');
       dn.data.initReplicaRecovery(new RecoveringBlock(block, null, RECOVERY_ID+1));
+      BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+          recoveryWorker.new RecoveryTaskContiguous(rBlock);
       try {
-        dn.syncBlock(rBlock, initBlockRecords(dn));
+        RecoveryTaskContiguous.syncBlock(initBlockRecords(dn));
         fail("Sync should fail");
       } catch (IOException e) {
         e.getMessage().startsWith("Cannot recover ");
       }
-      DatanodeProtocol namenode = dn.getActiveNamenodeForBP(POOL_ID);
+      DatanodeProtocol namenode = recoveryWorker.getActiveNamenodeForBP(POOL_ID);
       verify(namenode, never()).commitBlockSynchronization(
           any(ExtendedBlock.class), anyLong(), anyLong(), anyBoolean(),
           anyBoolean(), any(DatanodeID[].class), any(String[].class));
@@ -617,7 +694,7 @@ public class TestBlockRecovery {
             final RecoveringBlock recoveringBlock = new RecoveringBlock(
                 block.getBlock(), locations, block.getBlock()
                     .getGenerationStamp() + 1);
-            synchronized (dataNode.data) {
+            try(AutoCloseableLock lock = dataNode.data.acquireDatasetLock()) {
               Thread.sleep(2000);
               dataNode.initReplicaRecovery(recoveringBlock);
             }
@@ -646,6 +723,255 @@ public class TestBlockRecovery {
         cluster.shutdown();
         cluster = null;
       }
+    }
+  }
+
+  /**
+   * DNs report RUR instead of RBW, RWR or FINALIZED. Primary DN expected to
+   * throw an exception.
+   * @throws Exception
+   */
+  @Test(timeout=60000)
+  public void testRURReplicas() throws Exception {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Running " + GenericTestUtils.getMethodName());
+    }
+
+    doReturn(new ReplicaRecoveryInfo(block.getBlockId(), block.getNumBytes(),
+        block.getGenerationStamp(), ReplicaState.RUR)).when(spyDN).
+        initReplicaRecovery(any(RecoveringBlock.class));
+
+    boolean exceptionThrown = false;
+    try {
+      for (RecoveringBlock rBlock : initRecoveringBlocks()) {
+        BlockRecoveryWorker.RecoveryTaskContiguous RecoveryTaskContiguous =
+            recoveryWorker.new RecoveryTaskContiguous(rBlock);
+        BlockRecoveryWorker.RecoveryTaskContiguous spyTask =
+            spy(RecoveryTaskContiguous);
+        spyTask.recover();
+      }
+    } catch (IOException e) {
+      // expect IOException to be thrown here
+      e.printStackTrace();
+      assertTrue("Wrong exception was thrown: " + e.getMessage(),
+          e.getMessage().contains("Found 1 replica(s) for block " + block +
+          " but none is in RWR or better state"));
+      exceptionThrown = true;
+    } finally {
+      assertTrue(exceptionThrown);
+    }
+  }
+
+  private static class TestStopWorkerSemaphore {
+    final Semaphore sem;
+
+    final AtomicBoolean gotInterruption = new AtomicBoolean(false);
+
+    TestStopWorkerSemaphore() {
+      this.sem = new Semaphore(0);
+    }
+
+    /**
+     * Attempt to acquire a sempahore within a given timeout.
+     *
+     * This is useful for unit tests where we need to ignore InterruptedException
+     * when attempting to take a semaphore, but still want to honor the overall
+     * test timeout.
+     *
+     * @param timeoutMs   The timeout in miliseconds.
+     */
+    private void uninterruptiblyAcquire(long timeoutMs) throws Exception {
+      long startTimeMs = Time.monotonicNow();
+      while (true) {
+        long remTime = startTimeMs + timeoutMs - Time.monotonicNow();
+        if (remTime < 0) {
+          throw new RuntimeException("Failed to acquire the semaphore within " +
+              timeoutMs + " milliseconds.");
+        }
+        try {
+          if (sem.tryAcquire(1, remTime, TimeUnit.MILLISECONDS)) {
+            return;
+          }
+        } catch (InterruptedException e) {
+          gotInterruption.set(true);
+        }
+      }
+    }
+  }
+
+  private interface TestStopWorkerRunnable {
+    /**
+     * Return the name of the operation that this runnable performs.
+     */
+    String opName();
+
+    /**
+     * Perform the operation.
+     */
+    void run(RecoveringBlock recoveringBlock) throws Exception;
+  }
+
+  @Test(timeout=90000)
+  public void testInitReplicaRecoveryDoesNotHoldLock() throws Exception {
+    testStopWorker(new TestStopWorkerRunnable() {
+      @Override
+      public String opName() {
+        return "initReplicaRecovery";
+      }
+
+      @Override
+      public void run(RecoveringBlock recoveringBlock) throws Exception {
+        try {
+          spyDN.initReplicaRecovery(recoveringBlock);
+        } catch (Exception e) {
+          if (!e.getMessage().contains("meta does not exist")) {
+            throw e;
+          }
+        }
+      }
+    });
+  }
+
+  @Test(timeout=90000)
+  public void testRecoverAppendDoesNotHoldLock() throws Exception {
+    testStopWorker(new TestStopWorkerRunnable() {
+      @Override
+      public String opName() {
+        return "recoverAppend";
+      }
+
+      @Override
+      public void run(RecoveringBlock recoveringBlock) throws Exception {
+        try {
+          ExtendedBlock extBlock = recoveringBlock.getBlock();
+          spyDN.getFSDataset().recoverAppend(extBlock,
+              extBlock.getGenerationStamp() + 1, extBlock.getNumBytes());
+        } catch (Exception e) {
+          if (!e.getMessage().contains(
+              "Corrupted replica ReplicaBeingWritten")) {
+            throw e;
+          }
+        }
+      }
+    });
+  }
+
+  @Test(timeout=90000)
+  public void testRecoverCloseDoesNotHoldLock() throws Exception {
+    testStopWorker(new TestStopWorkerRunnable() {
+      @Override
+      public String opName() {
+        return "recoverClose";
+      }
+
+      @Override
+      public void run(RecoveringBlock recoveringBlock) throws Exception {
+        try {
+          ExtendedBlock extBlock = recoveringBlock.getBlock();
+          spyDN.getFSDataset().recoverClose(extBlock,
+              extBlock.getGenerationStamp() + 1, extBlock.getNumBytes());
+        } catch (Exception e) {
+          if (!e.getMessage().contains(
+              "Corrupted replica ReplicaBeingWritten")) {
+            throw e;
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Test that an FsDatasetImpl operation does not hold the lock for an
+   * unreasonable amount of time if a writer is taking a long time to stop.
+   */
+  private void testStopWorker(final TestStopWorkerRunnable tswr)
+      throws Exception {
+    LOG.debug("Running " + currentTestName.getMethodName());
+    // We need a long value for the data xceiver stop timeout.
+    // Otherwise the timeout will trigger, and we will not have tested that
+    // thread join was done locklessly.
+    Assert.assertEquals(
+        TEST_STOP_WORKER_XCEIVER_STOP_TIMEOUT_MILLIS,
+        dn.getDnConf().getXceiverStopTimeout());
+    final TestStopWorkerSemaphore progressParent =
+      new TestStopWorkerSemaphore();
+    final TestStopWorkerSemaphore terminateSlowWriter =
+      new TestStopWorkerSemaphore();
+    final AtomicReference<String> failure =
+        new AtomicReference<String>(null);
+    Collection<RecoveringBlock> recoveringBlocks =
+        initRecoveringBlocks();
+    final RecoveringBlock recoveringBlock =
+        Iterators.get(recoveringBlocks.iterator(), 0);
+    final ExtendedBlock block = recoveringBlock.getBlock();
+    Thread slowWriterThread = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        try {
+          // Register this thread as the writer for the recoveringBlock.
+          LOG.debug("slowWriter creating rbw");
+          ReplicaHandler replicaHandler =
+              spyDN.data.createRbw(StorageType.DISK, block, false);
+          replicaHandler.close();
+          LOG.debug("slowWriter created rbw");
+          // Tell the parent thread to start progressing.
+          progressParent.sem.release();
+          terminateSlowWriter.uninterruptiblyAcquire(60000);
+          LOG.debug("slowWriter exiting");
+        } catch (Throwable t) {
+          LOG.error("slowWriter got exception", t);
+          failure.compareAndSet(null, "slowWriter got exception " +
+              t.getMessage());
+        }
+      }
+    });
+    // Start the slow worker thread and wait for it to take ownership of the
+    // ReplicaInPipeline
+    slowWriterThread.start();
+    progressParent.uninterruptiblyAcquire(60000);
+
+    // Start a worker thread which will attempt to stop the writer.
+    Thread stopWriterThread = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        try {
+          LOG.debug("initiating " + tswr.opName());
+          tswr.run(recoveringBlock);
+          LOG.debug("finished " + tswr.opName());
+        } catch (Throwable t) {
+          LOG.error("stopWriterThread got unexpected exception for " +
+              tswr.opName(), t);
+          failure.compareAndSet(null, "stopWriterThread got unexpected " +
+              "exception for " + tswr.opName() + ": " + t.getMessage());
+        }
+      }
+    });
+    stopWriterThread.start();
+
+    while (!terminateSlowWriter.gotInterruption.get()) {
+      // Wait until stopWriterThread attempts to stop our slow writer by sending
+      // it an InterruptedException.
+      Thread.sleep(1);
+    }
+
+    // We know that stopWriterThread is in the process of joining our slow
+    // writer.  It must not hold the lock during this operation.
+    // In order to test that it does not, we attempt to do an operation that
+    // requires the lock-- getReplicaString.
+    spyDN.getFSDataset().getReplicaString(
+        recoveringBlock.getBlock().getBlockPoolId(),
+        recoveringBlock.getBlock().getBlockId());
+
+    // Tell the slow writer to exit, and then wait for all threads to join.
+    terminateSlowWriter.sem.release();
+    slowWriterThread.join();
+    stopWriterThread.join();
+
+    // Check that our worker threads exited cleanly.  This is not checked by the
+    // unit test framework, so we have to do it manually here.
+    String failureReason = failure.get();
+    if (failureReason != null) {
+      Assert.fail("Thread failure: " + failureReason);
     }
   }
 }

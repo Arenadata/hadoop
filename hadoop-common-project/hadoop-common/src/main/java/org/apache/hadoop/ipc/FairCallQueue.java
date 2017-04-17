@@ -44,8 +44,9 @@ import org.apache.hadoop.metrics2.util.MBeans;
  */
 public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
   implements BlockingQueue<E> {
-  // Configuration Keys
+  @Deprecated
   public static final int    IPC_CALLQUEUE_PRIORITY_LEVELS_DEFAULT = 4;
+  @Deprecated
   public static final String IPC_CALLQUEUE_PRIORITY_LEVELS_KEY =
     "faircallqueue.priority-levels";
 
@@ -66,9 +67,6 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
     }
   }
 
-  /* Scheduler picks which queue to place in */
-  private RpcScheduler scheduler;
-
   /* Multiplexer picks which queue to draw from */
   private RpcMultiplexer multiplexer;
 
@@ -77,44 +75,40 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
 
   /**
    * Create a FairCallQueue.
-   * @param capacity the maximum size of each sub-queue
+   * @param capacity the total size of all sub-queues
    * @param ns the prefix to use for configuration
    * @param conf the configuration to read from
-   * Notes: the FairCallQueue has no fixed capacity. Rather, it has a minimum
-   * capacity of `capacity` and a maximum capacity of `capacity * number_queues`
+   * Notes: Each sub-queue has a capacity of `capacity / numSubqueues`.
+   * The first or the highest priority sub-queue has an excess capacity
+   * of `capacity % numSubqueues`
    */
-  public FairCallQueue(int capacity, String ns, Configuration conf) {
-    int numQueues = parseNumQueues(ns, conf);
-    LOG.info("FairCallQueue is in use with " + numQueues + " queues.");
+  public FairCallQueue(int priorityLevels, int capacity, String ns,
+      Configuration conf) {
+    if(priorityLevels < 1) {
+      throw new IllegalArgumentException("Number of Priority Levels must be " +
+          "at least 1");
+    }
+    int numQueues = priorityLevels;
+    LOG.info("FairCallQueue is in use with " + numQueues +
+        " queues with total capacity of " + capacity);
 
     this.queues = new ArrayList<BlockingQueue<E>>(numQueues);
     this.overflowedCalls = new ArrayList<AtomicLong>(numQueues);
-
+    int queueCapacity = capacity / numQueues;
+    int capacityForFirstQueue = queueCapacity + (capacity % numQueues);
     for(int i=0; i < numQueues; i++) {
-      this.queues.add(new LinkedBlockingQueue<E>(capacity));
+      if (i == 0) {
+        this.queues.add(new LinkedBlockingQueue<E>(capacityForFirstQueue));
+      } else {
+        this.queues.add(new LinkedBlockingQueue<E>(queueCapacity));
+      }
       this.overflowedCalls.add(new AtomicLong(0));
     }
 
-    this.scheduler = new DecayRpcScheduler(numQueues, ns, conf);
     this.multiplexer = new WeightedRoundRobinMultiplexer(numQueues, ns, conf);
-
     // Make this the active source of metrics
     MetricsProxy mp = MetricsProxy.getInstance(ns);
     mp.setDelegate(this);
-  }
-
-  /**
-   * Read the number of queues from the configuration.
-   * This will affect the FairCallQueue's overall capacity.
-   * @throws IllegalArgumentException on invalid queue count
-   */
-  private static int parseNumQueues(String ns, Configuration conf) {
-    int retval = conf.getInt(ns + "." + IPC_CALLQUEUE_PRIORITY_LEVELS_KEY,
-      IPC_CALLQUEUE_PRIORITY_LEVELS_DEFAULT);
-    if(retval < 1) {
-      throw new IllegalArgumentException("numQueues must be at least 1");
-    }
-    return retval;
   }
 
   /**
@@ -144,7 +138,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
 
   /**
    * Put and offer follow the same pattern:
-   * 1. Get a priorityLevel from the scheduler
+   * 1. Get the assigned priorityLevel from the call by scheduler
    * 2. Get the nth sub-queue matching this priorityLevel
    * 3. delegate the call to this sub-queue.
    *
@@ -154,7 +148,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
    */
   @Override
   public void put(E e) throws InterruptedException {
-    int priorityLevel = scheduler.getPriorityLevel(e);
+    int priorityLevel = e.getPriorityLevel();
 
     final int numLevels = this.queues.size();
     while (true) {
@@ -185,7 +179,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
   @Override
   public boolean offer(E e, long timeout, TimeUnit unit)
       throws InterruptedException {
-    int priorityLevel = scheduler.getPriorityLevel(e);
+    int priorityLevel = e.getPriorityLevel();
     BlockingQueue<E> q = this.queues.get(priorityLevel);
     boolean ret = q.offer(e, timeout, unit);
 
@@ -196,7 +190,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
 
   @Override
   public boolean offer(E e) {
-    int priorityLevel = scheduler.getPriorityLevel(e);
+    int priorityLevel = e.getPriorityLevel();
     BlockingQueue<E> q = this.queues.get(priorityLevel);
     boolean ret = q.offer(e);
 
@@ -306,7 +300,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
   @Override
   public int size() {
     int size = 0;
-    for (BlockingQueue q : this.queues) {
+    for (BlockingQueue<E> q : this.queues) {
       size += q.size();
     }
     return size;
@@ -352,7 +346,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
   @Override
   public int remainingCapacity() {
     int sum = 0;
-    for (BlockingQueue q : this.queues) {
+    for (BlockingQueue<E> q : this.queues) {
       sum += q.remainingCapacity();
     }
     return sum;
@@ -368,7 +362,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
       new HashMap<String, MetricsProxy>();
 
     // Weakref for delegate, so we don't retain it forever if it can be GC'd
-    private WeakReference<FairCallQueue> delegate;
+    private WeakReference<FairCallQueue<? extends Schedulable>> delegate;
 
     // Keep track of how many objects we registered
     private int revisionNumber = 0;
@@ -387,14 +381,15 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
       return mp;
     }
 
-    public void setDelegate(FairCallQueue obj) {
-      this.delegate = new WeakReference<FairCallQueue>(obj);
+    public void setDelegate(FairCallQueue<? extends Schedulable> obj) {
+      this.delegate
+          = new WeakReference<FairCallQueue<? extends Schedulable>>(obj);
       this.revisionNumber++;
     }
 
     @Override
     public int[] getQueueSizes() {
-      FairCallQueue obj = this.delegate.get();
+      FairCallQueue<? extends Schedulable> obj = this.delegate.get();
       if (obj == null) {
         return new int[]{};
       }
@@ -404,7 +399,7 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
 
     @Override
     public long[] getOverflowedCalls() {
-      FairCallQueue obj = this.delegate.get();
+      FairCallQueue<? extends Schedulable> obj = this.delegate.get();
       if (obj == null) {
         return new long[]{};
       }
@@ -434,12 +429,6 @@ public class FairCallQueue<E extends Schedulable> extends AbstractQueue<E>
       calls[i] = overflowedCalls.get(i).get();
     }
     return calls;
-  }
-
-  // For testing
-  @VisibleForTesting
-  public void setScheduler(RpcScheduler newScheduler) {
-    this.scheduler = newScheduler;
   }
 
   @VisibleForTesting

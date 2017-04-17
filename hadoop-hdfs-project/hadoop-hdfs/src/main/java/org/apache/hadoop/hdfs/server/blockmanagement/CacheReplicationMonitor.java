@@ -27,6 +27,7 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 import java.util.Random;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
@@ -34,7 +35,6 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.CacheDirective;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.CachedBlocksList.Type;
@@ -43,6 +43,7 @@ import org.apache.hadoop.hdfs.server.namenode.CacheManager;
 import org.apache.hadoop.hdfs.server.namenode.CachePool;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
@@ -55,7 +56,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Preconditions;
-;
 
 /**
  * Scans the namesystem, scheduling blocks to be cached as appropriate.
@@ -166,7 +166,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
         try {
           while (true) {
             if (shutdown) {
-              LOG.debug("Shutting down CacheReplicationMonitor");
+              LOG.info("Shutting down CacheReplicationMonitor");
               return;
             }
             if (completedScanCount < neededScanCount) {
@@ -333,12 +333,11 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       String path = directive.getPath();
       INode node;
       try {
-        node = fsDir.getINode(path);
-      } catch (UnresolvedLinkException e) {
-        // We don't cache through symlinks
-        LOG.debug("Directive {}: got UnresolvedLinkException while resolving "
-                + "path {}", directive.getId(), path
-        );
+        node = fsDir.getINode(path, DirOp.READ);
+      } catch (IOException e) {
+        // We don't cache through symlinks or invalid paths
+        LOG.debug("Directive {}: Failed to resolve path {} ({})",
+            directive.getId(), path, e.getMessage());
         continue;
       }
       if (node == null)  {
@@ -369,7 +368,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
    * @param file The file.
    */
   private void rescanFile(CacheDirective directive, INodeFile file) {
-    BlockInfoContiguous[] blockInfos = file.getBlocks();
+    BlockInfo[] blockInfos = file.getBlocks();
 
     // Increment the "needed" statistics
     directive.addFilesNeeded(1);
@@ -394,7 +393,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
     }
 
     long cachedTotal = 0;
-    for (BlockInfoContiguous blockInfo : blockInfos) {
+    for (BlockInfo blockInfo : blockInfos) {
       if (!blockInfo.getBlockUCState().equals(BlockUCState.COMPLETE)) {
         // We don't try to cache blocks that are under construction.
         LOG.trace("Directive {}: can't cache block {} because it is in state "
@@ -452,8 +451,8 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
         file.getFullPathName(), cachedTotal, neededTotal);
   }
 
-  private String findReasonForNotCaching(CachedBlock cblock, 
-          BlockInfoContiguous blockInfo) {
+  private String findReasonForNotCaching(CachedBlock cblock,
+      BlockInfo blockInfo) {
     if (blockInfo == null) {
       // Somehow, a cache report with the block arrived, but the block
       // reports from the DataNode haven't (yet?) described such a block.
@@ -491,6 +490,34 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
    * Blocks that are over-replicated should be removed from Datanodes.
    */
   private void rescanCachedBlockMap() {
+    // Remove pendingCached blocks that will make DN out-of-capacity.
+    Set<DatanodeDescriptor> datanodes =
+        blockManager.getDatanodeManager().getDatanodes();
+    for (DatanodeDescriptor dn : datanodes) {
+      long remaining = dn.getCacheRemaining();
+      for (Iterator<CachedBlock> it = dn.getPendingCached().iterator();
+           it.hasNext();) {
+        CachedBlock cblock = it.next();
+        BlockInfo blockInfo = blockManager.
+            getStoredBlock(new Block(cblock.getBlockId()));
+        if (blockInfo == null) {
+          // Cannot find this block on the NameNode, skip this block from
+          // capacity calculation. Later logic will handle this block.
+          LOG.debug("Block {}: cannot be found in block manager and hence"
+              + " skipped from calculation for node {}.", cblock.getBlockId(),
+              dn.getDatanodeUuid());
+          continue;
+        }
+        if (blockInfo.getNumBytes() > remaining) {
+          LOG.debug("Block {}: removing from PENDING_CACHED for node {} "
+                  + "because it cannot fit in remaining cache size {}.",
+              cblock.getBlockId(), dn.getDatanodeUuid(), remaining);
+          it.remove();
+        } else {
+          remaining -= blockInfo.getNumBytes();
+        }
+      }
+    }
     for (Iterator<CachedBlock> cbIter = cachedBlocks.iterator();
         cbIter.hasNext(); ) {
       scannedBlocks++;
@@ -513,7 +540,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
           iter.remove();
         }
       }
-      BlockInfoContiguous blockInfo = blockManager.
+      BlockInfo blockInfo = blockManager.
             getStoredBlock(new Block(cblock.getBlockId()));
       String reason = findReasonForNotCaching(cblock, blockInfo);
       int neededCached = 0;
@@ -531,7 +558,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
           DatanodeDescriptor datanode = iter.next();
           datanode.getPendingCached().remove(cblock);
           iter.remove();
-          LOG.trace("Block {}: removing from PENDING_CACHED for node {}"
+          LOG.trace("Block {}: removing from PENDING_CACHED for node {} "
                   + "because we already have {} cached replicas and we only" +
                   " need {}",
               cblock.getBlockId(), datanode.getDatanodeUuid(), numCached,
@@ -628,7 +655,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       List<DatanodeDescriptor> pendingCached) {
     // To figure out which replicas can be cached, we consult the
     // blocksMap.  We don't want to try to cache a corrupt replica, though.
-    BlockInfoContiguous blockInfo = blockManager.
+    BlockInfo blockInfo = blockManager.
           getStoredBlock(new Block(cachedBlock.getBlockId()));
     if (blockInfo == null) {
       LOG.debug("Block {}: can't add new cached replicas," +
@@ -667,7 +694,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       Iterator<CachedBlock> it = datanode.getPendingCached().iterator();
       while (it.hasNext()) {
         CachedBlock cBlock = it.next();
-        BlockInfoContiguous info =
+        BlockInfo info =
             blockManager.getStoredBlock(new Block(cBlock.getBlockId()));
         if (info != null) {
           pendingBytes -= info.getNumBytes();
@@ -677,7 +704,7 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       // Add pending uncached blocks from effective capacity
       while (it.hasNext()) {
         CachedBlock cBlock = it.next();
-        BlockInfoContiguous info =
+        BlockInfo info =
             blockManager.getStoredBlock(new Block(cBlock.getBlockId()));
         if (info != null) {
           pendingBytes += info.getNumBytes();
@@ -686,8 +713,8 @@ public class CacheReplicationMonitor extends Thread implements Closeable {
       long pendingCapacity = pendingBytes + datanode.getCacheRemaining();
       if (pendingCapacity < blockInfo.getNumBytes()) {
         LOG.trace("Block {}: DataNode {} is not a valid possibility " +
-            "because the block has size {}, but the DataNode only has {}" +
-            "bytes of cache remaining ({} pending bytes, {} already cached.",
+            "because the block has size {}, but the DataNode only has {} " +
+            "bytes of cache remaining ({} pending bytes, {} already cached.)",
             blockInfo.getBlockId(), datanode.getDatanodeUuid(),
             blockInfo.getNumBytes(), pendingCapacity, pendingBytes,
             datanode.getCacheRemaining());

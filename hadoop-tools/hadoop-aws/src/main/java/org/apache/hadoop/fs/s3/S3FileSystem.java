@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -35,9 +36,12 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.ParentNotDirectoryException;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3native.NativeS3FileSystem;
+import org.apache.hadoop.fs.s3native.S3xLoginHelper;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryPolicy;
 import org.apache.hadoop.io.retry.RetryProxy;
@@ -48,10 +52,15 @@ import org.apache.hadoop.util.Progressable;
  * <a href="http://aws.amazon.com/s3">Amazon S3</a>.
  *
  * @see NativeS3FileSystem
+ * @deprecated Use {@link NativeS3FileSystem} and {@link S3AFileSystem} instead.
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
+@Deprecated
 public class S3FileSystem extends FileSystem {
+
+  private static final AtomicBoolean hasWarnedDeprecation
+      = new AtomicBoolean(false);
 
   private URI uri;
 
@@ -62,9 +71,19 @@ public class S3FileSystem extends FileSystem {
   public S3FileSystem() {
     // set store in initialize()
   }
-  
+
   public S3FileSystem(FileSystemStore store) {
     this.store = store;
+  }
+
+  /**
+   * This is to warn the first time in a JVM that an S3FileSystem is created.
+   */
+  private static void warnDeprecation() {
+    if (!hasWarnedDeprecation.getAndSet(true)) {
+      LOG.warn("S3FileSystem is deprecated and will be removed in " +
+          "future releases. Use NativeS3FileSystem or S3AFileSystem instead.");
+    }
   }
 
   /**
@@ -85,19 +104,20 @@ public class S3FileSystem extends FileSystem {
   @Override
   public void initialize(URI uri, Configuration conf) throws IOException {
     super.initialize(uri, conf);
+    warnDeprecation();
     if (store == null) {
       store = createDefaultStore(conf);
     }
     store.initialize(uri, conf);
     setConf(conf);
-    this.uri = URI.create(uri.getScheme() + "://" + uri.getAuthority());    
+    this.uri = S3xLoginHelper.buildFSURI(uri);
     this.workingDir =
       new Path("/user", System.getProperty("user.name")).makeQualified(this);
-  }  
+  }
 
   private static FileSystemStore createDefaultStore(Configuration conf) {
     FileSystemStore store = new Jets3tFileSystemStore();
-    
+
     RetryPolicy basePolicy = RetryPolicies.retryUpToMaximumCountWithFixedSleep(
                                                                                conf.getInt("fs.s3.maxRetries", 4),
                                                                                conf.getLong("fs.s3.sleepTimeSeconds", 10), TimeUnit.SECONDS);
@@ -105,13 +125,13 @@ public class S3FileSystem extends FileSystem {
       new HashMap<Class<? extends Exception>, RetryPolicy>();
     exceptionToPolicyMap.put(IOException.class, basePolicy);
     exceptionToPolicyMap.put(S3Exception.class, basePolicy);
-    
+
     RetryPolicy methodPolicy = RetryPolicies.retryByException(
                                                               RetryPolicies.TRY_ONCE_THEN_FAIL, exceptionToPolicyMap);
     Map<String,RetryPolicy> methodNameToPolicyMap = new HashMap<String,RetryPolicy>();
     methodNameToPolicyMap.put("storeBlock", methodPolicy);
     methodNameToPolicyMap.put("retrieveBlock", methodPolicy);
-    
+
     return (FileSystemStore) RetryProxy.create(FileSystemStore.class,
                                                store, methodNameToPolicyMap);
   }
@@ -134,6 +154,23 @@ public class S3FileSystem extends FileSystem {
   }
 
   /**
+   * Check that a Path belongs to this FileSystem.
+   * Unlike the superclass, this version does not look at authority,
+   * only hostnames.
+   * @param path to check
+   * @throws IllegalArgumentException if there is an FS mismatch
+   */
+  @Override
+  protected void checkPath(Path path) {
+    S3xLoginHelper.checkPath(getConf(), getUri(), path, getDefaultPort());
+  }
+
+  @Override
+  protected URI canonicalizeUri(URI rawUri) {
+    return S3xLoginHelper.canonicalizeUri(rawUri, getDefaultPort());
+  }
+
+  /**
    * @param permission Currently ignored.
    */
   @Override
@@ -144,21 +181,29 @@ public class S3FileSystem extends FileSystem {
       paths.add(0, absolutePath);
       absolutePath = absolutePath.getParent();
     } while (absolutePath != null);
-    
+
     boolean result = true;
-    for (Path p : paths) {
-      result &= mkdir(p);
+    for (int i = 0; i < paths.size(); i++) {
+      Path p = paths.get(i);
+      try {
+        result &= mkdir(p);
+      } catch(FileAlreadyExistsException e) {
+        if (i + 1 < paths.size()) {
+          throw new ParentNotDirectoryException(e.getMessage());
+        }
+        throw e;
+      }
     }
     return result;
   }
-  
+
   private boolean mkdir(Path path) throws IOException {
     Path absolutePath = makeAbsolute(path);
     INode inode = store.retrieveINode(absolutePath);
     if (inode == null) {
       store.storeINode(absolutePath, INode.DIRECTORY_INODE);
     } else if (inode.isFile()) {
-      throw new IOException(String.format(
+      throw new FileAlreadyExistsException(String.format(
           "Can't make directory for path %s since it is a file.",
           absolutePath));
     }
@@ -176,11 +221,12 @@ public class S3FileSystem extends FileSystem {
 
   private INode checkFile(Path path) throws IOException {
     INode inode = store.retrieveINode(makeAbsolute(path));
+    String message = String.format("No such file: '%s'", path.toString());
     if (inode == null) {
-      throw new IOException("No such file.");
+      throw new FileNotFoundException(message + " does not exist");
     }
     if (inode.isDirectory()) {
-      throw new IOException("Path " + path + " is a directory.");
+      throw new FileNotFoundException(message + " is a directory");
     }
     return inode;
   }
@@ -222,10 +268,14 @@ public class S3FileSystem extends FileSystem {
 
     INode inode = store.retrieveINode(makeAbsolute(file));
     if (inode != null) {
-      if (overwrite) {
+      if (overwrite && !inode.isDirectory()) {
         delete(file, true);
       } else {
-        throw new FileAlreadyExistsException("File already exists: " + file);
+        String message = String.format("File already exists: '%s'", file);
+        if (inode.isDirectory()) {
+          message = message + " is a directory";
+        }
+        throw new FileAlreadyExistsException(message);
       }
     } else {
       Path parent = file.getParent();
@@ -233,7 +283,7 @@ public class S3FileSystem extends FileSystem {
         if (!mkdirs(parent)) {
           throw new IOException("Mkdirs failed to create " + parent.toString());
         }
-      }      
+      }
     }
     return new FSDataOutputStream
         (new S3OutputStream(getConf(), store, makeAbsolute(file),
@@ -254,7 +304,7 @@ public class S3FileSystem extends FileSystem {
     INode srcINode = store.retrieveINode(absoluteSrc);
     if (srcINode == null) {
       // src path doesn't exist
-      return false; 
+      return false;
     }
     Path absoluteDst = makeAbsolute(dst);
     INode dstINode = store.retrieveINode(absoluteDst);
@@ -311,7 +361,7 @@ public class S3FileSystem extends FileSystem {
        store.deleteBlock(block);
      }
    } else {
-     FileStatus[] contents = null; 
+     FileStatus[] contents = null;
      try {
        contents = listStatus(absolutePath);
      } catch(FileNotFoundException fnfe) {
@@ -319,7 +369,7 @@ public class S3FileSystem extends FileSystem {
      }
 
      if ((contents.length !=0) && (!recursive)) {
-       throw new IOException("Directory " + path.toString() 
+       throw new IOException("Directory " + path.toString()
            + " is not empty.");
      }
      for (FileStatus p:contents) {
@@ -331,9 +381,9 @@ public class S3FileSystem extends FileSystem {
    }
    return true;
   }
-  
+
   /**
-   * FileStatus for S3 file systems. 
+   * FileStatus for S3 file systems.
    */
   @Override
   public FileStatus getFileStatus(Path f)  throws IOException {
@@ -343,7 +393,7 @@ public class S3FileSystem extends FileSystem {
     }
     return new S3FileStatus(f.makeQualified(this), inode);
   }
-  
+
   @Override
   public long getDefaultBlockSize() {
     return getConf().getLong("fs.s3.block.size", 64 * 1024 * 1024);

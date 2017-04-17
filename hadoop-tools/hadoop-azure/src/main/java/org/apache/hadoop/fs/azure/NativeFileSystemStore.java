@@ -107,4 +107,8 @@ interface NativeFileSystemStore {
   void delete(String key, SelfRenewingLease lease) throws IOException;
       
   SelfRenewingLease acquireLease(String key) throws AzureException;
+
+  DataOutputStream retrieveAppendStream(String key, int bufferSize) throws IOException;
+
+  boolean explicitFileExists(String key) throws AzureException;
 }

@@ -76,6 +76,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskRecoverEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskTAttemptEvent;
+import org.apache.hadoop.mapreduce.v2.app.job.event.TaskTAttemptKilledEvent;
 import org.apache.hadoop.mapreduce.v2.app.metrics.MRAppMetrics;
 import org.apache.hadoop.mapreduce.v2.app.rm.ContainerFailedEvent;
 import org.apache.hadoop.mapreduce.v2.util.MRBuilderUtils;
@@ -85,7 +86,7 @@ import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
-import org.apache.hadoop.yarn.state.InvalidStateTransitonException;
+import org.apache.hadoop.yarn.state.InvalidStateTransitionException;
 import org.apache.hadoop.yarn.state.MultipleArcTransition;
 import org.apache.hadoop.yarn.state.SingleArcTransition;
 import org.apache.hadoop.yarn.state.StateMachine;
@@ -258,6 +259,7 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
     // d. TA processes TA_KILL event and sends T_ATTEMPT_KILLED to the task.
     .addTransition(TaskStateInternal.KILLED, TaskStateInternal.KILLED,
         EnumSet.of(TaskEventType.T_KILL,
+                   TaskEventType.T_SCHEDULE,
                    TaskEventType.T_ATTEMPT_KILLED,
                    TaskEventType.T_ADD_SPEC_ATTEMPT))
 
@@ -594,10 +596,15 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
 
   // This is always called in the Write Lock
   private void addAndScheduleAttempt(Avataar avataar) {
+    addAndScheduleAttempt(avataar, false);
+  }
+
+  // This is always called in the Write Lock
+  private void addAndScheduleAttempt(Avataar avataar, boolean reschedule) {
     TaskAttempt attempt = addAttempt(avataar);
     inProgressAttempts.add(attempt.getID());
     //schedule the nextAttemptNumber
-    if (failedAttempts.size() > 0) {
+    if (failedAttempts.size() > 0 || reschedule) {
       eventHandler.handle(new TaskAttemptEvent(attempt.getID(),
           TaskAttemptEventType.TA_RESCHEDULE));
     } else {
@@ -646,7 +653,7 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
       TaskStateInternal oldState = getInternalState();
       try {
         stateMachine.doTransition(event.getType(), event);
-      } catch (InvalidStateTransitonException e) {
+      } catch (InvalidStateTransitionException e) {
         LOG.error("Can't handle this event at current state for "
             + this.taskId, e);
         internalError(event.getType());
@@ -968,7 +975,12 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
       task.finishedAttempts.add(taskAttemptId);
       task.inProgressAttempts.remove(taskAttemptId);
       if (task.successfulAttempt == null) {
-        task.addAndScheduleAttempt(Avataar.VIRGIN);
+        boolean rescheduleNewAttempt = false;
+        if (event instanceof TaskTAttemptKilledEvent) {
+          rescheduleNewAttempt =
+              ((TaskTAttemptKilledEvent)event).getRescheduleAttempt();
+        }
+        task.addAndScheduleAttempt(Avataar.VIRGIN, rescheduleNewAttempt);
       }
       if ((task.commitAttempt != null) && (task.commitAttempt == taskAttemptId)) {
     	task.commitAttempt = null;
@@ -1057,9 +1069,21 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
             TaskAttemptCompletionEventStatus.FAILED);
         // we don't need a new event if we already have a spare
         task.inProgressAttempts.remove(taskAttemptId);
-        if (task.inProgressAttempts.size() == 0
-            && task.successfulAttempt == null) {
-          task.addAndScheduleAttempt(Avataar.VIRGIN);
+        if (task.successfulAttempt == null) {
+          boolean shouldAddNewAttempt = true;
+          if (task.inProgressAttempts.size() > 0) {
+            // if not all of the inProgressAttempts are hanging for resource
+            for (TaskAttemptId attemptId : task.inProgressAttempts) {
+              if (((TaskAttemptImpl) task.getAttempt(attemptId))
+                  .isContainerAssigned()) {
+                shouldAddNewAttempt = false;
+                break;
+              }
+            }
+          }
+          if (shouldAddNewAttempt) {
+            task.addAndScheduleAttempt(Avataar.VIRGIN);
+          }
         }
       } else {
         task.handleTaskAttemptCompletion(
@@ -1080,7 +1104,7 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
             taskFailedEvent));
         } else {
           LOG.debug("Not generating HistoryFinish event since start event not" +
-          		" generated for task: " + task.getID());
+              " generated for task: " + task.getID());
         }
         task.eventHandler.handle(
             new JobTaskEvent(task.taskId, TaskState.FAILED));
@@ -1175,7 +1199,15 @@ public abstract class TaskImpl implements Task, EventHandler<TaskEvent> {
       // from the map splitInfo. So the bad node might be sent as a location
       // to the RM. But the RM would ignore that just like it would ignore
       // currently pending container requests affinitized to bad nodes.
-      task.addAndScheduleAttempt(Avataar.VIRGIN);
+      boolean rescheduleNextTaskAttempt = false;
+      if (event instanceof TaskTAttemptKilledEvent) {
+        // Decide whether to reschedule next task attempt. If true, this
+        // typically indicates that a successful map attempt was killed on an
+        // unusable node being reported.
+        rescheduleNextTaskAttempt =
+            ((TaskTAttemptKilledEvent)event).getRescheduleAttempt();
+      }
+      task.addAndScheduleAttempt(Avataar.VIRGIN, rescheduleNextTaskAttempt);
       return TaskStateInternal.SCHEDULED;
     }
   }

@@ -18,17 +18,7 @@
 
 package org.apache.hadoop.tools.util;
 
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.URI;
-import java.net.UnknownHostException;
-import java.text.DecimalFormat;
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Map.Entry;
-
+import com.google.common.collect.Maps;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -49,9 +39,14 @@ import org.apache.hadoop.tools.CopyListingFileStatus;
 import org.apache.hadoop.tools.DistCpOptions;
 import org.apache.hadoop.tools.DistCpOptions.FileAttribute;
 import org.apache.hadoop.tools.mapred.UniformSizeInputFormat;
-
-import com.google.common.collect.Maps;
 import org.apache.hadoop.util.StringUtils;
+
+import java.io.IOException;
+import java.text.DecimalFormat;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 
 /**
  * Utility functions used in DistCp.
@@ -200,9 +195,13 @@ public class DistCpUtils {
                               EnumSet<FileAttribute> attributes,
                               boolean preserveRawXattrs) throws IOException {
 
-    FileStatus targetFileStatus = targetFS.getFileStatus(path);
-    String group = targetFileStatus.getGroup();
-    String user = targetFileStatus.getOwner();
+    // If not preserving anything from FileStatus, don't bother fetching it.
+    FileStatus targetFileStatus = attributes.isEmpty() ? null :
+        targetFS.getFileStatus(path);
+    String group = targetFileStatus == null ? null :
+        targetFileStatus.getGroup();
+    String user = targetFileStatus == null ? null :
+        targetFileStatus.getOwner();
     boolean chown = false;
 
     if (attributes.contains(FileAttribute.ACL)) {
@@ -406,7 +405,7 @@ public class DistCpUtils {
   /**
    * String utility to convert a number-of-bytes to human readable format.
    */
-  private static ThreadLocal<DecimalFormat> FORMATTER
+  private static final ThreadLocal<DecimalFormat> FORMATTER
                         = new ThreadLocal<DecimalFormat>() {
     @Override
     protected DecimalFormat initialValue() {
@@ -467,44 +466,5 @@ public class DistCpUtils {
     }
     return (sourceChecksum == null || targetChecksum == null ||
             sourceChecksum.equals(targetChecksum));
-  }
-
-  /* see if two file systems are the same or not
-   *
-   */
-  public static boolean compareFs(FileSystem srcFs, FileSystem destFs) {
-    URI srcUri = srcFs.getUri();
-    URI dstUri = destFs.getUri();
-    if (srcUri.getScheme() == null) {
-      return false;
-    }
-    if (!srcUri.getScheme().equals(dstUri.getScheme())) {
-      return false;
-    }
-    String srcHost = srcUri.getHost();
-    String dstHost = dstUri.getHost();
-    if ((srcHost != null) && (dstHost != null)) {
-      try {
-        srcHost = InetAddress.getByName(srcHost).getCanonicalHostName();
-        dstHost = InetAddress.getByName(dstHost).getCanonicalHostName();
-      } catch(UnknownHostException ue) {
-        if (LOG.isDebugEnabled())
-          LOG.debug("Could not compare file-systems. Unknown host: ", ue);
-        return false;
-      }
-      if (!srcHost.equals(dstHost)) {
-        return false;
-      }
-    }
-    else if (srcHost == null && dstHost != null) {
-      return false;
-    }
-    else if (srcHost != null) {
-      return false;
-    }
-
-    //check for ports
-
-    return srcUri.getPort() == dstUri.getPort();
   }
 }

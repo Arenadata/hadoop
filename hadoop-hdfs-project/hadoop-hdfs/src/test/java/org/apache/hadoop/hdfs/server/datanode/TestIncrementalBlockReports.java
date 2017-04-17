@@ -31,8 +31,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.*;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
 
@@ -54,7 +56,6 @@ public class TestIncrementalBlockReports {
   private static final long DUMMY_BLOCK_GENSTAMP = 1000;
 
   private MiniDFSCluster cluster = null;
-  private DistributedFileSystem fs;
   private Configuration conf;
   private NameNode singletonNn;
   private DataNode singletonDn;
@@ -66,12 +67,14 @@ public class TestIncrementalBlockReports {
   public void startCluster() throws IOException {
     conf = new HdfsConfiguration();
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(DN_COUNT).build();
-    fs = cluster.getFileSystem();
     singletonNn = cluster.getNameNode();
     singletonDn = cluster.getDataNodes().get(0);
-    bpos = singletonDn.getAllBpOs()[0];
+    bpos = singletonDn.getAllBpOs().get(0);
     actor = bpos.getBPServiceActors().get(0);
-    storageUuid = singletonDn.getFSDataset().getVolumes().get(0).getStorageID();
+    try (FsDatasetSpi.FsVolumeReferences volumes =
+        singletonDn.getFSDataset().getFsVolumeReferences()) {
+      storageUuid = volumes.get(0).getStorageID();
+    }
   }
 
   private static Block getDummyBlock() {
@@ -84,7 +87,8 @@ public class TestIncrementalBlockReports {
   private void injectBlockReceived() {
     ReceivedDeletedBlockInfo rdbi = new ReceivedDeletedBlockInfo(
         getDummyBlock(), BlockStatus.RECEIVED_BLOCK, null);
-    actor.notifyNamenodeBlock(rdbi, storageUuid, true);
+    DatanodeStorage s = singletonDn.getFSDataset().getStorage(storageUuid);
+    actor.getIbrManager().notifyNamenodeBlock(rdbi, s, false);
   }
 
   /**
@@ -93,7 +97,8 @@ public class TestIncrementalBlockReports {
   private void injectBlockDeleted() {
     ReceivedDeletedBlockInfo rdbi = new ReceivedDeletedBlockInfo(
         getDummyBlock(), BlockStatus.DELETED_BLOCK, null);
-    actor.notifyNamenodeDeletedBlock(rdbi, storageUuid);
+    actor.getIbrManager().addRDBI(rdbi,
+        singletonDn.getFSDataset().getStorage(storageUuid));
   }
 
   /**
@@ -101,7 +106,7 @@ public class TestIncrementalBlockReports {
    * @return spy object that can be used for Mockito verification.
    */
   DatanodeProtocolClientSideTranslatorPB spyOnDnCallsToNn() {
-    return DataNodeTestUtils.spyOnBposToNN(singletonDn, singletonNn);
+    return InternalDataNodeTestUtils.spyOnBposToNN(singletonDn, singletonNn);
   }
 
   /**
@@ -159,8 +164,8 @@ public class TestIncrementalBlockReports {
           anyString(),
           any(StorageReceivedDeletedBlocks[].class));
 
-      // Trigger a block report, this also triggers an IBR.
-      DataNodeTestUtils.triggerBlockReport(singletonDn);
+      // Trigger a heartbeat, this also triggers an IBR.
+      DataNodeTestUtils.triggerHeartbeat(singletonDn);
       Thread.sleep(2000);
 
       // Ensure that the deleted block is reported.
@@ -202,7 +207,7 @@ public class TestIncrementalBlockReports {
           any(StorageReceivedDeletedBlocks[].class));
 
       // Ensure that no more IBRs are pending.
-      assertFalse(actor.hasPendingIBR());
+      assertFalse(actor.getIbrManager().sendImmediately());
 
     } finally {
       cluster.shutdown();

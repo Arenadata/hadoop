@@ -20,9 +20,16 @@ package org.apache.hadoop.mapreduce.jobhistory;
 
 import java.io.Closeable;
 import java.io.DataInputStream;
-import java.io.IOException;
 import java.io.EOFException;
+import java.io.IOException;
 
+import org.apache.avro.AvroRuntimeException;
+import org.apache.avro.Schema;
+import org.apache.avro.io.DatumReader;
+import org.apache.avro.io.Decoder;
+import org.apache.avro.io.DecoderFactory;
+import org.apache.avro.specific.SpecificData;
+import org.apache.avro.specific.SpecificDatumReader;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileSystem;
@@ -30,13 +37,6 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.CounterGroup;
 import org.apache.hadoop.mapreduce.Counters;
 import org.apache.hadoop.util.StringInterner;
-
-import org.apache.avro.Schema;
-import org.apache.avro.io.Decoder;
-import org.apache.avro.io.DecoderFactory;
-import org.apache.avro.io.DatumReader;
-import org.apache.avro.specific.SpecificData;
-import org.apache.avro.specific.SpecificDatumReader;
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
@@ -66,15 +66,27 @@ public class EventReader implements Closeable {
   public EventReader(DataInputStream in) throws IOException {
     this.in = in;
     this.version = in.readLine();
-    
-    if (!EventWriter.VERSION.equals(version)) {
-      throw new IOException("Incompatible event log version: "+version);
-    }
 
     Schema myschema = new SpecificData(Event.class.getClassLoader()).getSchema(Event.class);
-    this.schema = Schema.parse(in.readLine());
-    this.reader = new SpecificDatumReader(schema, myschema);
-    this.decoder = DecoderFactory.get().jsonDecoder(schema, in);
+    Schema.Parser parser = new Schema.Parser();
+    String eventschema = in.readLine();
+    if (null != eventschema) {
+      try {
+        this.schema = parser.parse(eventschema);
+        this.reader = new SpecificDatumReader(schema, myschema);
+        if (EventWriter.VERSION.equals(version)) {
+          this.decoder = DecoderFactory.get().jsonDecoder(schema, in);
+        } else if (EventWriter.VERSION_BINARY.equals(version)) {
+          this.decoder = DecoderFactory.get().binaryDecoder(in, null);
+        } else {
+          throw new IOException("Incompatible event log version: " + version);
+        }
+      } catch (AvroRuntimeException e) {
+        throw new IOException(e);
+      }
+    } else {
+      throw new IOException("Event schema string not parsed since its null");
+    }
   }
   
   /**
@@ -91,7 +103,7 @@ public class EventReader implements Closeable {
       return null;
     }
     HistoryEvent result;
-    switch (wrapper.type) {
+    switch (wrapper.getType()) {
     case JOB_SUBMITTED:
       result = new JobSubmittedEvent(); break;
     case JOB_INITED:
@@ -155,9 +167,9 @@ public class EventReader implements Closeable {
     case AM_STARTED:
       result = new AMStartedEvent(); break;
     default:
-      throw new RuntimeException("unexpected event type: " + wrapper.type);
+      throw new RuntimeException("unexpected event type: " + wrapper.getType());
     }
-    result.setDatum(wrapper.event);
+    result.setDatum(wrapper.getEvent());
     return result;
   }
 
@@ -176,13 +188,14 @@ public class EventReader implements Closeable {
   static Counters fromAvro(JhCounters counters) {
     Counters result = new Counters();
     if(counters != null) {
-      for (JhCounterGroup g : counters.groups) {
+      for (JhCounterGroup g : counters.getGroups()) {
         CounterGroup group =
-            result.addGroup(StringInterner.weakIntern(g.name.toString()), 
-                StringInterner.weakIntern(g.displayName.toString()));
-        for (JhCounter c : g.counts) {
-          group.addCounter(StringInterner.weakIntern(c.name.toString()), 
-              StringInterner.weakIntern(c.displayName.toString()), c.value);
+            result.addGroup(StringInterner.weakIntern(g.getName().toString()),
+                StringInterner.weakIntern(g.getDisplayName().toString()));
+        for (JhCounter c : g.getCounts()) {
+          group.addCounter(StringInterner.weakIntern(c.getName().toString()),
+              StringInterner.weakIntern(c.getDisplayName().toString()),
+                  c.getValue());
         }
       }
     }

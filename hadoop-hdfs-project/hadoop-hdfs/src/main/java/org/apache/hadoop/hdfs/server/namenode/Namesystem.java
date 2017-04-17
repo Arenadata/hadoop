@@ -19,8 +19,9 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.protocol.Block;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguousUnderConstruction;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
 import org.apache.hadoop.hdfs.server.namenode.NameNode.OperationCategory;
+import org.apache.hadoop.hdfs.server.namenode.ha.HAContext;
 import org.apache.hadoop.hdfs.util.RwLock;
 import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.security.AccessControlException;
@@ -29,21 +30,28 @@ import org.apache.hadoop.security.AccessControlException;
 @InterfaceAudience.Private
 public interface Namesystem extends RwLock, SafeMode {
   /** Is this name system running? */
-  public boolean isRunning();
+  boolean isRunning();
 
   /** Check if the user has superuser privilege. */
-  public void checkSuperuserPrivilege() throws AccessControlException;
+  void checkSuperuserPrivilege() throws AccessControlException;
 
   /** @return the block pool ID */
-  public String getBlockPoolId();
+  String getBlockPoolId();
 
-  public boolean isInStandbyState();
+  boolean isInStandbyState();
 
-  public boolean isGenStampInFuture(Block block);
+  boolean isGenStampInFuture(Block block);
 
-  public void adjustSafeModeBlockTotals(int deltaSafe, int deltaTotal);
+  BlockCollection getBlockCollection(long id);
 
-  public void checkOperation(OperationCategory read) throws StandbyException;
+  FSDirectory getFSDirectory();
 
-  public boolean isInSnapshot(BlockInfoContiguousUnderConstruction blockUC);
+  void adjustSafeModeBlockTotals(int deltaSafe, int deltaTotal);
+
+  void checkOperation(OperationCategory read) throws StandbyException;
+
+  boolean isInSnapshot(long blockCollectionID);
+
+  CacheManager getCacheManager();
+  HAContext getHAContext();
 }

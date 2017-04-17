@@ -27,6 +27,8 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_KEY;
+
 /**
  * A class that provides a line reader from an input stream.
  * Depending on the constructor used, lines will either be terminated by:
@@ -89,7 +91,7 @@ public class LineReader implements Closeable {
    * @throws IOException
    */
   public LineReader(InputStream in, Configuration conf) throws IOException {
-    this(in, conf.getInt("io.file.buffer.size", DEFAULT_BUFFER_SIZE));
+    this(in, conf.getInt(IO_FILE_BUFFER_SIZE_KEY, DEFAULT_BUFFER_SIZE));
   }
 
   /**
@@ -136,7 +138,7 @@ public class LineReader implements Closeable {
   public LineReader(InputStream in, Configuration conf,
       byte[] recordDelimiterBytes) throws IOException {
     this.in = in;
-    this.bufferSize = conf.getInt("io.file.buffer.size", DEFAULT_BUFFER_SIZE);
+    this.bufferSize = conf.getInt(IO_FILE_BUFFER_SIZE_KEY, DEFAULT_BUFFER_SIZE);
     this.buffer = new byte[this.bufferSize];
     this.recordDelimiterBytes = recordDelimiterBytes;
   }
@@ -303,7 +305,10 @@ public class LineReader implements Closeable {
         startPosn = bufferPosn = 0;
         bufferLength = fillBuffer(in, buffer, ambiguousByteCount > 0);
         if (bufferLength <= 0) {
-          str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+          if (ambiguousByteCount > 0) {
+            str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+            bytesConsumed += ambiguousByteCount;
+          }
           break; // EOF
         }
       }
@@ -315,7 +320,10 @@ public class LineReader implements Closeable {
             break;
           }
         } else if (delPosn != 0) {
-          bufferPosn--;
+          bufferPosn -= delPosn;
+          if(bufferPosn < -1) {
+            bufferPosn = -1;
+          }
           delPosn = 0;
         }
       }
@@ -325,13 +333,17 @@ public class LineReader implements Closeable {
       if (appendLength > maxLineLength - txtLength) {
         appendLength = maxLineLength - txtLength;
       }
+      bytesConsumed += ambiguousByteCount;
+      if (appendLength >= 0 && ambiguousByteCount > 0) {
+        //appending the ambiguous characters (refer case 2.2)
+        str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+        ambiguousByteCount = 0;
+        // since it is now certain that the split did not split a delimiter we
+        // should not read the next record: clear the flag otherwise duplicate
+        // records could be generated
+        unsetNeedAdditionalRecordAfterSplit();
+      }
       if (appendLength > 0) {
-        if (ambiguousByteCount > 0) {
-          str.append(recordDelimiterBytes, 0, ambiguousByteCount);
-          //appending the ambiguous characters (refer case 2.2)
-          bytesConsumed += ambiguousByteCount;
-          ambiguousByteCount=0;
-        }
         str.append(buffer, startPosn, appendLength);
         txtLength += appendLength;
       }
@@ -368,5 +380,18 @@ public class LineReader implements Closeable {
    */
   public int readLine(Text str) throws IOException {
     return readLine(str, Integer.MAX_VALUE, Integer.MAX_VALUE);
+  }
+
+  protected int getBufferPosn() {
+    return bufferPosn;
+  }
+
+  protected int getBufferSize() {
+    return bufferSize;
+  }
+
+  protected void unsetNeedAdditionalRecordAfterSplit() {
+    // needed for custom multi byte line delimiters only
+    // see MAPREDUCE-6549 for details
   }
 }

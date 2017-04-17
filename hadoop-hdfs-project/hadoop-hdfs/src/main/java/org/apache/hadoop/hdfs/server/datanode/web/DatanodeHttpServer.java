@@ -17,10 +17,20 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.web;
 
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_WEBHDFS_REST_CSRF_ENABLED_DEFAULT;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_WEBHDFS_REST_CSRF_ENABLED_KEY;
+
+import java.util.Enumeration;
+import java.util.Map;
+import javax.servlet.FilterConfig;
+import javax.servlet.ServletContext;
+import javax.servlet.ServletException;
+
 import io.netty.bootstrap.ChannelFactory;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -30,26 +40,32 @@ import io.netty.handler.codec.http.HttpRequestDecoder;
 import io.netty.handler.codec.http.HttpResponseEncoder;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedWriteHandler;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.server.common.JspHelper;
 import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.namenode.FileChecksumServlets;
 import org.apache.hadoop.hdfs.server.namenode.StreamFile;
+import org.apache.hadoop.hdfs.server.datanode.web.webhdfs.DataNodeUGIProvider;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.security.http.RestCsrfPreventionFilter;
 import org.apache.hadoop.security.ssl.SSLFactory;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.URI;
 import java.nio.channels.ServerSocketChannel;
 import java.security.GeneralSecurityException;
@@ -69,15 +85,16 @@ public class DatanodeHttpServer implements Closeable {
   private final ServerBootstrap httpsServer;
   private final Configuration conf;
   private final Configuration confForCreate;
+  private final RestCsrfPreventionFilter restCsrfPreventionFilter;
   private InetSocketAddress httpAddress;
   private InetSocketAddress httpsAddress;
-
   static final Log LOG = LogFactory.getLog(DatanodeHttpServer.class);
 
   public DatanodeHttpServer(final Configuration conf,
       final DataNode datanode,
       final ServerSocketChannel externalHttpChannel)
     throws IOException {
+    this.restCsrfPreventionFilter = createRestCsrfPreventionFilter(conf);
     this.conf = conf;
 
     Configuration confForInfoServer = new Configuration(conf);
@@ -90,6 +107,16 @@ public class DatanodeHttpServer implements Closeable {
         .addEndpoint(URI.create("http://localhost:0"))
         .setFindPort(true);
 
+    final boolean xFrameEnabled = conf.getBoolean(
+        DFSConfigKeys.DFS_XFRAME_OPTION_ENABLED,
+        DFSConfigKeys.DFS_XFRAME_OPTION_ENABLED_DEFAULT);
+
+    final String xFrameOptionValue = conf.getTrimmed(
+        DFSConfigKeys.DFS_XFRAME_OPTION_VALUE,
+        DFSConfigKeys.DFS_XFRAME_OPTION_VALUE_DEFAULT);
+
+    builder.configureXFrame(xFrameEnabled).setXFrameOption(xFrameOptionValue);
+
     this.infoServer = builder.build();
 
     this.infoServer.addInternalServlet(null, "/streamFile/*", StreamFile.class);
@@ -100,7 +127,7 @@ public class DatanodeHttpServer implements Closeable {
     this.infoServer.setAttribute(JspHelper.CURRENT_CONF, conf);
     this.infoServer.addServlet(null, "/blockScannerReport",
                                BlockScanner.Servlet.class);
-
+    DataNodeUGIProvider.init(conf);
     this.infoServer.start();
     final InetSocketAddress jettyAddr = infoServer.getConnectorAddress(0);
 
@@ -119,11 +146,28 @@ public class DatanodeHttpServer implements Closeable {
         protected void initChannel(SocketChannel ch) throws Exception {
           ChannelPipeline p = ch.pipeline();
           p.addLast(new HttpRequestDecoder(),
-            new HttpResponseEncoder(),
-            new ChunkedWriteHandler(),
-            new URLDispatcher(jettyAddr, conf, confForCreate));
+            new HttpResponseEncoder());
+          if (restCsrfPreventionFilter != null) {
+            p.addLast(new RestCsrfPreventionFilterHandler(
+                restCsrfPreventionFilter));
+          }
+          p.addLast(
+              new ChunkedWriteHandler(),
+              new URLDispatcher(jettyAddr, conf, confForCreate));
         }
       });
+
+      this.httpServer.childOption(
+          ChannelOption.WRITE_BUFFER_HIGH_WATER_MARK,
+          conf.getInt(
+              DFSConfigKeys.DFS_WEBHDFS_NETTY_HIGH_WATERMARK,
+              DFSConfigKeys.DFS_WEBHDFS_NETTY_HIGH_WATERMARK_DEFAULT));
+      this.httpServer.childOption(
+          ChannelOption.WRITE_BUFFER_LOW_WATER_MARK,
+          conf.getInt(
+              DFSConfigKeys.DFS_WEBHDFS_NETTY_LOW_WATERMARK,
+              DFSConfigKeys.DFS_WEBHDFS_NETTY_LOW_WATERMARK_DEFAULT));
+
       if (externalHttpChannel == null) {
         httpServer.channel(NioServerSocketChannel.class);
       } else {
@@ -157,11 +201,16 @@ public class DatanodeHttpServer implements Closeable {
           protected void initChannel(SocketChannel ch) throws Exception {
             ChannelPipeline p = ch.pipeline();
             p.addLast(
-              new SslHandler(sslFactory.createSSLEngine()),
-              new HttpRequestDecoder(),
-              new HttpResponseEncoder(),
-              new ChunkedWriteHandler(),
-              new URLDispatcher(jettyAddr, conf, confForCreate));
+                new SslHandler(sslFactory.createSSLEngine()),
+                new HttpRequestDecoder(),
+                new HttpResponseEncoder());
+            if (restCsrfPreventionFilter != null) {
+              p.addLast(new RestCsrfPreventionFilterHandler(
+                  restCsrfPreventionFilter));
+            }
+            p.addLast(
+                new ChunkedWriteHandler(),
+                new URLDispatcher(jettyAddr, conf, confForCreate));
           }
         });
     } else {
@@ -178,19 +227,41 @@ public class DatanodeHttpServer implements Closeable {
     return httpsAddress;
   }
 
-  public void start() {
+  public void start() throws IOException {
     if (httpServer != null) {
-      ChannelFuture f = httpServer.bind(DataNode.getInfoAddr(conf));
-      f.syncUninterruptibly();
+      InetSocketAddress infoAddr = DataNode.getInfoAddr(conf);
+      ChannelFuture f = httpServer.bind(infoAddr);
+      try {
+        f.syncUninterruptibly();
+      } catch (Throwable e) {
+        if (e instanceof BindException) {
+          throw NetUtils.wrapException(null, 0, infoAddr.getHostName(),
+              infoAddr.getPort(), (SocketException) e);
+        } else {
+          throw e;
+        }
+      }
       httpAddress = (InetSocketAddress) f.channel().localAddress();
       LOG.info("Listening HTTP traffic on " + httpAddress);
     }
 
     if (httpsServer != null) {
-      InetSocketAddress secInfoSocAddr = NetUtils.createSocketAddr(conf.getTrimmed(
-        DFS_DATANODE_HTTPS_ADDRESS_KEY, DFS_DATANODE_HTTPS_ADDRESS_DEFAULT));
+      InetSocketAddress secInfoSocAddr =
+          NetUtils.createSocketAddr(conf.getTrimmed(
+              DFS_DATANODE_HTTPS_ADDRESS_KEY,
+              DFS_DATANODE_HTTPS_ADDRESS_DEFAULT));
       ChannelFuture f = httpsServer.bind(secInfoSocAddr);
-      f.syncUninterruptibly();
+
+      try {
+        f.syncUninterruptibly();
+      } catch (Throwable e) {
+        if (e instanceof BindException) {
+          throw NetUtils.wrapException(null, 0, secInfoSocAddr.getHostName(),
+              secInfoSocAddr.getPort(), (SocketException) e);
+        } else {
+          throw e;
+        }
+      }
       httpsAddress = (InetSocketAddress) f.channel().localAddress();
       LOG.info("Listening HTTPS traffic on " + httpsAddress);
     }
@@ -221,5 +292,88 @@ public class DatanodeHttpServer implements Closeable {
     }
     InetSocketAddress inetSocker = NetUtils.createSocketAddr(addr);
     return inetSocker.getHostString();
+  }
+
+  /**
+   * Creates the {@link RestCsrfPreventionFilter} for the DataNode.  Since the
+   * DataNode HTTP server is not implemented in terms of the servlet API, it
+   * takes some extra effort to obtain an instance of the filter.  This method
+   * takes care of configuration and implementing just enough of the servlet API
+   * and related interfaces so that the DataNode can get a fully initialized
+   * instance of the filter.
+   *
+   * @param conf configuration to read
+   * @return initialized filter, or null if CSRF protection not enabled
+   */
+  private static RestCsrfPreventionFilter createRestCsrfPreventionFilter(
+      Configuration conf) {
+    if (!conf.getBoolean(DFS_WEBHDFS_REST_CSRF_ENABLED_KEY,
+        DFS_WEBHDFS_REST_CSRF_ENABLED_DEFAULT)) {
+      return null;
+    }
+    String restCsrfClassName = RestCsrfPreventionFilter.class.getName();
+    Map<String, String> restCsrfParams = RestCsrfPreventionFilter
+        .getFilterParams(conf, "dfs.webhdfs.rest-csrf.");
+    RestCsrfPreventionFilter filter = new RestCsrfPreventionFilter();
+    try {
+      filter.init(new MapBasedFilterConfig(restCsrfClassName, restCsrfParams));
+    } catch (ServletException e) {
+      throw new IllegalStateException(
+          "Failed to initialize RestCsrfPreventionFilter.", e);
+    }
+    return filter;
+  }
+
+  /**
+   * A minimal {@link FilterConfig} implementation backed by a {@link Map}.
+   */
+  private static final class MapBasedFilterConfig implements FilterConfig {
+
+    private final String filterName;
+    private final Map<String, String> parameters;
+
+    /**
+     * Creates a new MapBasedFilterConfig.
+     *
+     * @param filterName filter name
+     * @param parameters mapping of filter initialization parameters
+     */
+    public MapBasedFilterConfig(String filterName,
+        Map<String, String> parameters) {
+      this.filterName = filterName;
+      this.parameters = parameters;
+    }
+
+    @Override
+    public String getFilterName() {
+      return this.filterName;
+    }
+
+    @Override
+    public String getInitParameter(String name) {
+      return this.parameters.get(name);
+    }
+
+    @Override
+    public Enumeration<String> getInitParameterNames() {
+      throw this.notImplemented();
+    }
+
+    @Override
+    public ServletContext getServletContext() {
+      throw this.notImplemented();
+    }
+
+    /**
+     * Creates an exception indicating that an interface method is not
+     * implemented.  These should never be seen in practice, because it is only
+     * used for methods that are not called by {@link RestCsrfPreventionFilter}.
+     *
+     * @return exception indicating method not implemented
+     */
+    private UnsupportedOperationException notImplemented() {
+      return new UnsupportedOperationException(this.getClass().getSimpleName()
+          + " does not implement this method.");
+    }
   }
 }
