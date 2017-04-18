@@ -47,6 +47,7 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_STARTUP_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_MAX_NUM_BLOCKS_TO_LOG_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_MAX_NUM_BLOCKS_TO_LOG_KEY;
 import static org.apache.hadoop.util.ExitUtil.terminate;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
@@ -890,8 +891,11 @@ public class DataNode extends ReconfigurableBase
     if (secureResources != null) {
       tcpPeerServer = new TcpPeerServer(secureResources);
     } else {
+      int backlogLength = conf.getInt(
+          CommonConfigurationKeysPublic.IPC_SERVER_LISTEN_QUEUE_SIZE_KEY,
+          CommonConfigurationKeysPublic.IPC_SERVER_LISTEN_QUEUE_SIZE_DEFAULT);
       tcpPeerServer = new TcpPeerServer(dnConf.socketWriteTimeout,
-          DataNode.getStreamingAddr(conf));
+          DataNode.getStreamingAddr(conf), backlogLength);
     }
     tcpPeerServer.setReceiveBufferSize(HdfsConstants.DEFAULT_DATA_SOCKET_SIZE);
     streamingAddr = tcpPeerServer.getStreamingAddr();
@@ -1225,10 +1229,7 @@ public class DataNode extends ReconfigurableBase
    */
   synchronized void bpRegistrationSucceeded(DatanodeRegistration bpRegistration,
       String blockPoolId) throws IOException {
-    // Set the ID if we haven't already
-    if (null == id) {
-      id = bpRegistration;
-    }
+    id = bpRegistration;
 
     if(!storage.getDatanodeUuid().equals(bpRegistration.getDatanodeUuid())) {
       throw new IOException("Inconsistent Datanode IDs. Name-node returned "
@@ -1432,6 +1433,7 @@ public class DataNode extends ReconfigurableBase
   @VisibleForTesting
   public DatanodeRegistration getDNRegistrationForBP(String bpid) 
   throws IOException {
+    DataNodeFaultInjector.get().noRegistration();
     BPOfferService bpos = blockPoolManager.get(bpid);
     if(bpos==null || bpos.bpRegistration==null) {
       throw new IOException("cannot find BPOfferService for bpid="+bpid);
@@ -1559,7 +1561,6 @@ public class DataNode extends ReconfigurableBase
       throw new ShortCircuitFdsUnsupportedException(
           fileDescriptorPassingDisabledReason);
     }
-    checkBlockToken(blk, token, BlockTokenSecretManager.AccessMode.READ);
     int blkVersion = CURRENT_BLOCK_FORMAT_VERSION;
     if (maxVersion < blkVersion) {
       throw new ShortCircuitFdsVersionException("Your client is too old " +
@@ -2801,6 +2802,15 @@ public class DataNode extends ReconfigurableBase
   }
 
   private void checkReadAccess(final ExtendedBlock block) throws IOException {
+    // Make sure this node has registered for the block pool.
+    try {
+      getDNRegistrationForBP(block.getBlockPoolId());
+    } catch (IOException e) {
+      // if it has not registered with the NN, throw an exception back.
+      throw new org.apache.hadoop.ipc.RetriableException(
+          "Datanode not registered. Try again later.");
+    }
+
     if (isBlockTokenEnabled) {
       Set<TokenIdentifier> tokenIds = UserGroupInformation.getCurrentUser()
           .getTokenIdentifiers();
@@ -2990,7 +3000,7 @@ public class DataNode extends ReconfigurableBase
 
     // Asynchronously start the shutdown process so that the rpc response can be
     // sent back.
-    Thread shutdownThread = new Thread() {
+    Thread shutdownThread = new Thread("Async datanode shutdown thread") {
       @Override public void run() {
         if (!shutdownForUpgrade) {
           // Delay the shutdown a bit if not doing for restart.

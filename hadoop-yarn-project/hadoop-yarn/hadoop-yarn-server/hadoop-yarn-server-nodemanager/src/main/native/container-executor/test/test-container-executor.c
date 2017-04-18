@@ -408,6 +408,17 @@ void test_delete_user() {
     exit(1);
   }
 
+  sprintf(buffer, "%s", app_dir);
+  char missing_dir[20];
+  strcpy(missing_dir, "/some/missing/dir");
+  char * dirs_with_missing[] = {missing_dir, buffer, 0};
+  ret = delete_as_user(yarn_username, "" , dirs_with_missing);
+  printf("%d" , ret);
+  if (access(buffer, R_OK) == 0) {
+    printf("FAIL: directory not deleted\n");
+    exit(1);
+  }
+
   sprintf(buffer, "%s/local-1/usercache/%s", TEST_ROOT, yarn_username);
   if (access(buffer, R_OK) != 0) {
     printf("FAIL: directory missing before test\n");
@@ -451,42 +462,6 @@ void run_test_in_child(const char* test_name, void (*func)()) {
     if (WEXITSTATUS(status) != 0) {
       printf("FAIL: child %d exited with bad status %d\n",
 	     child, WEXITSTATUS(status));
-      exit(1);
-    }
-  }
-}
-
-void test_signal_container() {
-  printf("\nTesting signal_container\n");
-  fflush(stdout);
-  fflush(stderr);
-  pid_t child = fork();
-  if (child == -1) {
-    printf("FAIL: fork failed\n");
-    exit(1);
-  } else if (child == 0) {
-    if (change_user(user_detail->pw_uid, user_detail->pw_gid) != 0) {
-      exit(1);
-    }
-    sleep(3600);
-    exit(0);
-  } else {
-    printf("Child container launched as %d\n", child);
-    if (signal_container_as_user(yarn_username, child, SIGQUIT) != 0) {
-      exit(1);
-    }
-    int status = 0;
-    if (waitpid(child, &status, 0) == -1) {
-      printf("FAIL: waitpid failed - %s\n", strerror(errno));
-      exit(1);
-    }
-    if (!WIFSIGNALED(status)) {
-      printf("FAIL: child wasn't signalled - %d\n", status);
-      exit(1);
-    }
-    if (WTERMSIG(status) != SIGQUIT) {
-      printf("FAIL: child was killed with %d instead of %d\n", 
-	     WTERMSIG(status), SIGQUIT);
       exit(1);
     }
   }
@@ -807,7 +782,6 @@ int main(int argc, char **argv) {
 
   // the tests that change user need to be run in a subshell, so that
   // when they change user they don't give up our privs
-  run_test_in_child("test_signal_container", test_signal_container);
   run_test_in_child("test_signal_container_group", test_signal_container_group);
 
   // init app and run container can't be run if you aren't testing as root

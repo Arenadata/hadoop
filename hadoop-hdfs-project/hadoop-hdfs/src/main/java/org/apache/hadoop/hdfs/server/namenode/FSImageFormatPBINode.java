@@ -384,11 +384,16 @@ public final class FSImageFormatPBINode {
       }
       dir.rootDir.cloneModificationTime(root);
       dir.rootDir.clonePermissionStatus(root);
+      final AclFeature af = root.getFeature(AclFeature.class);
+      if (af != null) {
+        dir.rootDir.addAclFeature(af);
+      }
       // root dir supports having extended attributes according to POSIX
       final XAttrFeature f = root.getXAttrFeature();
       if (f != null) {
         dir.rootDir.addXAttrFeature(f);
       }
+      dir.addRootDirToEncryptionZone(f);
     }
   }
 

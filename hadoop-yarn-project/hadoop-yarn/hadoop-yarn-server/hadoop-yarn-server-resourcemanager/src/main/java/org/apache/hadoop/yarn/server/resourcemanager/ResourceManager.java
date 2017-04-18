@@ -28,10 +28,7 @@ import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.http.lib.StaticUserWebFilter;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.source.JvmMetrics;
-import org.apache.hadoop.security.AuthenticationFilterInitializer;
-import org.apache.hadoop.security.Groups;
-import org.apache.hadoop.security.SecurityUtil;
-import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.*;
 import org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler;
 import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.service.AbstractService;
@@ -76,7 +73,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.ContainerAllocationExpirer;
-import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEventType;
@@ -183,6 +179,11 @@ public class ResourceManager extends CompositeService implements Recoverable {
     clusterTimeStamp = timestamp;
   }
 
+  @VisibleForTesting
+  Dispatcher getRmDispatcher() {
+    return rmDispatcher;
+  }
+
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
     this.conf = conf;
@@ -245,7 +246,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
     adminService = createAdminService();
     addService(adminService);
     rmContext.setRMAdminService(adminService);
-    
+
     rmContext.setYarnConfiguration(conf);
     
     createAndInitActiveServices();
@@ -253,6 +254,15 @@ public class ResourceManager extends CompositeService implements Recoverable {
     webAppAddress = WebAppUtils.getWebAppBindURL(this.conf,
                       YarnConfiguration.RM_BIND_HOST,
                       WebAppUtils.getRMWebAppURLWithoutScheme(this.conf));
+
+    RMApplicationHistoryWriter rmApplicationHistoryWriter =
+        createRMApplicationHistoryWriter();
+    addService(rmApplicationHistoryWriter);
+    rmContext.setRMApplicationHistoryWriter(rmApplicationHistoryWriter);
+
+    SystemMetricsPublisher systemMetricsPublisher = createSystemMetricsPublisher();
+    addService(systemMetricsPublisher);
+    rmContext.setSystemMetricsPublisher(systemMetricsPublisher);
 
     super.serviceInit(this.conf);
   }
@@ -406,7 +416,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
       rmContext.setActiveServiceContext(activeServiceContext);
 
       conf.setBoolean(Dispatcher.DISPATCHER_EXIT_ON_ERROR_KEY, true);
-
       rmSecretManagerService = createRMSecretManagerService();
       addService(rmSecretManagerService);
 
@@ -462,15 +471,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
         delegationTokenRenewer = createDelegationTokenRenewer();
         rmContext.setDelegationTokenRenewer(delegationTokenRenewer);
       }
-
-      RMApplicationHistoryWriter rmApplicationHistoryWriter =
-          createRMApplicationHistoryWriter();
-      addService(rmApplicationHistoryWriter);
-      rmContext.setRMApplicationHistoryWriter(rmApplicationHistoryWriter);
-
-      SystemMetricsPublisher systemMetricsPublisher = createSystemMetricsPublisher();
-      addService(systemMetricsPublisher);
-      rmContext.setSystemMetricsPublisher(systemMetricsPublisher);
 
       // Register event handler for NodesListManager
       nodesListManager = new NodesListManager(rmContext);
@@ -587,8 +587,8 @@ public class ResourceManager extends CompositeService implements Recoverable {
     @Override
     protected void serviceStop() throws Exception {
 
+      super.serviceStop();
       DefaultMetricsSystem.shutdown();
-
       if (rmContext != null) {
         RMStateStore store = rmContext.getStateStore();
         try {
@@ -598,7 +598,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
         }
       }
 
-      super.serviceStop();
     }
 
     protected void createPolicyMonitors() {
@@ -610,9 +609,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
             YarnConfiguration.RM_SCHEDULER_MONITOR_POLICIES,
             SchedulingEditPolicy.class);
         if (policies.size() > 0) {
-          rmDispatcher.register(ContainerPreemptEventType.class,
-              new RMContainerPreemptEventDispatcher(
-                  (PreemptableResourceScheduler) scheduler));
           for (SchedulingEditPolicy policy : policies) {
             LOG.info("LOADING SchedulingEditPolicy:" + policy.getPolicyName());
             // periodically check whether we need to take action to guarantee
@@ -637,6 +633,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
     private final ResourceScheduler scheduler;
     private final BlockingQueue<SchedulerEvent> eventQueue =
       new LinkedBlockingQueue<SchedulerEvent>();
+    private volatile int lastEventQueueSizeLogged = 0;
     private final Thread eventProcessor;
     private volatile boolean stopped = false;
     private boolean shouldExitOnError = false;
@@ -714,7 +711,9 @@ public class ResourceManager extends CompositeService implements Recoverable {
     public void handle(SchedulerEvent event) {
       try {
         int qSize = eventQueue.size();
-        if (qSize !=0 && qSize %1000 == 0) {
+        if (qSize != 0 && qSize % 1000 == 0
+            && lastEventQueueSizeLogged != qSize) {
+          lastEventQueueSizeLogged = qSize;
           LOG.info("Size of scheduler event-queue is " + qSize);
         }
         int remCapacity = eventQueue.remainingCapacity();
@@ -778,36 +777,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
           LOG.error("Error in handling event type " + event.getType()
               + " for application " + appID, t);
         }
-      }
-    }
-  }
-
-  @Private
-  public static final class
-    RMContainerPreemptEventDispatcher
-      implements EventHandler<ContainerPreemptEvent> {
-
-    private final PreemptableResourceScheduler scheduler;
-
-    public RMContainerPreemptEventDispatcher(
-        PreemptableResourceScheduler scheduler) {
-      this.scheduler = scheduler;
-    }
-
-    @Override
-    public void handle(ContainerPreemptEvent event) {
-      ApplicationAttemptId aid = event.getAppId();
-      RMContainer container = event.getContainer();
-      switch (event.getType()) {
-      case DROP_RESERVATION:
-        scheduler.dropContainerReservation(container);
-        break;
-      case PREEMPT_CONTAINER:
-        scheduler.preemptContainer(aid, container);
-        break;
-      case KILL_CONTAINER:
-        scheduler.killContainer(container);
-        break;
       }
     }
   }
@@ -877,6 +846,9 @@ public class ResourceManager extends CompositeService implements Recoverable {
     // 4. hadoop.http.filter.initializers container AuthenticationFilterInitializer
 
     Configuration conf = getConfig();
+    boolean enableCorsFilter =
+        conf.getBoolean(YarnConfiguration.RM_WEBAPP_ENABLE_CORS_FILTER,
+            YarnConfiguration.DEFAULT_RM_WEBAPP_ENABLE_CORS_FILTER);
     boolean useYarnAuthenticationFilter =
         conf.getBoolean(
           YarnConfiguration.RM_WEBAPP_DELEGATION_TOKEN_AUTH_FILTER,
@@ -887,6 +859,12 @@ public class ResourceManager extends CompositeService implements Recoverable {
     String actualInitializers = "";
     Class<?>[] initializersClasses =
         conf.getClasses(filterInitializerConfKey);
+
+    // setup CORS
+    if (enableCorsFilter) {
+      conf.setBoolean(HttpCrossOriginFilterInitializer.PREFIX
+          + HttpCrossOriginFilterInitializer.ENABLED_SUFFIX, true);
+    }
 
     boolean hasHadoopAuthFilterInitializer = false;
     boolean hasRMAuthFilterInitializer = false;
@@ -1054,12 +1032,12 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
 
     LOG.info("Transitioning to standby state");
-    if (rmContext.getHAServiceState() ==
-        HAServiceProtocol.HAServiceState.ACTIVE) {
+    HAServiceState state = rmContext.getHAServiceState();
+    rmContext.setHAServiceState(HAServiceProtocol.HAServiceState.STANDBY);
+    if (state == HAServiceProtocol.HAServiceState.ACTIVE) {
       stopActiveServices();
       reinitialize(initialize);
     }
-    rmContext.setHAServiceState(HAServiceProtocol.HAServiceState.STANDBY);
     LOG.info("Transitioned to standby state");
   }
 

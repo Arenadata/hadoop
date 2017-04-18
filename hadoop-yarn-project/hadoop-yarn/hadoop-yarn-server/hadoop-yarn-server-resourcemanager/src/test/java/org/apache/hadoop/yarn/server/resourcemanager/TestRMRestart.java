@@ -1166,24 +1166,24 @@ public class TestRMRestart extends ParameterizedSchedulerTestBase {
 
     // Need to wait for a while as now token renewal happens on another thread
     // and is asynchronous in nature.
-    waitForTokensToBeRenewed(rm2);
+    waitForTokensToBeRenewed(rm2, tokenSet);
 
     // verify tokens are properly populated back to rm2 DelegationTokenRenewer
     Assert.assertEquals(tokenSet, rm2.getRMContext()
       .getDelegationTokenRenewer().getDelegationTokens());
   }
 
-  private void waitForTokensToBeRenewed(MockRM rm2) throws Exception {
-    int waitCnt = 20;
-    boolean atleastOneAppInNEWState = true;
-    while (waitCnt-- > 0 && atleastOneAppInNEWState) {
-      atleastOneAppInNEWState = false;
-      for (RMApp rmApp : rm2.getRMContext().getRMApps().values()) {
-        if (rmApp.getState() == RMAppState.NEW) {
-          Thread.sleep(1000);
-          atleastOneAppInNEWState = true;
-          break;
-        }
+  private void waitForTokensToBeRenewed(MockRM rm2,
+      HashSet<Token<RMDelegationTokenIdentifier>> tokenSet) throws Exception {
+    // Max wait time to get the token renewal can be kept as 1sec (100 * 10ms)
+    int waitCnt = 100;
+    while (waitCnt-- > 0) {
+      if (tokenSet.equals(rm2.getRMContext().getDelegationTokenRenewer()
+          .getDelegationTokens())) {
+        // Stop waiting as tokens are populated to DelegationTokenRenewer.
+        break;
+      } else {
+        Thread.sleep(10);
       }
     }
   }
@@ -1850,15 +1850,9 @@ public class TestRMRestart extends ParameterizedSchedulerTestBase {
     conf.set(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH,
       hostFile.getAbsolutePath());
     writeToHostsFile("");
-    final DrainDispatcher dispatcher = new DrainDispatcher();
     MockRM rm1 = null, rm2 = null;
     try {
-      rm1 = new MockRM(conf) {
-        @Override
-        protected Dispatcher createDispatcher() {
-          return dispatcher;
-        }
-      };
+      rm1 = new MockRM(conf);
       rm1.start();
       MockNM nm1 = rm1.registerNode("localhost:1234", 8000);
       MockNM nm2 = rm1.registerNode("host2:1234", 8000);
@@ -1879,7 +1873,7 @@ public class TestRMRestart extends ParameterizedSchedulerTestBase {
       Assert.assertTrue("The decommisioned metrics are not updated",
           NodeAction.SHUTDOWN.equals(nodeHeartbeat.getNodeAction()));
 
-      dispatcher.await();
+      rm1.drainEvents();
       Assert
           .assertEquals(2,
               ClusterMetrics.getMetrics().getNumDecommisionedNMs());
@@ -1892,6 +1886,7 @@ public class TestRMRestart extends ParameterizedSchedulerTestBase {
       // restart RM.
       rm2 = new MockRM(conf);
       rm2.start();
+      rm2.drainEvents();
       Assert
           .assertEquals(2,
               ClusterMetrics.getMetrics().getNumDecommisionedNMs());

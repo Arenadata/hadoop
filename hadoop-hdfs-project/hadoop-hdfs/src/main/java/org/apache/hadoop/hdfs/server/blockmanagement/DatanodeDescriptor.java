@@ -44,14 +44,13 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage.State;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.hdfs.util.EnumCounters;
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
 import org.apache.hadoop.util.IntrusiveCollection;
 import org.apache.hadoop.util.Time;
-
-import com.google.common.annotations.VisibleForTesting;
 
 /**
  * This class extends the DatanodeInfo class with ephemeral information (eg
@@ -209,7 +208,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
   public boolean isAlive = false;
   public boolean needKeyUpdate = false;
 
-  
+  private boolean forceRegistration = false;
+
   // A system administrator can tune the balancer bandwidth parameter
   // (dfs.balance.bandwidthPerSec) dynamically by calling
   // "dfsadmin -setBalanacerBandwidth <newbandwidth>", at which point the
@@ -278,7 +278,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
       return storageMap.get(storageID);
     }
   }
-  DatanodeStorageInfo[] getStorageInfos() {
+  @VisibleForTesting
+  public DatanodeStorageInfo[] getStorageInfos() {
     synchronized (storageMap) {
       final Collection<DatanodeStorageInfo> storages = storageMap.values();
       return storages.toArray(new DatanodeStorageInfo[storages.size()]);
@@ -657,16 +658,26 @@ public class DatanodeDescriptor extends DatanodeInfo {
   }
 
   /**
-   * @return Approximate number of blocks currently scheduled to be written 
+   * Return the sum of remaining spaces of the specified type. If the remaining
+   * space of a storage is less than minSize, it won't be counted toward the
+   * sum.
+   *
+   * @param t The storage type. If null, the type is ignored.
+   * @param minSize The minimum free space required.
+   * @return the sum of remaining spaces that are bigger than minSize.
    */
-  public long getRemaining(StorageType t) {
+  public long getRemaining(StorageType t, long minSize) {
     long remaining = 0;
-    for(DatanodeStorageInfo s : getStorageInfos()) {
-      if (s.getStorageType() == t) {
-        remaining += s.getRemaining();
+    for (DatanodeStorageInfo s : getStorageInfos()) {
+      if (s.getState() == State.NORMAL &&
+          (t == null || s.getStorageType() == t)) {
+        long r = s.getRemaining();
+        if (r >= minSize) {
+          remaining += r;
+        }
       }
     }
-    return remaining;    
+    return remaining;
   }
 
   /**
@@ -815,6 +826,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
       storage.setBlockReportCount(0);
     }
     heartbeatedSinceRegistration = false;
+    forceRegistration = false;
   }
 
   /**
@@ -898,6 +910,14 @@ public class DatanodeDescriptor extends DatanodeInfo {
         return false;
     }
     return true;
- }
+  }
+
+  public void setForceRegistration(boolean force) {
+    forceRegistration = force;
+  }
+
+  public boolean isRegistered() {
+    return isAlive && !forceRegistration;
+  }
 }
 

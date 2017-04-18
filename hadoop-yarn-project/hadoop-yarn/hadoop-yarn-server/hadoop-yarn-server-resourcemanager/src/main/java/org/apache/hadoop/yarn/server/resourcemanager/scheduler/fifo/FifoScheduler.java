@@ -84,6 +84,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptA
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.ContainerExpiredSchedulerEvent;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.ContainerRescheduledEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeResourceUpdateSchedulerEvent;
@@ -837,6 +838,14 @@ public class FifoScheduler extends
           RMContainerEventType.EXPIRE);
     }
     break;
+    case CONTAINER_RESCHEDULED:
+    {
+      ContainerRescheduledEvent containerRescheduledEvent =
+          (ContainerRescheduledEvent) event;
+      RMContainer container = containerRescheduledEvent.getContainer();
+      recoverResourceRequestForContainer(container);
+    }
+    break;
     default:
       LOG.error("Invalid eventtype " + event.getType() + ". Ignoring!");
     }
@@ -906,7 +915,7 @@ public class FifoScheduler extends
     updateMaximumAllocation(node, false);
     
     // Update cluster metrics
-    Resources.subtractFrom(clusterResource, node.getRMNode().getTotalCapability());
+    Resources.subtractFrom(clusterResource, node.getTotalResource());
   }
 
   @Override
@@ -929,7 +938,7 @@ public class FifoScheduler extends
     FiCaSchedulerNode schedulerNode = new FiCaSchedulerNode(nodeManager,
         usePortForNodeName);
     this.nodes.put(nodeManager.getNodeID(), schedulerNode);
-    Resources.addTo(clusterResource, nodeManager.getTotalCapability());
+    Resources.addTo(clusterResource, schedulerNode.getTotalResource());
     updateMaximumAllocation(schedulerNode, true);
   }
 

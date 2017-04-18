@@ -19,12 +19,15 @@
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.List;
 
 import javax.crypto.SecretKey;
@@ -37,6 +40,7 @@ import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.token.delegation.DelegationKey;
 import org.apache.hadoop.service.Service;
+import org.apache.hadoop.service.ServiceStateException;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
@@ -49,6 +53,8 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.RMZKUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
@@ -60,7 +66,10 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptS
 import org.apache.hadoop.yarn.server.resourcemanager.security.ClientToAMTokenSecretManagerInRM;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.ZooDefs.Perms;
 import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Stat;
 import org.junit.Assert;
 import org.junit.Test;
@@ -74,7 +83,7 @@ public class TestZKRMStateStore extends RMStateStoreTestBase {
 
     ZooKeeper client;
     TestZKRMStateStoreInternal store;
-    String workingZnode;
+    String workingZnode =  "/jira/issue/3077/rmstore";
 
     class TestZKRMStateStoreInternal extends ZKRMStateStore {
 
@@ -104,14 +113,25 @@ public class TestZKRMStateStore extends RMStateStoreTestBase {
       }
     }
 
-    public RMStateStore getRMStateStore() throws Exception {
+    public RMStateStore getRMStateStore(ZooKeeper zk) throws Exception {
       YarnConfiguration conf = new YarnConfiguration();
-      workingZnode = "/jira/issue/3077/rmstore";
       conf.set(YarnConfiguration.RM_ZK_ADDRESS, hostPort);
       conf.set(YarnConfiguration.ZK_RM_STATE_STORE_PARENT_PATH, workingZnode);
-      this.client = createClient();
+      if (null == zk) {
+        this.client = createClient();
+      } else {
+        this.client = zk;
+      }
       this.store = new TestZKRMStateStoreInternal(conf, workingZnode);
       return this.store;
+    }
+
+    public String getWorkingZNode() {
+      return workingZnode;
+    }
+
+    public RMStateStore getRMStateStore() throws Exception {
+      return getRMStateStore(null);
     }
 
     @Override
@@ -219,6 +239,73 @@ public class TestZKRMStateStore extends RMStateStoreTestBase {
     return conf;
   }
 
+  private static boolean verifyZKACL(String id, String scheme, int perm,
+      List<ACL> acls) {
+    for (ACL acl : acls) {
+      if (acl.getId().getScheme().equals(scheme) &&
+          acl.getId().getId().startsWith(id) &&
+          acl.getPerms() == perm) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Test if RM can successfully start in HA disabled mode if it was previously
+   * running in HA enabled mode. And then start it in HA mode after running it
+   * with HA disabled. NoAuth Exception should not be sent by zookeeper and RM
+   * should start successfully.
+   */
+  @Test
+  public void testZKRootPathAcls() throws Exception {
+    StateChangeRequestInfo req = new StateChangeRequestInfo(
+        HAServiceProtocol.RequestSource.REQUEST_BY_USER);
+    String rootPath =
+        YarnConfiguration.DEFAULT_ZK_RM_STATE_STORE_PARENT_PATH + "/" +
+            ZKRMStateStore.ROOT_ZNODE_NAME;
+
+    // Start RM with HA enabled
+    Configuration conf = createHARMConf("rm1,rm2", "rm1", 1234);
+    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+    ResourceManager rm = new MockRM(conf);
+    rm.start();
+    rm.getRMContext().getRMAdminService().transitionToActive(req);
+    Stat stat = new Stat();
+    List<ACL> acls = ((ZKRMStateStore)rm.getRMContext().getStateStore()).
+        getACLWithRetries(rootPath, stat);
+    assertEquals(acls.size(), 2);
+    // CREATE and DELETE permissions for root node based on RM ID
+    verifyZKACL("digest", "localhost", Perms.CREATE | Perms.DELETE, acls);
+    verifyZKACL(
+        "world", "anyone", Perms.ALL ^ (Perms.CREATE | Perms.DELETE), acls);
+    rm.close();
+
+    // Now start RM with HA disabled. NoAuth Exception should not be thrown.
+    conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, false);
+    rm = new MockRM(conf);
+    rm.start();
+    rm.getRMContext().getRMAdminService().transitionToActive(req);
+    acls = ((ZKRMStateStore)rm.getRMContext().getStateStore()).
+        getACLWithRetries(rootPath, stat);
+    assertEquals(acls.size(), 1);
+    verifyZKACL("world", "anyone", Perms.ALL, acls);
+    rm.close();
+
+    // Start RM with HA enabled.
+    conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
+    rm = new MockRM(conf);
+    rm.start();
+    rm.getRMContext().getRMAdminService().transitionToActive(req);
+    acls = ((ZKRMStateStore)rm.getRMContext().getStateStore()).
+        getACLWithRetries(rootPath, stat);
+    assertEquals(acls.size(), 2);
+    verifyZKACL("digest", "localhost", Perms.CREATE | Perms.DELETE, acls);
+    verifyZKACL(
+        "world", "anyone", Perms.ALL ^ (Perms.CREATE | Perms.DELETE), acls);
+    rm.close();
+  }
+
   @SuppressWarnings("unchecked")
   @Test
   public void testFencing() throws Exception {
@@ -262,7 +349,25 @@ public class TestZKRMStateStore extends RMStateStoreTestBase {
         HAServiceProtocol.HAServiceState.ACTIVE,
         rm2.getRMContext().getRMAdminService().getServiceStatus().getState());
   }
-  
+
+  @Test
+  public void testNoAuthExceptionInNonHAMode() throws Exception {
+    TestZKRMStateStoreTester zkTester = new TestZKRMStateStoreTester();
+    String appRoot = zkTester.getWorkingZNode() + "/ZKRMStateRoot/RMAppRoot" ;
+    ZooKeeper zk = spy(createClient());
+    doThrow(new KeeperException.NoAuthException()).when(zk).
+        create(appRoot, null, RMZKUtils.getZKAcls(new Configuration()),
+            CreateMode.PERSISTENT);
+    try {
+      zkTester.getRMStateStore(zk);
+      fail("Expected exception to be thrown");
+    } catch(ServiceStateException e) {
+      assertNotNull(e.getCause());
+      assertTrue("Expected NoAuthException",
+          e.getCause() instanceof KeeperException.NoAuthException);
+    }
+  }
+
   @Test
   public void testFencedState() throws Exception {
     TestZKRMStateStoreTester zkTester = new TestZKRMStateStoreTester();

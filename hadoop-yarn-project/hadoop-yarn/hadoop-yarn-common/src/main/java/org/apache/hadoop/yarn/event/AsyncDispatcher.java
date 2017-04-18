@@ -32,6 +32,7 @@ import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.util.ShutdownHookManager;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -49,6 +50,7 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
   private static final Log LOG = LogFactory.getLog(AsyncDispatcher.class);
 
   private final BlockingQueue<Event> eventQueue;
+  private volatile int lastEventQueueSizeLogged = 0;
   private volatile boolean stopped = false;
 
   // Configuration flag for enabling/disabling draining dispatcher's events on
@@ -63,7 +65,7 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
   // For drainEventsOnStop enabled only, block newly coming events into the
   // queue while stopping.
   private volatile boolean blockNewEvents = false;
-  private EventHandler handlerInstance = null;
+  private final EventHandler handlerInstance = new GenericEventHandler();
 
   private Thread eventHandlingThread;
   protected final Map<Class<? extends Enum>, EventHandler> eventDispatchers;
@@ -138,10 +140,17 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
     if (drainEventsOnStop) {
       blockNewEvents = true;
       LOG.info("AsyncDispatcher is draining to stop, igonring any new events.");
+      long endTime = System.currentTimeMillis() + getConfig()
+          .getLong(YarnConfiguration.DISPATCHER_DRAIN_EVENTS_TIMEOUT,
+              YarnConfiguration.DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT);
+
       synchronized (waitForDrained) {
-        while (!drained && eventHandlingThread.isAlive()) {
+        while (!drained && eventHandlingThread != null
+            && eventHandlingThread.isAlive()
+            && System.currentTimeMillis() < endTime) {
           waitForDrained.wait(1000);
-          LOG.info("Waiting for AsyncDispatcher to drain.");
+          LOG.info("Waiting for AsyncDispatcher to drain. Thread state is :" +
+              eventHandlingThread.getState());
         }
       }
     }
@@ -216,9 +225,6 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
 
   @Override
   public EventHandler getEventHandler() {
-    if (handlerInstance == null) {
-      handlerInstance = new GenericEventHandler();
-    }
     return handlerInstance;
   }
 
@@ -231,7 +237,9 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
 
       /* all this method does is enqueue all the events onto the queue */
       int qSize = eventQueue.size();
-      if (qSize !=0 && qSize %1000 == 0) {
+      if (qSize != 0 && qSize % 1000 == 0
+          && lastEventQueueSizeLogged != qSize) {
+        lastEventQueueSizeLogged = qSize;
         LOG.info("Size of event-queue is " + qSize);
       }
       int remCapacity = eventQueue.remainingCapacity();
@@ -245,6 +253,9 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
         if (!stopped) {
           LOG.warn("AsyncDispatcher thread interrupted", e);
         }
+        // Need to reset drained flag to true if event queue is empty,
+        // otherwise dispatcher will hang on stop.
+        drained = eventQueue.isEmpty();
         throw new YarnRuntimeException(e);
       }
     };
@@ -283,6 +294,11 @@ public class AsyncDispatcher extends AbstractService implements Dispatcher {
         System.exit(-1);
       }
     };
+  }
+
+  @VisibleForTesting
+  protected boolean isEventThreadWaiting() {
+    return eventHandlingThread.getState() == Thread.State.WAITING;
   }
 
   @VisibleForTesting

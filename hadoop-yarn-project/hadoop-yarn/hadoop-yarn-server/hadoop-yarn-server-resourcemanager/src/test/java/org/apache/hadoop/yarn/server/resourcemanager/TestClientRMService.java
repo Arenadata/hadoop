@@ -28,6 +28,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedExceptionAction;
@@ -277,7 +279,7 @@ public class TestClientRMService {
       Assert.assertTrue(report.getNodeLabels() != null
           && report.getNodeLabels().isEmpty());
     }
-    
+
     rpc.stopProxy(client, conf);
     rm.close();
   }
@@ -1172,6 +1174,7 @@ public class TestClientRMService {
     when(rmContext.getRMApplicationHistoryWriter()).thenReturn(writer);
     SystemMetricsPublisher publisher = mock(SystemMetricsPublisher.class);
     when(rmContext.getSystemMetricsPublisher()).thenReturn(publisher);
+    when(rmContext.getYarnConfiguration()).thenReturn(new YarnConfiguration());
     ConcurrentHashMap<ApplicationId, RMApp> apps = getRMApps(rmContext,
         yarnScheduler);
     when(rmContext.getRMApps()).thenReturn(apps);
@@ -1408,9 +1411,11 @@ public class TestClientRMService {
     RMNodeLabelsManager labelsMgr = rm.getRMContext().getNodeLabelManager();
     labelsMgr.addToCluserNodeLabels(ImmutableSet.of("x", "y"));
 
+    NodeId node1 = NodeId.newInstance("host1", 1234);
+    NodeId node2 = NodeId.newInstance("host2", 1234);
     Map<NodeId, Set<String>> map = new HashMap<NodeId, Set<String>>();
-    map.put(NodeId.newInstance("host1", 0), ImmutableSet.of("x"));
-    map.put(NodeId.newInstance("host2", 0), ImmutableSet.of("y"));
+    map.put(node1, ImmutableSet.of("x"));
+    map.put(node2, ImmutableSet.of("y"));
     labelsMgr.replaceLabelsOnNode(map);
 
     // Create a client.
@@ -1433,12 +1438,9 @@ public class TestClientRMService {
         client.getNodeToLabels(GetNodesToLabelsRequest.newInstance());
     Map<NodeId, Set<String>> nodeToLabels = response1.getNodeToLabels();
     Assert.assertTrue(nodeToLabels.keySet().containsAll(
-        Arrays.asList(NodeId.newInstance("host1", 0),
-            NodeId.newInstance("host2", 0))));
-    Assert.assertTrue(nodeToLabels.get(NodeId.newInstance("host1", 0))
-        .containsAll(Arrays.asList("x")));
-    Assert.assertTrue(nodeToLabels.get(NodeId.newInstance("host2", 0))
-        .containsAll(Arrays.asList("y")));
+        Arrays.asList(node1, node2)));
+    Assert.assertTrue(nodeToLabels.get(node1).containsAll(Arrays.asList("x")));
+    Assert.assertTrue(nodeToLabels.get(node2).containsAll(Arrays.asList("y")));
     
     rpc.stopProxy(client, conf);
     rm.close();
@@ -1458,12 +1460,17 @@ public class TestClientRMService {
     RMNodeLabelsManager labelsMgr = rm.getRMContext().getNodeLabelManager();
     labelsMgr.addToCluserNodeLabels(ImmutableSet.of("x", "y", "z"));
 
+    NodeId node1A = NodeId.newInstance("host1", 1234);
+    NodeId node1B = NodeId.newInstance("host1", 5678);
+    NodeId node2A = NodeId.newInstance("host2", 1234);
+    NodeId node3A = NodeId.newInstance("host3", 1234);
+    NodeId node3B = NodeId.newInstance("host3", 5678);
     Map<NodeId, Set<String>> map = new HashMap<NodeId, Set<String>>();
-    map.put(NodeId.newInstance("host1", 0), ImmutableSet.of("x"));
-    map.put(NodeId.newInstance("host1", 1), ImmutableSet.of("z"));
-    map.put(NodeId.newInstance("host2", 0), ImmutableSet.of("y"));
-    map.put(NodeId.newInstance("host3", 0), ImmutableSet.of("y"));
-    map.put(NodeId.newInstance("host3", 1), ImmutableSet.of("z"));
+    map.put(node1A, ImmutableSet.of("x"));
+    map.put(node1B, ImmutableSet.of("z"));
+    map.put(node2A, ImmutableSet.of("y"));
+    map.put(node3A, ImmutableSet.of("y"));
+    map.put(node3B, ImmutableSet.of("z"));
     labelsMgr.replaceLabelsOnNode(map);
 
     // Create a client.
@@ -1488,14 +1495,11 @@ public class TestClientRMService {
     Assert.assertTrue(
         labelsToNodes.keySet().containsAll(Arrays.asList("x", "y", "z")));
     Assert.assertTrue(
-        labelsToNodes.get("x").containsAll(Arrays.asList(
-        NodeId.newInstance("host1", 0))));
+        labelsToNodes.get("x").containsAll(Arrays.asList(node1A)));
     Assert.assertTrue(
-        labelsToNodes.get("y").containsAll(Arrays.asList(
-        NodeId.newInstance("host2", 0), NodeId.newInstance("host3", 0))));
+        labelsToNodes.get("y").containsAll(Arrays.asList(node2A, node3A)));
     Assert.assertTrue(
-        labelsToNodes.get("z").containsAll(Arrays.asList(
-        NodeId.newInstance("host1", 1), NodeId.newInstance("host3", 1))));
+        labelsToNodes.get("z").containsAll(Arrays.asList(node1B, node3B)));
 
     // Get labels to nodes mapping for specific labels
     Set<String> setlabels =
@@ -1506,14 +1510,57 @@ public class TestClientRMService {
     Assert.assertTrue(
         labelsToNodes.keySet().containsAll(Arrays.asList("x", "z")));
     Assert.assertTrue(
-        labelsToNodes.get("x").containsAll(Arrays.asList(
-        NodeId.newInstance("host1", 0))));
+        labelsToNodes.get("x").containsAll(Arrays.asList(node1A)));
     Assert.assertTrue(
-        labelsToNodes.get("z").containsAll(Arrays.asList(
-        NodeId.newInstance("host1", 1), NodeId.newInstance("host3", 1))));
+        labelsToNodes.get("z").containsAll(Arrays.asList(node1B, node3B)));
     Assert.assertEquals(labelsToNodes.get("y"), null);
 
     rpc.stopProxy(client, conf);
     rm.close();
+  }
+
+  private void createExcludeFile(String filename) throws IOException {
+    File file = new File(filename);
+    if (file.exists()) {
+      file.delete();
+    }
+
+    FileOutputStream out = new FileOutputStream(file);
+    out.write("decommisssionedHost".getBytes());
+    out.close();
+  }
+
+  @Test
+  public void testRMStartWithDecommissionedNode() throws Exception {
+    String excludeFile = "excludeFile";
+    createExcludeFile(excludeFile);
+    YarnConfiguration conf = new YarnConfiguration();
+    conf.set(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH,
+        excludeFile);
+    MockRM rm = new MockRM(conf) {
+      protected ClientRMService createClientRMService() {
+        return new ClientRMService(this.rmContext, scheduler,
+            this.rmAppManager, this.applicationACLsManager, this.queueACLsManager,
+            this.getRMContext().getRMDelegationTokenSecretManager());
+      };
+    };
+    rm.start();
+
+    YarnRPC rpc = YarnRPC.create(conf);
+    InetSocketAddress rmAddress = rm.getClientRMService().getBindAddress();
+    LOG.info("Connecting to ResourceManager at " + rmAddress);
+    ApplicationClientProtocol client =
+        (ApplicationClientProtocol) rpc
+            .getProxy(ApplicationClientProtocol.class, rmAddress, conf);
+
+    // Make call
+    GetClusterNodesRequest request =
+        GetClusterNodesRequest.newInstance(EnumSet.allOf(NodeState.class));
+    List<NodeReport> nodeReports = client.getClusterNodes(request).getNodeReports();
+    Assert.assertEquals(1, nodeReports.size());
+
+    rm.stop();
+    rpc.stopProxy(client, conf);
+    new File(excludeFile).delete();
   }
 }

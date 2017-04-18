@@ -59,6 +59,7 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
@@ -80,11 +81,9 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppFailedAttemptEvent;
-import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppFinishedAttemptEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
-import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptContainerAllocatedEvent;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptContainerFinishedEvent;
-import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptLaunchFailedEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptRegistrationEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptStatusupdateEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptUnregistrationEvent;
@@ -571,6 +570,21 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
     }
   }
 
+  private void setTrackingUrlToAHSPage(RMAppAttemptState stateToBeStored) {
+    originalTrackingUrl = pjoin(
+        WebAppUtils.getHttpSchemePrefix(conf) +
+        WebAppUtils.getAHSWebAppURLWithoutScheme(conf),
+        "applicationhistory", "app", getAppAttemptId().getApplicationId());
+    switch (stateToBeStored) {
+    case KILLED:
+    case FAILED:
+      proxiedTrackingUrl = originalTrackingUrl;
+      break;
+    default:
+      break;
+    }
+  }
+
   private void invalidateAMHostAndPort() {
     this.host = "N/A";
     this.rpcPort = -1;
@@ -1021,8 +1035,9 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
           LOG.warn("Interrupted while waiting to resend the"
               + " ContainerAllocated Event.");
         }
-        appAttempt.eventHandler.handle(new RMAppAttemptContainerAllocatedEvent(
-          appAttempt.applicationAttemptId));
+        appAttempt.eventHandler.handle(
+            new RMAppAttemptEvent(appAttempt.applicationAttemptId,
+                RMAppAttemptEventType.CONTAINER_ALLOCATED));
       }
     }.start();
   }
@@ -1041,6 +1056,9 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
     @Override
     public RMAppAttemptState transition(RMAppAttemptImpl appAttempt,
         RMAppAttemptEvent event) {
+      RMApp rmApp = appAttempt.rmContext.getRMApps().get(
+          appAttempt.getAppAttemptId().getApplicationId());
+
       /*
        * If last attempt recovered final state is null .. it means attempt was
        * started but AM container may or may not have started / finished.
@@ -1048,8 +1066,6 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
        */
       if (appAttempt.recoveredFinalState != null) {
         appAttempt.progress = 1.0f;
-        RMApp rmApp =appAttempt.rmContext.getRMApps().get(
-            appAttempt.getAppAttemptId().getApplicationId());
         // We will replay the final attempt only if last attempt is in final
         // state but application is not in final state.
         if (rmApp.getCurrentAppAttempt() == appAttempt
@@ -1062,7 +1078,24 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
               appAttempt, event);
         }
         return appAttempt.recoveredFinalState;
-      } else {
+      } else if (RMAppImpl.isAppInFinalState(rmApp))  {
+        // Somehow attempt final state was not saved but app final state was saved.
+        // Skip adding the attempt into scheduler
+        RMAppState appState = ((RMAppImpl) rmApp).getRecoveredFinalState();
+        LOG.warn(rmApp.getApplicationId() + " final state (" + appState
+            + ") was recorded, but " + appAttempt.applicationAttemptId
+            + " final state (" + appAttempt.recoveredFinalState
+            + ") was not recorded.");
+        switch (appState) {
+        case FINISHED:
+          return RMAppAttemptState.FINISHED;
+        case FAILED:
+          return RMAppAttemptState.FAILED;
+        case KILLED:
+          return RMAppAttemptState.KILLED;
+        }
+        return RMAppAttemptState.FAILED;
+      } else{
         // Add the current attempt to the scheduler.
         if (appAttempt.rmContext.isWorkPreservingRecoveryEnabled()) {
           // Need to register an app attempt before AM can register
@@ -1096,6 +1129,7 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
     }
   }
 
+
   private void rememberTargetTransitions(RMAppAttemptEvent event,
       Object transitionToDo, RMAppAttemptState targetFinalState) {
     transitionTodo = transitionToDo;
@@ -1118,15 +1152,18 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
     String diags = null;
 
     // don't leave the tracking URL pointing to a non-existent AM
-    setTrackingUrlToRMAppPage(stateToBeStored);
+    if (conf.getBoolean(YarnConfiguration.APPLICATION_HISTORY_ENABLED,
+            YarnConfiguration.DEFAULT_APPLICATION_HISTORY_ENABLED)) {
+      setTrackingUrlToAHSPage(stateToBeStored);
+    } else {
+      setTrackingUrlToRMAppPage(stateToBeStored);
+    }
     String finalTrackingUrl = getOriginalTrackingUrl();
     FinalApplicationStatus finalStatus = null;
     int exitStatus = ContainerExitStatus.INVALID;
     switch (event.getType()) {
     case LAUNCH_FAILED:
-      RMAppAttemptLaunchFailedEvent launchFaileEvent =
-          (RMAppAttemptLaunchFailedEvent) event;
-      diags = launchFaileEvent.getMessage();
+      diags = event.getDiagnosticMsg();
       break;
     case REGISTERED:
       diags = getUnexpectedAMRegisteredDiagnostics();
@@ -1134,7 +1171,7 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
     case UNREGISTERED:
       RMAppAttemptUnregistrationEvent unregisterEvent =
           (RMAppAttemptUnregistrationEvent) event;
-      diags = unregisterEvent.getDiagnostics();
+      diags = unregisterEvent.getDiagnosticMsg();
       // reset finalTrackingUrl to url sent by am
       finalTrackingUrl = sanitizeTrackingUrl(unregisterEvent.getFinalTrackingUrl());
       finalStatus = unregisterEvent.getFinalApplicationStatus();
@@ -1233,17 +1270,19 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
       switch (finalAttemptState) {
         case FINISHED:
         {
-          appEvent = new RMAppFinishedAttemptEvent(applicationId,
+          appEvent =
+              new RMAppEvent(applicationId, RMAppEventType.ATTEMPT_FINISHED,
               appAttempt.getDiagnostics());
         }
         break;
         case KILLED:
         {
           appAttempt.invalidateAMHostAndPort();
+          // Forward diagnostics received in attempt kill event.
           appEvent =
               new RMAppFailedAttemptEvent(applicationId,
                   RMAppEventType.ATTEMPT_KILLED,
-                  "Application killed by user.", false);
+                  event.getDiagnosticMsg(), false);
         }
         break;
         case FAILED:
@@ -1308,9 +1347,11 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
 
       // register the ClientTokenMasterKey after it is saved in the store,
       // otherwise client may hold an invalid ClientToken after RM restarts.
-      appAttempt.rmContext.getClientToAMTokenSecretManager()
-      .registerApplication(appAttempt.getAppAttemptId(),
-        appAttempt.getClientTokenMasterKey());
+      if (UserGroupInformation.isSecurityEnabled()) {
+        appAttempt.rmContext.getClientToAMTokenSecretManager()
+            .registerApplication(appAttempt.getAppAttemptId(),
+            appAttempt.getClientTokenMasterKey());
+      }
     }
   }
 
@@ -1353,9 +1394,7 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
         RMAppAttemptEvent event) {
 
       // Use diagnostic from launcher
-      RMAppAttemptLaunchFailedEvent launchFaileEvent
-        = (RMAppAttemptLaunchFailedEvent) event;
-      appAttempt.diagnostics.append(launchFaileEvent.getMessage());
+      appAttempt.diagnostics.append(event.getDiagnosticMsg());
 
       // Tell the app, scheduler
       super.transition(appAttempt, event);
@@ -1610,7 +1649,7 @@ public class RMAppAttemptImpl implements RMAppAttempt, Recoverable {
     progress = 1.0f;
     RMAppAttemptUnregistrationEvent unregisterEvent =
         (RMAppAttemptUnregistrationEvent) event;
-    diagnostics.append(unregisterEvent.getDiagnostics());
+    diagnostics.append(unregisterEvent.getDiagnosticMsg());
     originalTrackingUrl = sanitizeTrackingUrl(unregisterEvent.getFinalTrackingUrl());
     finalStatus = unregisterEvent.getFinalApplicationStatus();
   }

@@ -41,6 +41,7 @@ import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.HAUtil;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.Dispatcher;
@@ -57,7 +58,6 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.RegisterNodeManagerResp
 import org.apache.hadoop.yarn.server.applicationhistoryservice.ApplicationHistoryServer;
 import org.apache.hadoop.yarn.server.applicationhistoryservice.ApplicationHistoryStore;
 import org.apache.hadoop.yarn.server.applicationhistoryservice.MemoryApplicationHistoryStore;
-import org.apache.hadoop.yarn.server.applicationhistoryservice.webapp.AHSWebApp;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
@@ -65,6 +65,7 @@ import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdater;
 import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdaterImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceTrackerService;
+import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSystemTestUtil;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptRegistrationEvent;
@@ -73,6 +74,7 @@ import org.apache.hadoop.yarn.server.timeline.MemoryTimelineStore;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 import org.apache.hadoop.yarn.server.timeline.recovery.MemoryTimelineStateStore;
 import org.apache.hadoop.yarn.server.timeline.recovery.TimelineStateStore;
+import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -249,9 +251,9 @@ public class MiniYARNCluster extends CompositeService {
       resourceManagers[i] = createResourceManager();
       if (!useFixedPorts) {
         if (HAUtil.isHAEnabled(conf)) {
-          setHARMConfiguration(i, conf);
+          setHARMConfigurationWithEphemeralPorts(i, conf);
         } else {
-          setNonHARMConfiguration(conf);
+          setNonHARMConfigurationWithEphemeralPorts(conf);
         }
       }
       addService(new ResourceManagerWrapper(i));
@@ -262,15 +264,22 @@ public class MiniYARNCluster extends CompositeService {
       addService(new NodeManagerWrapper(index));
     }
 
-    if (enableAHS) {
-      addService(new ApplicationHistoryServerWrapper());
+    if(conf.getBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED,
+        YarnConfiguration.DEFAULT_TIMELINE_SERVICE_ENABLED) || enableAHS) {
+        addService(new ApplicationHistoryServerWrapper());
     }
     
     super.serviceInit(
         conf instanceof YarnConfiguration ? conf : new YarnConfiguration(conf));
   }
 
-  private void setNonHARMConfiguration(Configuration conf) {
+  @Override
+  protected synchronized void serviceStart() throws Exception {
+    super.serviceStart();
+    this.waitForNodeManagersToConnect(5000);
+  }
+
+  private void setNonHARMConfigurationWithEphemeralPorts(Configuration conf) {
     String hostname = MiniYARNCluster.getHostname();
     conf.set(YarnConfiguration.RM_ADDRESS, hostname + ":0");
     conf.set(YarnConfiguration.RM_ADMIN_ADDRESS, hostname + ":0");
@@ -279,7 +288,7 @@ public class MiniYARNCluster extends CompositeService {
     WebAppUtils.setRMWebAppHostnameAndPort(conf, hostname, 0);
   }
 
-  private void setHARMConfiguration(final int index, Configuration conf) {
+  private void setHARMConfigurationWithEphemeralPorts(final int index, Configuration conf) {
     String hostname = MiniYARNCluster.getHostname();
     for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
       conf.set(HAUtil.addSuffix(confKey, rmIds[index]), hostname + ":0");
@@ -307,19 +316,7 @@ public class MiniYARNCluster extends CompositeService {
 
   private synchronized void startResourceManager(final int index) {
     try {
-      Thread rmThread = new Thread() {
-        public void run() {
-          resourceManagers[index].start();
-        }
-      };
-      rmThread.setName("RM-" + index);
-      rmThread.start();
-      int waitCount = 0;
-      while (resourceManagers[index].getServiceState() == STATE.INITED
-          && waitCount++ < 60) {
-        LOG.info("Waiting for RM to start...");
-        Thread.sleep(1500);
-      }
+      resourceManagers[index].start();
       if (resourceManagers[index].getServiceState() != STATE.STARTED) {
         // RM could have failed.
         throw new IOException(
@@ -448,6 +445,11 @@ public class MiniYARNCluster extends CompositeService {
     @Override
     protected synchronized void serviceStart() throws Exception {
       startResourceManager(index);
+      if(index == 0 && resourceManagers[index].getRMContext().isHAEnabled()) {
+          resourceManagers[index].getRMContext().getRMAdminService()
+            .transitionToActive(new HAServiceProtocol.StateChangeRequestInfo(
+              HAServiceProtocol.RequestSource.REQUEST_BY_USER_FORCED));
+      }
       LOG.info("MiniYARN ResourceManager address: " +
                getConfig().get(YarnConfiguration.RM_ADDRESS));
       LOG.info("MiniYARN ResourceManager web address: " +
@@ -555,26 +557,12 @@ public class MiniYARNCluster extends CompositeService {
     }
 
     protected synchronized void serviceStart() throws Exception {
-      try {
-        new Thread() {
-          public void run() {
-            nodeManagers[index].start();
-          }
-        }.start();
-        int waitCount = 0;
-        while (nodeManagers[index].getServiceState() == STATE.INITED
-            && waitCount++ < 60) {
-          LOG.info("Waiting for NM " + index + " to start...");
-          Thread.sleep(1000);
-        }
-        if (nodeManagers[index].getServiceState() != STATE.STARTED) {
-          // RM could have failed.
-          throw new IOException("NodeManager " + index + " failed to start");
-        }
-        super.serviceStart();
-      } catch (Throwable t) {
-        throw new YarnRuntimeException(t);
+      nodeManagers[index].start();
+      if (nodeManagers[index].getServiceState() != STATE.STARTED) {
+        // NM could have failed.
+        throw new IOException("NodeManager " + index + " failed to start");
       }
+      super.serviceStart();
     }
 
     @Override
@@ -650,7 +638,7 @@ public class MiniYARNCluster extends CompositeService {
   /**
    * Wait for all the NodeManagers to connect to the ResourceManager.
    *
-   * @param timeout Time to wait (sleeps in 100 ms intervals) in milliseconds.
+   * @param timeout Time to wait (sleeps in 10 ms intervals) in milliseconds.
    * @return true if all NodeManagers connect to the (Active)
    * ResourceManager, false otherwise.
    * @throws YarnException
@@ -659,16 +647,17 @@ public class MiniYARNCluster extends CompositeService {
   public boolean waitForNodeManagersToConnect(long timeout)
       throws YarnException, InterruptedException {
     GetClusterMetricsRequest req = GetClusterMetricsRequest.newInstance();
-    for (int i = 0; i < timeout / 100; i++) {
+    for (int i = 0; i < timeout / 10; i++) {
       ResourceManager rm = getResourceManager();
       if (rm == null) {
         throw new YarnException("Can not find the active RM.");
       }
       else if (nodeManagers.length == rm.getClientRMService()
-            .getClusterMetrics(req).getClusterMetrics().getNumNodeManagers()) {
+          .getClusterMetrics(req).getClusterMetrics().getNumNodeManagers()) {
+        LOG.info("All Node Managers connected in MiniYARNCluster");
         return true;
       }
-      Thread.sleep(100);
+      Thread.sleep(10);
     }
     return false;
   }
@@ -688,6 +677,12 @@ public class MiniYARNCluster extends CompositeService {
           MemoryTimelineStore.class, TimelineStore.class);
       conf.setClass(YarnConfiguration.TIMELINE_SERVICE_STATE_STORE_CLASS,
           MemoryTimelineStateStore.class, TimelineStateStore.class);
+      if (!useFixedPorts) {
+        String hostname = MiniYARNCluster.getHostname();
+        conf.set(YarnConfiguration.TIMELINE_SERVICE_ADDRESS, hostname + ":0");
+        conf.set(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS, hostname
+            + ":0");
+      }
       appHistoryServer.init(conf);
       super.serviceInit(conf);
     }
@@ -695,17 +690,7 @@ public class MiniYARNCluster extends CompositeService {
     @Override
     protected synchronized void serviceStart() throws Exception {
       try {
-        new Thread() {
-          public void run() {
-            appHistoryServer.start();
-          };
-        }.start();
-        int waitCount = 0;
-        while (appHistoryServer.getServiceState() == STATE.INITED
-            && waitCount++ < 60) {
-          LOG.info("Waiting for Timeline Server to start...");
-          Thread.sleep(1500);
-        }
+        appHistoryServer.start();
         if (appHistoryServer.getServiceState() != STATE.STARTED) {
           // AHS could have failed.
           throw new IOException(

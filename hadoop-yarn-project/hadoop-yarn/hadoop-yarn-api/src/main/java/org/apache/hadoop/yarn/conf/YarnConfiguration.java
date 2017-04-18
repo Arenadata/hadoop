@@ -333,6 +333,11 @@ public class YarnConfiguration extends Configuration {
   public static final boolean DEFAULT_RM_WEBAPP_DELEGATION_TOKEN_AUTH_FILTER =
       true;
 
+  /** Enable cross origin (CORS) support. **/
+  public static final String RM_WEBAPP_ENABLE_CORS_FILTER =
+      RM_PREFIX + "webapp.cross-origin.enabled";
+  public static final boolean DEFAULT_RM_WEBAPP_ENABLE_CORS_FILTER = false;
+
   /** How long to wait until a container is considered dead.*/
   public static final String RM_CONTAINER_ALLOC_EXPIRY_INTERVAL_MS = 
     RM_PREFIX + "rm.container-allocation.expiry-interval-ms";
@@ -400,6 +405,11 @@ public class YarnConfiguration extends Configuration {
   
   public static final String RECOVERY_ENABLED = RM_PREFIX + "recovery.enabled";
   public static final boolean DEFAULT_RM_RECOVERY_ENABLED = false;
+
+  public static final String YARN_FAIL_FAST = YARN_PREFIX + "fail-fast";
+  public static final boolean DEFAULT_YARN_FAIL_FAST = false;
+
+  public static final String RM_FAIL_FAST = RM_PREFIX + "fail-fast";
 
   @Private
   public static final String RM_WORK_PRESERVING_RECOVERY_ENABLED = RM_PREFIX
@@ -547,6 +557,13 @@ public class YarnConfiguration extends Configuration {
 
   public static final String RM_LEVELDB_STORE_PATH = RM_PREFIX
       + "leveldb-state-store.path";
+
+  /** The time in seconds between full compactions of the leveldb database.
+   *  Setting the interval to zero disables the full compaction cycles.
+   */
+  public static final String RM_LEVELDB_COMPACTION_INTERVAL_SECS = RM_PREFIX
+      + "leveldb-state-store.compaction-interval-secs";
+  public static final long DEFAULT_RM_LEVELDB_COMPACTION_INTERVAL_SECS = 3600;
 
   /** The maximum number of completed applications RM keeps. */ 
   public static final String RM_MAX_COMPLETED_APPLICATIONS =
@@ -847,7 +864,12 @@ public class YarnConfiguration extends Configuration {
   public static final int DEFAULT_NM_WEBAPP_HTTPS_PORT = 8044;
   public static final String DEFAULT_NM_WEBAPP_HTTPS_ADDRESS = "0.0.0.0:"
       + DEFAULT_NM_WEBAPP_HTTPS_PORT; 
-  
+
+  /** Enable/disable CORS filter. */
+  public static final String NM_WEBAPP_ENABLE_CORS_FILTER =
+      NM_PREFIX + "webapp.cross-origin.enabled";
+  public static final boolean DEFAULT_NM_WEBAPP_ENABLE_CORS_FILTER = false;
+
   /** How often to monitor containers.*/
   public final static String NM_CONTAINER_MON_INTERVAL_MS =
     NM_PREFIX + "container-monitor.interval-ms";
@@ -877,7 +899,15 @@ public class YarnConfiguration extends Configuration {
       NM_PREFIX + "container-metrics.period-ms";
   @Private
   public static final int DEFAULT_NM_CONTAINER_METRICS_PERIOD_MS = -1;
-  
+
+  /** The delay time ms to unregister container metrics after completion. */
+  @Private
+  public static final String NM_CONTAINER_METRICS_UNREGISTER_DELAY_MS =
+      NM_PREFIX + "container-metrics.unregister-delay-ms";
+  @Private
+  public static final int DEFAULT_NM_CONTAINER_METRICS_UNREGISTER_DELAY_MS =
+      10000;
+
   /** Prefix for all node manager disk health checker configs. */
   private static final String NM_DISK_HEALTH_CHECK_PREFIX =
       "yarn.nodemanager.disk-health-checker.";
@@ -1104,6 +1134,13 @@ public class YarnConfiguration extends Configuration {
 
   public static final String NM_RECOVERY_DIR = NM_RECOVERY_PREFIX + "dir";
 
+  /** The time in seconds between full compactions of the NM state database.
+   *  Setting the interval to zero disables the full compaction cycles.
+   */
+  public static final String NM_RECOVERY_COMPACTION_INTERVAL_SECS =
+      NM_RECOVERY_PREFIX + "compaction-interval-secs";
+  public static final int DEFAULT_NM_RECOVERY_COMPACTION_INTERVAL_SECS = 3600;
+
   ////////////////////////////////
   // Web Proxy Configs
   ////////////////////////////////
@@ -1175,6 +1212,11 @@ public class YarnConfiguration extends Configuration {
       RM_PREFIX + "connect.retry-interval.ms";
   public static final long DEFAULT_RESOURCEMANAGER_CONNECT_RETRY_INTERVAL_MS
       = 30 * 1000;
+
+  public static final String DISPATCHER_DRAIN_EVENTS_TIMEOUT =
+      YARN_PREFIX + "dispatcher.drain-events.timeout";
+
+  public static final long DEFAULT_DISPATCHER_DRAIN_EVENTS_TIMEOUT = 300000;
 
   /**
    * CLASSPATH for YARN applications. A comma-separated list of CLASSPATH
@@ -1289,6 +1331,23 @@ public class YarnConfiguration extends Configuration {
   public static final String TIMELINE_SERVICE_PREFIX =
       YARN_PREFIX + "timeline-service.";
 
+  /**
+   * Comma seperated list of names for UIs hosted in the timeline server
+   * (For pluggable UIs).
+   */
+  public static final String TIMELINE_SERVICE_UI_NAMES =
+      TIMELINE_SERVICE_PREFIX + "ui-names";
+
+  /** Relative web path that will serve up this UI (For pluggable UIs). */
+  public static final String TIMELINE_SERVICE_UI_WEB_PATH_PREFIX =
+      TIMELINE_SERVICE_PREFIX + "ui-web-path.";
+
+  /**
+   * Path to war file or static content directory for this UI
+   * (For pluggable UIs).
+   */
+  public static final String TIMELINE_SERVICE_UI_ON_DISK_PATH_PREFIX =
+      TIMELINE_SERVICE_PREFIX + "ui-on-disk-path.";
 
   // mark app-history related configs @Private as application history is going
   // to be integrated into the timeline service
@@ -1310,6 +1369,15 @@ public class YarnConfiguration extends Configuration {
   @Private
   public static final String APPLICATION_HISTORY_STORE =
       APPLICATION_HISTORY_PREFIX + "store-class";
+
+  /** Save container meta-info in the application history store. */
+  @Private
+  public static final String
+      APPLICATION_HISTORY_SAVE_NON_AM_CONTAINER_META_INFO =
+        APPLICATION_HISTORY_PREFIX + "save-non-am-container-meta-info";
+  @Private
+  public static final boolean
+            DEFAULT_APPLICATION_HISTORY_SAVE_NON_AM_CONTAINER_META_INFO = true;
 
   /** URI for FileSystemApplicationHistoryStore */
   @Private
@@ -1361,6 +1429,15 @@ public class YarnConfiguration extends Configuration {
   public static final int DEFAULT_TIMELINE_SERVICE_WEBAPP_HTTPS_PORT = 8190;
   public static final String DEFAULT_TIMELINE_SERVICE_WEBAPP_HTTPS_ADDRESS =
       "0.0.0.0:" + DEFAULT_TIMELINE_SERVICE_WEBAPP_HTTPS_PORT;
+
+  /**
+   * Defines the max number of applications could be fetched using
+   * REST API or application history protocol and shown in timeline
+   * server web ui.
+   */
+  public static final String APPLICATION_HISTORY_MAX_APPS =
+      APPLICATION_HISTORY_PREFIX + "max-applications";
+  public static final long DEFAULT_APPLICATION_HISTORY_MAX_APPS = 10000;
 
   /** Timeline service store class */
   public static final String TIMELINE_SERVICE_STORE =
@@ -1820,6 +1897,12 @@ public class YarnConfiguration extends Configuration {
     return HttpConfig.Policy.HTTPS_ONLY == HttpConfig.Policy.fromString(conf
         .get(YARN_HTTP_POLICY_KEY,
             YARN_HTTP_POLICY_DEFAULT));
+  }
+
+  public static boolean shouldRMFailFast(Configuration conf) {
+    return conf.getBoolean(YarnConfiguration.RM_FAIL_FAST,
+        conf.getBoolean(YarnConfiguration.YARN_FAIL_FAST,
+            YarnConfiguration.DEFAULT_YARN_FAIL_FAST));
   }
 
   @Private

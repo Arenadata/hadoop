@@ -29,6 +29,7 @@ import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.RollingUpgradeStatus;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.protocol.*;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
@@ -350,9 +351,8 @@ class BPOfferService {
             reg.getStorageInfo().getNamespaceID(), "namespace ID");
         checkNSEquality(bpRegistration.getStorageInfo().getClusterID(),
             reg.getStorageInfo().getClusterID(), "cluster ID");
-      } else {
-        bpRegistration = reg;
       }
+      bpRegistration = reg;
 
       dn.bpRegistrationSucceeded(bpRegistration, getBlockPoolId());
       // Add the initial block token secret keys to the DN's secret manager.
@@ -471,15 +471,19 @@ class BPOfferService {
   
   /**
    * Signal the current rolling upgrade status as indicated by the NN.
-   * @param inProgress true if a rolling upgrade is in progress
+   * @param rollingUpgradeStatus rolling upgrade status
    */
-  void signalRollingUpgrade(boolean inProgress) throws IOException {
+  void signalRollingUpgrade(RollingUpgradeStatus rollingUpgradeStatus)
+      throws IOException {
+    if (rollingUpgradeStatus == null) {
+      return;
+    }
     String bpid = getBlockPoolId();
-    if (inProgress) {
+    if (!rollingUpgradeStatus.isFinalized()) {
       dn.getFSDataset().enableTrash(bpid);
       dn.getFSDataset().setRollingUpgradeMarker(bpid);
     } else {
-      dn.getFSDataset().restoreTrash(bpid);
+      dn.getFSDataset().clearTrash(bpid);
       dn.getFSDataset().clearRollingUpgradeMarker(bpid);
     }
   }

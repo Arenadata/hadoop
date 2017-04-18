@@ -454,13 +454,19 @@ public class Balancer {
         final C c = candidates.next();
         if (!c.hasSpaceForScheduling()) {
           candidates.remove();
-        } else if (matcher.match(dispatcher.getCluster(),
-            g.getDatanodeInfo(), c.getDatanodeInfo())) {
+        } else if (matchStorageGroups(c, g, matcher)) {
           return c;
         }
       }
     }
     return null;
+  }
+
+  private boolean matchStorageGroups(StorageGroup left, StorageGroup right,
+      Matcher matcher) {
+    return left.getStorageType() == right.getStorageType()
+        && matcher.match(dispatcher.getCluster(),
+            left.getDatanodeInfo(), right.getDatanodeInfo());
   }
 
   /* reset all fields in a balancer preparing for the next iteration */
@@ -679,7 +685,7 @@ public class Balancer {
       try {
         checkReplicationPolicyCompatibility(conf);
 
-        final Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+        final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
         return Balancer.run(namenodes, parse(args), conf);
       } catch (IOException e) {
         System.out.println(e + ".  Exiting ...");

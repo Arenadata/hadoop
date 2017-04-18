@@ -20,9 +20,11 @@ package org.apache.hadoop.yarn.server.webapp;
 
 import static org.apache.hadoop.yarn.util.StringHelper.join;
 import static org.apache.hadoop.yarn.webapp.YarnWebParams.APP_STATE;
+import static org.apache.hadoop.yarn.webapp.YarnWebParams.APPS_NUM;
 import static org.apache.hadoop.yarn.webapp.view.JQueryUI.C_PROGRESSBAR;
 import static org.apache.hadoop.yarn.webapp.view.JQueryUI.C_PROGRESSBAR_VALUE;
 
+import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -35,6 +37,7 @@ import org.apache.hadoop.yarn.api.ApplicationBaseProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.webapp.dao.AppInfo;
 import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
 import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
@@ -47,26 +50,19 @@ public class AppsBlock extends HtmlBlock {
 
   private static final Log LOG = LogFactory.getLog(AppsBlock.class);
   protected ApplicationBaseProtocol appBaseProt;
+  protected EnumSet<YarnApplicationState> reqAppStates;
+  protected UserGroupInformation callerUGI;
+  protected Collection<ApplicationReport> appReports;
 
   @Inject
-  AppsBlock(ApplicationBaseProtocol appBaseProt, ViewContext ctx) {
+  protected AppsBlock(ApplicationBaseProtocol appBaseProt, ViewContext ctx) {
     super(ctx);
     this.appBaseProt = appBaseProt;
   }
 
-  @Override
-  public void render(Block html) {
-    setTitle("Applications");
-
-    TBODY<TABLE<Hamlet>> tbody =
-        html.table("#apps").thead().tr().th(".id", "ID").th(".user", "User")
-          .th(".name", "Name").th(".type", "Application Type")
-          .th(".queue", "Queue").th(".starttime", "StartTime")
-          .th(".finishtime", "FinishTime").th(".state", "State")
-          .th(".finalstatus", "FinalStatus").th(".progress", "Progress")
-          .th(".ui", "Tracking UI")._()._().tbody();
-    EnumSet<YarnApplicationState> reqAppStates =
-        EnumSet.noneOf(YarnApplicationState.class);
+  protected void fetchData() throws YarnException, IOException,
+      InterruptedException {
+    reqAppStates = EnumSet.noneOf(YarnApplicationState.class);
     String reqStateString = $(APP_STATE);
     if (reqStateString != null && !reqStateString.isEmpty()) {
       String[] appStateStrings = reqStateString.split(",");
@@ -75,28 +71,54 @@ public class AppsBlock extends HtmlBlock {
       }
     }
 
-    UserGroupInformation callerUGI = getCallerUGI();
-    Collection<ApplicationReport> appReports = null;
+    callerUGI = getCallerUGI();
+    final GetApplicationsRequest request =
+        GetApplicationsRequest.newInstance(reqAppStates);
+    String appsNumStr = $(APPS_NUM);
+    if (appsNumStr != null && !appsNumStr.isEmpty()) {
+      long appsNum = Long.parseLong(appsNumStr);
+      request.setLimit(appsNum);
+    }
+    if (callerUGI == null) {
+      appReports = appBaseProt.getApplications(request).getApplicationList();
+    } else {
+      appReports =
+          callerUGI
+            .doAs(new PrivilegedExceptionAction<Collection<ApplicationReport>>() {
+              @Override
+              public Collection<ApplicationReport> run() throws Exception {
+                return appBaseProt.getApplications(request)
+                  .getApplicationList();
+              }
+            });
+    }
+  }
+
+  @Override
+  public void render(Block html) {
+    setTitle("Applications");
+
     try {
-      final GetApplicationsRequest request =
-          GetApplicationsRequest.newInstance(reqAppStates);
-      if (callerUGI == null) {
-        appReports = appBaseProt.getApplications(request).getApplicationList();
-      } else {
-        appReports = callerUGI.doAs(
-            new PrivilegedExceptionAction<Collection<ApplicationReport>> () {
-          @Override
-          public Collection<ApplicationReport> run() throws Exception {
-            return appBaseProt.getApplications(request).getApplicationList();
-          }
-        });
-      }
-    } catch (Exception e) {
+      fetchData();
+    }
+    catch( Exception e) {
       String message = "Failed to read the applications.";
       LOG.error(message, e);
       html.p()._(message)._();
       return;
     }
+    renderData(html);
+  }
+
+  protected void renderData(Block html) {
+    TBODY<TABLE<Hamlet>> tbody =
+        html.table("#apps").thead().tr().th(".id", "ID").th(".user", "User")
+          .th(".name", "Name").th(".type", "Application Type")
+          .th(".queue", "Queue").th(".starttime", "StartTime")
+          .th(".finishtime", "FinishTime").th(".state", "State")
+          .th(".finalstatus", "FinalStatus").th(".progress", "Progress")
+          .th(".ui", "Tracking UI")._()._().tbody();
+
     StringBuilder appsTableData = new StringBuilder("[\n");
     for (ApplicationReport appReport : appReports) {
       // TODO: remove the following condition. It is still here because
@@ -116,7 +138,7 @@ public class AppsBlock extends HtmlBlock {
         .append("</a>\",\"")
         .append(
           StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(app
-            .getUser())))
+              .getUser())))
         .append("\",\"")
         .append(
           StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(app
@@ -143,11 +165,12 @@ public class AppsBlock extends HtmlBlock {
         .append("'> </div> </div>").append("\",\"<a ");
 
       String trackingURL =
-          app.getTrackingUrl() == null || app.getTrackingUrl() == UNAVAILABLE
-              ? null : app.getTrackingUrl();
+          app.getTrackingUrl() == null
+              || app.getTrackingUrl().equals(UNAVAILABLE) ? null : app
+            .getTrackingUrl();
 
       String trackingUI =
-          app.getTrackingUrl() == null || app.getTrackingUrl() == UNAVAILABLE
+          app.getTrackingUrl() == null || app.getTrackingUrl().equals(UNAVAILABLE)
               ? "Unassigned"
               : app.getAppState() == YarnApplicationState.FINISHED
                   || app.getAppState() == YarnApplicationState.FAILED

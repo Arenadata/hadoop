@@ -1,6 +1,6 @@
 Hadoop Change Log
 
-Release 2.7.2 - UNRELEASED
+Release 2.7.3 - 2016-08-25
 
   INCOMPATIBLE CHANGES
 
@@ -8,9 +8,209 @@ Release 2.7.2 - UNRELEASED
 
   IMPROVEMENTS
 
+    HADOOP-12413. AccessControlList should avoid calling getGroupNames in
+    isUserInList with empty groups. (Zhihai Xu via cnauroth)
+
+    HADOOP-12794. Support additional compression levels for GzipCodec.
+    (Ravi Mutyala via junping_du)
+
+    HADOOP-13103. Group resolution from LDAP may fail on
+    javax.naming.ServiceUnavailableException (szetszwo)
+
+    HADOOP-13039. Add documentation for configuration property
+    ipc.maximum.data.length for controlling maximum RPC message size.
+    (Mingliang Liu via arp)
+
+    HADOOP-12570. HDFS Secure Mode Documentation updates. (Arpit Agarwal)
+
+    HADOOP-13298. Fix the leftover L&N files in
+    hadoop-build-tools/src/main/resources/META-INF/. (ozawa)
+
+    HADOOP-13434. Added quoting to Shell class. (Owen O'Malley via Arpit Agarwal)
+
+  OPTIMIZATIONS
+
+    HADOOP-12810. FileSystem#listLocatedStatus causes unnecessary RPC calls
+    (Ryan Blue via vinayakumarb)
+
+  BUG FIXES
+
+    HADOOP-12296. when setnetgrent returns 0 in linux, exception should be
+    thrown (Chang Li via jlowe)
+
+    HADOOP-12545. Hadoop javadoc has broken links for AccessControlList,
+    ImpersonationProvider, DefaultImpersonationProvider, and DistCp.
+    (Arshad Mohammad via aajisaka)
+
+    HADOOP-12374. Updated expunge command description.
+    (WeiWei Yang via eyang)
+
+    HADOOP-12348. MetricsSystemImpl creates MetricsSourceAdapter with wrong
+    time unit parameter. (zxu via rkanter)
+
+    HADOOP-12482. Race condition in JMX cache update. (Tony Wu via lei)
+
+    HADOOP-12565. Replace DSA with RSA for SSH key type in SingleCluster.md.
+    (Mingliang Liu via aajisaka)
+
+    HADOOP-12602. TestMetricsSystemImpl#testQSize occasionally fails.
+    (Masatake Iwasaki via aajisaka)
+
+    HADOOP-12588. Fix intermittent test failure of TestGangliaMetrics.
+    (Masatake Iwasaki via aajisaka)
+
+    HADOOP-12107. long running apps may have a huge number of StatisticsData
+    instances under FileSystem (Sangjin Lee via Ming Ma)
+
+    HADOOP-12706. TestLocalFsFCStatistics#testStatisticsThreadLocalDataCleanUp
+    times out occasionally (Sangjin Lee and Colin Patrick McCabe via jlowe)
+
+    HADOOP-12761. incremental maven build is not really incremental (sjlee)
+
+    HADOOP-12772. NetworkTopologyWithNodeGroup.getNodeGroup() can loop
+    infinitely for invalid 'loc' values (Kuhu Shukla via kihwal)
+
+    HADOOP-12792. TestUserGroupInformation#testGetServerSideGroups fails in
+    chroot (Eric Badger via jlowe)
+
+    HADOOP-8818. Use equals instead == in MD5MD5CRC32FileChecksum
+    and TFileDumper. (Brandon Li via suresh)
+
+    HADOOP-9121. InodeTree.java has redundant check for vName while
+    throwing exception. (Arup Malakar via suresh)
+
+    HADOOP-12870. Fix typo admininistration in CommandsManual.md.
+    (John Zhuge via aajisaka)
+
+    HADOOP-12871. Fix dead link to NativeLibraries.html in CommandsManual.md.
+    (Brahma Reddy Battula via aajisaka)
+
+    HADOOP-12872. Fix formatting in ServiceLevelAuth.md.
+    (Brahma Reddy Battula via aajisaka)
+
+    HADOOP-12688. Fix deadlinks in Compatibility.md. (Gabor Liptak via aajisaka)
+
+    HADOOP-12958. PhantomReference for filesystem statistics can trigger OOM
+    (Sangjin Lee via jlowe)
+
+    HADOOP-12902. JavaDocs for SignerSecretProvider are out-of-date in
+    AuthenticationFilter. (Gabor Liptak via aajisaka)
+
+    HADOOP-12613. TestFind.processArguments occasionally fails.
+    (Wei-Chiu Chuang via stevel)
+
+    HADOOP-12989. Some tests in org.apache.hadoop.fs.shell.find occasionally
+    time out. (Takashi Ohnishi via aajisaka)
+
+    HADOOP-13052. ChecksumFileSystem mishandles crc file permissions.
+    (Daryn Sharp via kihwal)
+
+    HADOOP-13084. Fix ASF License warnings in branch-2.7.
+    (Brahma Reddy Battula via aajisaka)
+
+    HADOOP-13154. S3AFileSystem
+    printAmazonServiceException/printAmazonClientException appear copy & paste
+    of AWS examples. (Steve Loughran via cnauroth)
+
+    HADOOP-13270. BZip2CompressionInputStream finds the same compression marker
+    twice in corner case, causing duplicate data blocks.
+    (Kai Sasaki via aajisaka)
+
+    HADOOP-12893. Verify LICENSE.txt and NOTICE.txt.
+    (Xiao Chen and Andrew Wang via aajisaka)
+
+    HADOOP-13192. org.apache.hadoop.util.LineReader cannot handle multibyte
+    delimiters correctly. (binde via aajisaka)
+
+    HADOOP-13297. Add missing dependency in setting
+    maven-remote-resource-plugin to fix builds. (Sean Busbey via aajisaka)
+
+    HADOOP-13255. KMSClientProvider should check and renew tgt when doing
+    delegation token operations. (xyao)
+
+    HADOOP-12559. KMS connection failures should trigger TGT renewal.
+    (Zhe Zhang via xyao)
+
+    HADOOP-13043. Add LICENSE.txt entries for bundled javascript dependencies.
+    (wang)
+
+    HADOOP-13042. Restore lost leveldbjni LICENSE and NOTICE changes. (wang)
+
+    HADOOP-12406. AbstractMapWritable.readFields throws ClassNotFoundException
+    with custom writables. (Nadeem Douba via vinodkv)
+
+    HADOOP-12636. Fix to prevent ServiceLoader failure init for unused FileSystems.
+    (Inigo Goiri via cdouglas)
+
+    HADOOP-13350. Additional fixes to LICENSE and NOTICE. (Xiao Chen via wang)
+
+    HADOOP-12682. Fixed TestKMS#testKMSRestart* failure. (Wei-Chiu Chuang via xyao)
+
+    HADOOP-13312. Updated CHANGES.txt to reflect all the changes in branch-2.7.
+    (Akira Ajisaka via vinodkv)
+
+Release 2.7.2 - 2016-01-25
+
+  INCOMPATIBLE CHANGES
+
+  NEW FEATURES
+
+  IMPROVEMENTS
+
+    HADOOP-12232. Upgrade Tomcat dependency to 6.0.44. (cnauroth)
+
+    HADOOP-5323. Trash documentation should describe its directory structure and
+    configurations. (Weiwei Yang via ozawa)
+
   OPTIMIZATIONS
 
   BUG FIXES
+
+    HADOOP-12186. ActiveStandbyElector shouldn't call monitorLockNodeAsync
+    multiple times (zhihai xu via vinayakumarb)
+
+    HADOOP-12191. Bzip2Factory is not thread safe. (Brahma Reddy Battula
+    via ozawa)
+
+    HDFS-8767. RawLocalFileSystem.listStatus() returns null for UNIX pipefile.
+    (kanaka kumar avvaru via wheat9)
+
+    HADOOP-12304. Applications using FileContext fail with the default file
+    system configured to be wasb/s3/etc. (cnauroth)
+
+    HADOOP-12061. Incorrect command in single cluster setup document.
+    (Kengo Seki via aajisaka)
+
+    HADOOP-12359. hadoop fs -getmerge doc is wrong.
+    (Jagadesh Kiran N via aajisaka)
+
+    HADOOP-10365. BufferedOutputStream in FileUtil#unpackEntries() should be
+    closed in finally block. (Kiran Kumar M R and Sanghyun Yun via ozawa)
+
+    HADOOP-12006. Remove unimplemented option for `hadoop fs -ls` from
+    document in branch-2.7. (Akira AJISAKA via ozawa)
+
+    HADOOP-12213. Interrupted exception can occur when Client#stop is called.
+    (Kuhu Shukla via ozawa)
+    
+    HADOOP-12451. Setting HADOOP_HOME explicitly should be allowed. (kasha)
+
+    HADOOP-12230. hadoop-project declares duplicate, conflicting curator
+    dependencies. (Rakesh R via aajisaka)
+
+    HADOOP-12465. Incorrect javadoc in WritableUtils.java.
+    (Jagadesh Kiran N via aajisaka)
+
+    HADOOP-12464. Interrupted client may try to fail-over and retry (kihwal)
+
+    HADOOP-9242. Duplicate surefire plugin config in hadoop-common.
+    (Andrey Klochkov via suresh)
+
+    HADOOP-12415. Fixed pom files to correctly include compile-time dependency on
+    netty. (Tom Zeng via cos)
+
+    HADOOP-12786. "hadoop key" command usage is not documented.
+    (Xiao Chen via aajisaka)
 
 Release 2.7.1 - 2015-07-06 
 
@@ -33,12 +233,6 @@ Release 2.7.1 - 2015-07-06
     HADOOP-11872. "hadoop dfs" command prints message about using "yarn jar" on
     Windows(branch-2 only) (Varun Vasudev via cnauroth)
 
-    HADOOP-11730. Regression: s3n read failure recovery broken.
-    (Takenori Sato via stevel)
-
-    HADOOP-11802. DomainSocketWatcher thread terminates sometimes after there
-    is an I/O error during requestShortCircuitShm (cmccabe)
-
     HADOOP-11891. OsSecureRandom should lazily fill its reservoir (asuresh)
 
     HADOOP-9658. SnappyCodec#checkNativeCodeLoaded may unexpectedly fail when
@@ -47,14 +241,16 @@ Release 2.7.1 - 2015-07-06
     HADOOP-11663. Remove description about Java 6 from docs.
     (Masatake Iwasaki via aajisaka)
 
+    HADOOP-11814. Reformat hadoop-annotations, o.a.h.classification.tools.
+    (Li Lu via wheat9)
+
+  OPTIMIZATIONS
+
     HADOOP-11966. Variable cygwin is undefined in hadoop-config.sh when executed
     through hadoop-daemon.sh. (cnauroth)
 
     HADOOP-11973. Ensure ZkDelegationTokenSecretManager namespace znodes get
     created with ACLs. (Gregory Chanan via asuresh)
-
-    HADOOP-11934. Use of JavaKeyStoreProvider in LdapGroupsMapping causes
-    infinite loop. (Larry McCay via cnauroth)
 
     HADOOP-12058. Fix dead links to DistCp and Hadoop Archives pages.
     (Kazuho Fujii via aajisaka)
@@ -121,8 +317,6 @@ Release 2.7.0 - 2015-04-20
     (Pascal Oliva via wheat9)
 
     HADOOP-10563. Remove the dependency of jsp in trunk. (wheat9)
-
-    HADOOP-10786. Fix UGI#reloginFromKeytab on Java 8. (Stephen Chu via wheat9)
 
     HADOOP-11291. Log the cause of SASL connection failures.
     (Stephen Chu via cnauroth)
@@ -318,17 +512,11 @@ Release 2.7.0 - 2015-04-20
     HADOOP-11323. WritableComparator#compare keeps reference to byte array.
     (Wilfred Spiegelenburg via wang)
 
-    HADOOP-11238. Update the NameNode's Group Cache in the background when
-    possible (Chris Li via Colin P. McCabe)
-
     HADOOP-10809. hadoop-azure: page blob support. (Dexter Bradshaw,
     Mostafa Elhemali, Eric Hanson, and Mike Liddell via cnauroth)
 
     HADOOP-11188. hadoop-azure: automatically expand page blobs when they become
     full. (Eric Hanson via cnauroth)
-
-    HADOOP-11506. Configuration variable expansion regex expensive for long
-    values. (Gera Shegalov via gera)
 
     HADOOP-11231. Remove dead code in ServletUtil. (Li Lu via wheat9)
 
@@ -426,9 +614,6 @@ Release 2.7.0 - 2015-04-20
     HADOOP-11257. Update "hadoop jar" documentation to warn against using it
     for launching yarn jars (iwasakims via cmccabe)
 
-    HADOOP-11333. Fix deadlock in DomainSocketWatcher when the notification
-    pipe is full (zhaoyunjiong via cmccabe)
-
     HADOOP-11337. KeyAuthorizationKeyProvider access checks need to be done
     atomically. (Dian Fu via wang)
 
@@ -447,9 +632,6 @@ Release 2.7.0 - 2015-04-20
     HADOOP-11355. When accessing data in HDFS and the key has been deleted,
     a Null Pointer Exception is shown. (Arun Suresh via wang)
 
-    HADOOP-11343. Overflow is not properly handled in caclulating final iv for
-    AES CTR. (Jerry Chen via wang)
-
     HADOOP-11354. ThrottledInputStream doesn't perform effective throttling.
     (Ted Yu via jing9)
 
@@ -464,9 +646,6 @@ Release 2.7.0 - 2015-04-20
 
     HADOOP-11369. Fix new findbugs warnings in hadoop-mapreduce-client,
     non-core directories. (Li Lu via wheat9)
-
-    HADOOP-11368. Fix SSLFactory truststore reloader thread leak in
-    KMSClientProvider. (Arun Suresh via wang)
 
     HADOOP-11372. Fix new findbugs warnings in mapreduce-examples.
     (Li Lu via wheat9)
@@ -565,9 +744,6 @@ Release 2.7.0 - 2015-04-20
     HADOOP-11462. TestSocketIOWithTimeout needs change for PowerPC platform.
     (Ayappan via cnauroth)
 
-    HADOOP-11350. The size of header buffer of HttpServer is too small when
-    HTTPS is enabled. (Benoy Antony via wheat9)
-
     HADOOP-10542 Potential null pointer dereference in Jets3tFileSystemStore
     retrieveBlock(). (Ted Yu via stevel)	
 
@@ -591,9 +767,6 @@ Release 2.7.0 - 2015-04-20
 
     HADOOP-11507 Hadoop RPC Authentication problem with different user locale.
     (Talat UYARER via stevel)
-
-    HADOOP-11482. Use correct UGI when KMSClientProvider is called by a proxy
-    user. Contributed by Arun Suresh.
 
     HADOOP-11499. Check of executorThreadsStarted in
     ValueQueue#submitRefillTask() evades lock acquisition (Ted Yu via jlowe)
@@ -666,9 +839,6 @@ Release 2.7.0 - 2015-04-20
     HADOOP-11570. S3AInputStream.close() downloads the remaining bytes of
     the object from S3. (Dan Hecht via stevel).
 
-    HADOOP-11295. RPC Server Reader thread can't shutdown if RPCCallQueue is
-    full. (Ming Ma via kihwal)
-
     HADOOP-11599. Client#getTimeout should use IPC_CLIENT_PING_DEFAULT when 
     IPC_CLIENT_PING_KEY is not configured. (zhihai xu via ozawa)
 
@@ -680,9 +850,6 @@ Release 2.7.0 - 2015-04-20
 
     HADOOP-9087. Queue size metric for metric sinks isn't actually maintained
     (Akira AJISAKA via jlowe)
-
-    HADOOP-11604. Prevent ConcurrentModificationException while closing domain
-    sockets during shutdown of DomainSocketWatcher thread. (cnauroth)
 
     HADOOP-11612. Workaround for Curator's ChildReaper requiring Guava 15+.
     (rkanter)
@@ -720,9 +887,6 @@ Release 2.7.0 - 2015-04-20
     HADOOP-11666. Revert the format change of du output introduced by
     HADOOP-6857. (Byron Wong via aajisaka)
 
-    HADOOP-11674. oneByteBuf in CryptoInputStream and CryptoOutputStream
-    should be non static. (Sean Busbey via yliu)
-
     HADOOP-11670. Regression: s3a auth setup broken. (Adam Budde via stevel)
 
     HADOOP-11602. Fix toUpperCase/toLowerCase to use Locale.ENGLISH. (ozawa)
@@ -735,9 +899,6 @@ Release 2.7.0 - 2015-04-20
 
     HADOOP-11693. Azure Storage FileSystem rename operations are throttled too
     aggressively to complete HBase WAL archiving. (Duo Xu via cnauroth)
-
-    HADOOP-11710. Make CryptoOutputStream behave like DFSOutputStream wrt
-    synchronization. (Sean Busbey via yliu)
 
     HADOOP-11558. Fix dead links to doc of hadoop-tools. (Jean-Pierre 
     Matsumoto via ozawa)
@@ -802,7 +963,37 @@ Release 2.7.0 - 2015-04-20
     HADOOP-11837. AuthenticationFilter should destroy SignerSecretProvider in
     Tomcat deployments. (Bowen Zhang via wheat9)
 
-Release 2.6.1 - UNRELEASED
+Release 2.6.5 - UNRELEASED
+
+  INCOMPATIBLE CHANGES
+
+  NEW FEATURES
+
+  IMPROVEMENTS
+
+    HADOOP-12805. Annotate CanUnbuffer with @InterfaceAudience.Public
+    (Ted Yu via vinayakumarb)
+
+    HADOOP-12800. Copy docker directory from 2.8 to 2.7/2.6 repos to enable
+    pre-commit Jenkins runs (zhz)
+
+    HADOOP-12789. log classpath of ApplicationClassLoader at INFO level
+    (Sangjin Lee via mingma)
+
+  OPTIMIZATIONS
+
+  BUG FIXES
+
+    HADOOP-12773. HBase classes fail to load with client/job classloader
+    enabled (sjlee)
+
+    HADOOP-12589. Fix intermittent test failure of TestCopyPreserveFlag
+    (iwasakims)
+
+    HADOOP-7817. RawLocalFileSystem.append() should give FSDataOutputStream
+    with accurate .getPos() (kanaka kumar avvaru via vinayakumarb)
+
+Release 2.6.4 - 2016-02-11
 
   INCOMPATIBLE CHANGES
 
@@ -814,9 +1005,127 @@ Release 2.6.1 - UNRELEASED
 
   BUG FIXES
 
-    HADOOP-11466. FastByteComparisons: do not use UNSAFE_COMPARER on the SPARC
+    HADOOP-11252. RPC client does not time out by default.
+    (Wilfred Spiegelenburg and Masatake Iwasaki via aajisaka)
+
+    HADOOP-12107. long running apps may have a huge number of StatisticsData
+    instances under FileSystem (Sangjin Lee via Ming Ma)
+
+    HADOOP-12706. TestLocalFsFCStatistics#testStatisticsThreadLocalDataCleanUp
+    times out occasionally (Sangjin Lee and Colin Patrick McCabe via jlowe)
+
+    HADOOP-12736. TestTimedOutTestsListener#testThreadDumpAndDeadlocks
+    sometimes times out. (Xiao Chen via aajisaka)
+
+    HADOOP-12715. TestValueQueue#testgetAtMostPolicyALL fails intermittently.
+    (Xiao Chen via waltersu4549)
+
+Release 2.6.3 - 2015-12-17
+
+  INCOMPATIBLE CHANGES
+
+  NEW FEATURES
+
+  IMPROVEMENTS
+
+  OPTIMIZATIONS
+
+  BUG FIXES
+
+    HADOOP-12526. there are duplicate dependency definitions in pom's (sjlee)
+
+    HADOOP-12577. Bumped up commons-collections version to 3.2.2 to address a
+    security flaw. (Wei-Chiu Chuang via vinodkv)
+
+Release 2.6.2 - 2015-10-28
+
+  INCOMPATIBLE CHANGES
+
+  NEW FEATURES
+
+  IMPROVEMENTS
+
+  OPTIMIZATIONS
+
+  BUG FIXES
+
+Release 2.6.1 - 2015-09-23
+
+  INCOMPATIBLE CHANGES
+
+  NEW FEATURES
+
+  IMPROVEMENTS
+
+    HADOOP-7139. Allow appending to existing SequenceFiles
+    (kanaka kumar avvaru via vinayakumarb)
+
+    HADOOP-12280. Skip unit tests based on maven profile rather than
+    NativeCodeLoader.isNativeCodeLoaded (Masatake Iwasaki via Colin P. McCabe)
+
+  OPTIMIZATIONS
+
+    HADOOP-11238. Update the NameNode's Group Cache in the background when
+    possible (Chris Li via Colin P. McCabe)
+
+    HADOOP-11506. Configuration variable expansion regex expensive for long
+    values. (Gera Shegalov via gera)
+
+  BUG FIXES
+
+    HADOOP-11466: FastByteComparisons: do not use UNSAFE_COMPARER on the SPARC
     architecture because it is slower there (Suman Somasundar via Colin P.
     McCabe)
+
+    HADOOP-10786. Fix UGI#reloginFromKeytab on Java 8. (Stephen Chu via wheat9)
+
+    HADOOP-11333. Fix deadlock in DomainSocketWatcher when the notification
+    pipe is full (zhaoyunjiong via cmccabe)
+
+    HADOOP-11343. Overflow is not properly handled in caclulating final iv for
+    AES CTR. (Jerry Chen via wang)
+
+    HADOOP-11368. Fix SSLFactory truststore reloader thread leak in
+    KMSClientProvider. (Arun Suresh via wang)
+
+    HADOOP-11350. The size of header buffer of HttpServer is too small when
+    HTTPS is enabled. (Benoy Antony via wheat9)
+
+    HADOOP-11482. Use correct UGI when KMSClientProvider is called by a proxy
+    user. Contributed by Arun Suresh.
+
+    HADOOP-11295. RPC Server Reader thread can't shutdown if RPCCallQueue is
+    full. (Ming Ma via kihwal)
+
+    HADOOP-11604. Prevent ConcurrentModificationException while closing domain
+    sockets during shutdown of DomainSocketWatcher thread. (cnauroth)
+
+    HADOOP-11674. oneByteBuf in CryptoInputStream and CryptoOutputStream
+    should be non static. (Sean Busbey via yliu)
+
+    HADOOP-11710. Make CryptoOutputStream behave like DFSOutputStream wrt
+    synchronization. (Sean Busbey via yliu)
+
+    HADOOP-11812. Implement listLocatedStatus for ViewFileSystem to speed up
+    split calculation (gera)
+
+    HADOOP-11730. Regression: s3n read failure recovery broken.
+    (Takenori Sato via stevel)
+
+    HADOOP-11802: DomainSocketWatcher thread terminates sometimes after there
+    is an I/O error during requestShortCircuitShm (cmccabe)
+
+    HADOOP-11491. HarFs incorrectly declared as requiring an authority.
+    (Brahma Reddy Battula via gera)
+
+    HADOOP-8151. Error handling in snappy decompressor throws invalid
+    exceptions. (Matt Foley via harsh)
+
+    HADOOP-11932. MetricsSinkAdapter may hang  when being stopped.
+    (Brahma Reddy Battula via jianhe)
+
+    HADOOP-11934. Use of JavaKeyStoreProvider in LdapGroupsMapping causes
+    infinite loop. (Larry McCay via cnauroth)
 
 Release 2.6.0 - 2014-11-18
 

@@ -31,6 +31,8 @@ import java.util.Collections;
 import java.util.List;
 
 import com.google.common.base.Preconditions;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -63,6 +65,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.Ap
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.EpochPBImpl;
 import org.apache.hadoop.yarn.util.ConverterUtils;
+import org.apache.zookeeper.AsyncCallback;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.Code;
@@ -111,6 +114,18 @@ public class ZKRMStateStore extends RMStateStore {
   long zkRetryInterval;
   private List<ACL> zkAcl;
   private List<ZKUtil.ZKAuthInfo> zkAuths;
+
+  class ZKSyncOperationCallback implements AsyncCallback.VoidCallback {
+    @Override
+    public void processResult(int rc, String path, Object ctx){
+      if (rc == Code.OK.intValue()) {
+        LOG.info("ZooKeeper sync operation succeeded. path: " + path);
+      } else {
+        LOG.fatal("ZooKeeper sync operation failed. Waiting for session " +
+            "timeout. path: " + path);
+      }
+    }
+  }
 
   /**
    *
@@ -225,6 +240,7 @@ public class ZKRMStateStore extends RMStateStore {
     znodeWorkingPath =
         conf.get(YarnConfiguration.ZK_RM_STATE_STORE_PARENT_PATH,
             YarnConfiguration.DEFAULT_ZK_RM_STATE_STORE_PARENT_PATH);
+
     zkSessionTimeout =
         conf.getInt(YarnConfiguration.RM_ZK_TIMEOUT_MS,
             YarnConfiguration.DEFAULT_RM_ZK_TIMEOUT_MS);
@@ -287,8 +303,9 @@ public class ZKRMStateStore extends RMStateStore {
     // ensure root dirs exist
     createRootDirRecursively(znodeWorkingPath);
     createRootDir(zkRootNodePath);
+    setRootNodeAcls();
+    deleteFencingNodePath();
     if (HAUtil.isHAEnabled(getConfig())){
-      fence();
       verifyActiveStatusThread = new VerifyActiveStatusThread();
       verifyActiveStatusThread.start();
     }
@@ -298,6 +315,8 @@ public class ZKRMStateStore extends RMStateStore {
     createRootDir(delegationTokensRootPath);
     createRootDir(dtSequenceNumberPath);
     createRootDir(amrmTokenSecretManagerRoot);
+
+    syncInternal(zkRootNodePath);
   }
 
   private void createRootDir(final String rootPath) throws Exception {
@@ -332,31 +351,41 @@ public class ZKRMStateStore extends RMStateStore {
     LOG.debug(builder.toString());
   }
 
-  private synchronized void fence() throws Exception {
-    if (LOG.isTraceEnabled()) {
-      logRootNodeAcls("Before fencing\n");
-    }
-
-    new ZKAction<Void>() {
-      @Override
-      public Void run() throws KeeperException, InterruptedException {
-        zkClient.setACL(zkRootNodePath, zkRootNodeAcl, -1);
-        return null;
-      }
-    }.runWithRetries();
-
-    // delete fencingnodepath
+  private void deleteFencingNodePath() throws Exception {
     new ZKAction<Void>() {
       @Override
       public Void run() throws KeeperException, InterruptedException {
         try {
           zkClient.multi(Collections.singletonList(deleteFencingNodePathOp));
         } catch (KeeperException.NoNodeException nne) {
-          LOG.info("Fencing node " + fencingNodePath + " doesn't exist to delete");
+          LOG.info("Fencing node " + fencingNodePath +
+              " doesn't exist to delete");
         }
         return null;
       }
     }.runWithRetries();
+  }
+
+  private void setAcl(final String zkPath, final List<ACL> acl)
+      throws Exception {
+    new ZKAction<Void>() {
+      @Override
+      public Void run() throws KeeperException, InterruptedException {
+        zkClient.setACL(zkPath, acl, -1);
+        return null;
+      }
+    }.runWithRetries();
+  }
+
+  private void setRootNodeAcls() throws Exception {
+    if (LOG.isTraceEnabled()) {
+      logRootNodeAcls("Before fencing\n");
+    }
+    if (HAUtil.isHAEnabled(getConfig())) {
+      setAcl(zkRootNodePath, zkRootNodeAcl);
+    } else {
+      setAcl(zkRootNodePath, zkAcl);
+    }
 
     if (LOG.isTraceEnabled()) {
       logRootNodeAcls("After fencing\n");
@@ -888,6 +917,7 @@ public class ZKRMStateStore extends RMStateStore {
           // call listener to reconnect
           LOG.info("ZKRMStateStore Session expired");
           createConnection();
+          syncInternal(event.getPath());
           break;
         default:
           LOG.error("Unexpected Zookeeper" +
@@ -902,6 +932,31 @@ public class ZKRMStateStore extends RMStateStore {
   @Unstable
   String getNodePath(String root, String nodeName) {
     return (root + "/" + nodeName);
+  }
+
+  /**
+   * Helper method to call ZK's sync() after calling createConnection().
+   * Note that sync path is meaningless for now:
+   * http://mail-archives.apache.org/mod_mbox/zookeeper-user/201102.mbox/browser
+   * @param path path to sync, nullable value. If the path is null,
+   *             zkRootNodePath is used to sync.
+   * @return true if ZK.sync() succeededs, false if ZK.sync() fails.
+   * @throws InterruptedException
+   */
+  private void syncInternal(final String path) throws InterruptedException {
+    final ZKSyncOperationCallback cb = new ZKSyncOperationCallback();
+    final String pathForSync = (path != null) ? path : zkRootNodePath;
+    try {
+      new ZKAction<Void>() {
+        @Override
+        Void run() throws KeeperException, InterruptedException {
+          zkClient.sync(pathForSync, cb, null);
+          return null;
+        }
+      }.runWithRetries();
+    } catch (Exception e) {
+      LOG.fatal("sync failed.");
+    }
   }
 
   /**
@@ -985,7 +1040,8 @@ public class ZKRMStateStore extends RMStateStore {
     }.runWithRetries();
   }
 
-  private List<ACL> getACLWithRetries(
+  @VisibleForTesting
+  List<ACL> getACLWithRetries(
       final String path, final Stat stat) throws Exception {
     return new ZKAction<List<ACL>>() {
       @Override
@@ -1100,6 +1156,18 @@ public class ZKRMStateStore extends RMStateStore {
       switch (code) {
         case CONNECTIONLOSS:
         case OPERATIONTIMEOUT:
+          return true;
+        default:
+          break;
+      }
+      return false;
+    }
+
+    private boolean shouldRetryWithNewConnection(Code code) {
+      // For fast recover, we choose to close current connection after
+      // SESSIONMOVED occurs. Latest state of a path is assured by a following
+      // zk.sync(path) operation.
+      switch (code) {
         case SESSIONEXPIRED:
         case SESSIONMOVED:
           return true;
@@ -1120,6 +1188,8 @@ public class ZKRMStateStore extends RMStateStore {
             // another RM becoming active. Even if not,
             // it is safer to assume we have been fenced
             throw new StoreFencedException();
+          } else {
+            throw nae;
           }
         } catch (KeeperException ke) {
           if (ke.code() == Code.NODEEXISTS) {
@@ -1132,10 +1202,18 @@ public class ZKRMStateStore extends RMStateStore {
           }
 
           LOG.info("Exception while executing a ZK operation.", ke);
-          if (shouldRetry(ke.code()) && ++retry < numRetries) {
+          retry++;
+          if (shouldRetry(ke.code()) && retry < numRetries) {
             LOG.info("Retrying operation on ZK. Retry no. " + retry);
             Thread.sleep(zkRetryInterval);
+            continue;
+          }
+          if (shouldRetryWithNewConnection(ke.code()) && retry < numRetries) {
+            LOG.info("Retrying operation on ZK with new Connection. " +
+                "Retry no. " + retry);
+            Thread.sleep(zkRetryInterval);
             createConnection();
+            syncInternal(ke.getPath());
             continue;
           }
           LOG.info("Maxed out ZK retries. Giving up!");

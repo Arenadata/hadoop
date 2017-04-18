@@ -136,6 +136,7 @@ public class FSDirectory implements Closeable {
   private final int maxDirItems;
   private final int lsLimit;  // max list limit
   private final int contentCountLimit; // max content summary counts per run
+  private final long contentSleepMicroSec;
   private final INodeMap inodeMap; // Synchronized by dirLock
   private long yieldCount = 0; // keep track of lock yield count.
 
@@ -264,6 +265,9 @@ public class FSDirectory implements Closeable {
     this.contentCountLimit = conf.getInt(
         DFSConfigKeys.DFS_CONTENT_SUMMARY_LIMIT_KEY,
         DFSConfigKeys.DFS_CONTENT_SUMMARY_LIMIT_DEFAULT);
+    this.contentSleepMicroSec = conf.getLong(
+        DFSConfigKeys.DFS_CONTENT_SUMMARY_SLEEP_MICROSEC_KEY,
+        DFSConfigKeys.DFS_CONTENT_SUMMARY_SLEEP_MICROSEC_DEFAULT);
     
     // filesystem limits
     this.maxComponentLength = conf.getInt(
@@ -343,6 +347,10 @@ public class FSDirectory implements Closeable {
 
   int getContentCountLimit() {
     return contentCountLimit;
+  }
+
+  long getContentSleepMicroSec() {
+    return contentSleepMicroSec;
   }
 
   int getInodeXAttrsLimit() {
@@ -733,6 +741,10 @@ public class FSDirectory implements Closeable {
       long dsDelta, short oldRep, short newRep) {
     EnumCounters<StorageType> typeSpaceDeltas =
         new EnumCounters<StorageType>(StorageType.class);
+    // empty file
+    if(dsDelta == 0){
+      return typeSpaceDeltas;
+    }
     // Storage type and its quota are only available when storage policy is set
     if (storagePolicyID != BlockStoragePolicySuite.ID_UNSPECIFIED) {
       BlockStoragePolicy storagePolicy = getBlockManager().getStoragePolicy(storagePolicyID);
@@ -1155,30 +1167,44 @@ public class FSDirectory implements Closeable {
       inodeMap.put(inode);
       if (!inode.isSymlink()) {
         final XAttrFeature xaf = inode.getXAttrFeature();
-        if (xaf != null) {
-          final List<XAttr> xattrs = xaf.getXAttrs();
-          for (XAttr xattr : xattrs) {
-            final String xaName = XAttrHelper.getPrefixName(xattr);
-            if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
-              try {
-                final HdfsProtos.ZoneEncryptionInfoProto ezProto =
-                    HdfsProtos.ZoneEncryptionInfoProto.parseFrom(
-                        xattr.getValue());
-                ezManager.unprotectedAddEncryptionZone(inode.getId(),
-                    PBHelper.convert(ezProto.getSuite()),
-                    PBHelper.convert(ezProto.getCryptoProtocolVersion()),
-                    ezProto.getKeyName());
-              } catch (InvalidProtocolBufferException e) {
-                NameNode.LOG.warn("Error parsing protocol buffer of " +
-                    "EZ XAttr " + xattr.getName());
-              }
-            }
-          }
+        addEncryptionZone((INodeWithAdditionalFields) inode, xaf);
+      }
+    }
+  }
+
+  private void addEncryptionZone(INodeWithAdditionalFields inode,
+      XAttrFeature xaf) {
+    if (xaf == null) {
+      return;
+    }
+    final List<XAttr> xattrs = xaf.getXAttrs();
+    for (XAttr xattr : xattrs) {
+      final String xaName = XAttrHelper.getPrefixName(xattr);
+      if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
+        try {
+          final HdfsProtos.ZoneEncryptionInfoProto ezProto =
+              HdfsProtos.ZoneEncryptionInfoProto.parseFrom(
+                  xattr.getValue());
+          ezManager.unprotectedAddEncryptionZone(inode.getId(),
+              PBHelper.convert(ezProto.getSuite()),
+              PBHelper.convert(ezProto.getCryptoProtocolVersion()),
+              ezProto.getKeyName());
+        } catch (InvalidProtocolBufferException e) {
+          NameNode.LOG.warn("Error parsing protocol buffer of " +
+              "EZ XAttr " + xattr.getName() + " dir:" + inode.getFullPathName());
         }
       }
     }
   }
   
+  /**
+   * This is to handle encryption zone for rootDir when loading from
+   * fsimage, and should only be called during NN restart.
+   */
+  public final void addRootDirToEncryptionZone(XAttrFeature xaf) {
+    addEncryptionZone(rootDir, xaf);
+  }
+
   /**
    * This method is always called with writeLock of FSDirectory held.
    */
@@ -1326,7 +1352,7 @@ public class FSDirectory implements Closeable {
    */
   FileEncryptionInfo getFileEncryptionInfo(INode inode, int snapshotId,
       INodesInPath iip) throws IOException {
-    if (!inode.isFile()) {
+    if (!inode.isFile() || !ezManager.hasCreatedEncryptionZone()) {
       return null;
     }
     readLock();
@@ -1647,7 +1673,11 @@ public class FSDirectory implements Closeable {
   }
 
   void checkOwner(FSPermissionChecker pc, INodesInPath iip)
-      throws AccessControlException {
+      throws AccessControlException, FileNotFoundException {
+    if (iip.getLastINode() == null) {
+      throw new FileNotFoundException(
+          "Directory/File does not exist " + iip.getPath());
+    }
     checkPermission(pc, iip, true, null, null, null, null);
   }
 

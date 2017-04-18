@@ -285,9 +285,11 @@ public class AppSchedulingInfo {
           + " container=" + container.getId()
           + " host=" + container.getNodeId().toString()
           + " user=" + user
-          + " resource=" + request.getCapability());
+          + " resource=" + request.getCapability()
+          + " type=" + type);
     }
     metrics.allocateResources(user, 1, request.getCapability(), true);
+    metrics.incrNodeTypeAggregations(user, type);
     return resourceRequests;
   }
 
@@ -437,6 +439,10 @@ public class AppSchedulingInfo {
 
   public synchronized Set<String> getBlackList() {
     return this.blacklist;
+  }
+
+  public synchronized Set<String> getBlackListCopy() {
+    return new HashSet<>(this.blacklist);
   }
 
   public synchronized void transferStateFromPreviousAppSchedulingInfo(

@@ -50,6 +50,7 @@ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEvent;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ContainerNotFoundException;
@@ -78,6 +79,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
   private TimelineDataManager timelineDataManager;
   private ApplicationACLsManager aclsManager;
   private String serverHttpAddress;
+  private long maxLoadedApplications;
 
   public ApplicationHistoryManagerOnTimelineStore(
       TimelineDataManager timelineDataManager,
@@ -91,6 +93,9 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
   protected void serviceInit(Configuration conf) throws Exception {
     serverHttpAddress = WebAppUtils.getHttpSchemePrefix(conf) +
         WebAppUtils.getAHSWebAppURLWithoutScheme(conf);
+    maxLoadedApplications =
+        conf.getLong(YarnConfiguration.APPLICATION_HISTORY_MAX_APPS,
+          YarnConfiguration.DEFAULT_APPLICATION_HISTORY_MAX_APPS);
     super.serviceInit(conf);
   }
 
@@ -101,12 +106,12 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
   }
 
   @Override
-  public Map<ApplicationId, ApplicationReport> getAllApplications()
+  public Map<ApplicationId, ApplicationReport> getApplications(long appsNum)
       throws YarnException, IOException {
     TimelineEntities entities = timelineDataManager.getEntities(
-        ApplicationMetricsConstants.ENTITY_TYPE, null, null, null, null,
-        null, null, Long.MAX_VALUE, EnumSet.allOf(Field.class),
-        UserGroupInformation.getLoginUser());
+        ApplicationMetricsConstants.ENTITY_TYPE, null, null, null, null, null,
+        null, appsNum == Long.MAX_VALUE ? this.maxLoadedApplications : appsNum,
+        EnumSet.allOf(Field.class), UserGroupInformation.getLoginUser());
     Map<ApplicationId, ApplicationReport> apps =
         new LinkedHashMap<ApplicationId, ApplicationReport>();
     if (entities != null && entities.getEntities() != null) {
@@ -413,6 +418,13 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
                     AppAttemptMetricsConstants.STATE_EVENT_INFO)
                     .toString());
           }
+          if (eventInfo
+              .containsKey(AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)) {
+            amContainerId =
+                ConverterUtils.toContainerId(eventInfo.get(
+                    AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)
+                    .toString());
+          }
         }
       }
     }
@@ -505,19 +517,22 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
         }
       }
     }
-    NodeId allocatedNode = NodeId.newInstance(allocatedHost, allocatedPort);
     ContainerId containerId =
         ConverterUtils.toContainerId(entity.getEntityId());
-    String logUrl = WebAppUtils.getAggregatedLogURL(
-        serverHttpAddress,
-        allocatedNode.toString(),
-        containerId.toString(),
-        containerId.toString(),
-        user);
+    String logUrl = null;
+    NodeId allocatedNode = null;
+    if (allocatedHost != null) {
+      allocatedNode = NodeId.newInstance(allocatedHost, allocatedPort);
+      logUrl = WebAppUtils.getAggregatedLogURL(
+          serverHttpAddress,
+          allocatedNode.toString(),
+          containerId.toString(),
+          containerId.toString(),
+          user);
+    }
     return ContainerReport.newInstance(
         ConverterUtils.toContainerId(entity.getEntityId()),
-        Resource.newInstance(allocatedMem, allocatedVcore),
-        NodeId.newInstance(allocatedHost, allocatedPort),
+        Resource.newInstance(allocatedMem, allocatedVcore), allocatedNode,
         Priority.newInstance(allocatedPriority),
         createdTime, finishedTime, diagnosticsInfo, logUrl, exitStatus, state,
         nodeHttpAddress);

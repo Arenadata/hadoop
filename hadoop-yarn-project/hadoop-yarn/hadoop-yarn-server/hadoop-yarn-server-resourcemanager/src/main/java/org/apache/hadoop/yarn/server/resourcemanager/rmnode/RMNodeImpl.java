@@ -53,6 +53,7 @@ import org.apache.hadoop.yarn.server.api.records.NodeHealthStatus;
 import org.apache.hadoop.yarn.server.resourcemanager.ClusterMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.NodesListManagerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.NodesListManagerEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.NodesListManager;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
@@ -141,6 +142,9 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
      .addTransition(NodeState.NEW, NodeState.NEW,
          RMNodeEventType.RESOURCE_UPDATE, 
          new UpdateNodeResourceWhenUnusableTransition())
+     .addTransition(NodeState.NEW, NodeState.DECOMMISSIONED,
+         RMNodeEventType.DECOMMISSION,
+         new DeactivateNodeTransition(NodeState.DECOMMISSIONED))
 
      //Transitions from RUNNING state
      .addTransition(NodeState.RUNNING,
@@ -408,6 +412,16 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
     }
   }
 
+  @Override
+  public void resetLastNodeHeartBeatResponse() {
+    this.writeLock.lock();
+    try {
+      latestNodeHeartBeatResponse.setResponseId(0);
+    } finally {
+      this.writeLock.unlock();
+    }
+  }
+
   public void handle(RMNodeEvent event) {
     LOG.debug("Processing " + event.getNodeId() + " of type " + event.getType());
     try {
@@ -481,6 +495,8 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
     case UNHEALTHY:
       metrics.incrNumUnhealthyNMs();
       break;
+    case NEW:
+      break;
     default:
       LOG.debug("Unexpected final state");
     }
@@ -521,24 +537,21 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
       List<NMContainerStatus> containers = null;
 
       String host = rmNode.nodeId.getHost();
-      if (rmNode.context.getInactiveRMNodes().containsKey(host)) {
-        // Old node rejoining
-        RMNode previouRMNode = rmNode.context.getInactiveRMNodes().get(host);
-        rmNode.context.getInactiveRMNodes().remove(host);
-        rmNode.updateMetricsForRejoinedNode(previouRMNode.getState());
+      RMNode previousRMNode = rmNode.context.getInactiveRMNodes().remove(host);
+      if (previousRMNode != null) {
+        if (previousRMNode.getNodeID().getPort() != -1) {
+          // Old node rejoining
+          rmNode.updateMetricsForRejoinedNode(previousRMNode.getState());
+        } else {
+          // An old excluded node rejoining
+          ClusterMetrics.getMetrics().decrDecommisionedNMs();
+          containers = updateNewNodeMetricsAndContainers(rmNode, startEvent);
+        }
       } else {
         // Increment activeNodes explicitly because this is a new node.
-        ClusterMetrics.getMetrics().incrNumActiveNodes();
-        containers = startEvent.getNMContainerStatuses();
-        if (containers != null && !containers.isEmpty()) {
-          for (NMContainerStatus container : containers) {
-            if (container.getContainerState() == ContainerState.RUNNING) {
-              rmNode.launchedContainers.add(container.getContainerId());
-            }
-          }
-        }
+        containers = updateNewNodeMetricsAndContainers(rmNode, startEvent);
       }
-      
+
       if (null != startEvent.getRunningApplications()) {
         for (ApplicationId appId : startEvent.getRunningApplications()) {
           handleRunningAppOnNode(rmNode, rmNode.context, appId, rmNode.nodeId);
@@ -551,6 +564,21 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
         new NodesListManagerEvent(
             NodesListManagerEventType.NODE_USABLE, rmNode));
     }
+  }
+
+  private static List<NMContainerStatus> updateNewNodeMetricsAndContainers(
+      RMNodeImpl rmNode, RMNodeStartedEvent startEvent) {
+    List<NMContainerStatus> containers;
+    ClusterMetrics.getMetrics().incrNumActiveNodes();
+    containers = startEvent.getNMContainerStatuses();
+    if (containers != null && !containers.isEmpty()) {
+      for (NMContainerStatus container : containers) {
+        if (container.getContainerState() == ContainerState.RUNNING) {
+          rmNode.launchedContainers.add(container.getContainerId());
+        }
+      }
+    }
+    return containers;
   }
 
   public static class ReconnectNodeTransition implements
@@ -573,12 +601,14 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
             new NodeRemovedSchedulerEvent(rmNode));
 
         if (rmNode.getHttpPort() == newNode.getHttpPort()) {
-          // Reset heartbeat ID since node just restarted.
-          rmNode.getLastNodeHeartBeatResponse().setResponseId(0);
+          if (!rmNode.getTotalCapability().equals(
+              newNode.getTotalCapability())) {
+            rmNode.totalCapability = newNode.getTotalCapability();
+          }
           if (rmNode.getState().equals(NodeState.RUNNING)) {
-            // Only add new node if old state is RUNNING
+            // Only add old node if old state is RUNNING
             rmNode.context.getDispatcher().getEventHandler().handle(
-                new NodeAddedSchedulerEvent(newNode));
+                new NodeAddedSchedulerEvent(rmNode));
           }
         } else {
           // Reconnected node differs, so replace old node and start new node
@@ -600,15 +630,13 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
         rmNode.httpPort = newNode.getHttpPort();
         rmNode.httpAddress = newNode.getHttpAddress();
         boolean isCapabilityChanged = false;
-        if (rmNode.getTotalCapability() != newNode.getTotalCapability()) {
+        if (!rmNode.getTotalCapability().equals(
+            newNode.getTotalCapability())) {
           rmNode.totalCapability = newNode.getTotalCapability();
           isCapabilityChanged = true;
         }
       
         handleNMContainerStatus(reconnectEvent.getNMContainerStatuses(), rmNode);
-
-        // Reset heartbeat ID since node just restarted.
-        rmNode.getLastNodeHeartBeatResponse().setResponseId(0);
 
         for (ApplicationId appId : reconnectEvent.getRunningApplications()) {
           handleRunningAppOnNode(rmNode, rmNode.context, appId, rmNode.nodeId);
@@ -715,6 +743,11 @@ public class RMNodeImpl implements RMNode, EventHandler<RMNodeEvent> {
 
     @Override
     public void transition(RMNodeImpl rmNode, RMNodeEvent event) {
+      //check for UnknownNodeId
+      if (rmNode.getNodeID().getPort() == -1) {
+        rmNode.updateMetricsForDeactivatedNode(rmNode.getState(), finalState);
+        return;
+      }
       // Inform the scheduler
       rmNode.nodeUpdateQueue.clear();
       // If the current state is NodeState.UNHEALTHY

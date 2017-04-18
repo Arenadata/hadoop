@@ -271,7 +271,22 @@ expunge
 
 Usage: `hadoop fs -expunge`
 
-Empty the Trash. Refer to the [HDFS Architecture Guide](../hadoop-hdfs/HdfsDesign.html) for more information on the Trash feature.
+Permanently delete files in checkpoints older than the retention threshold
+from trash directory, and create new checkpoint.
+
+When checkpoint is created,
+recently deleted files in trash are moved under the checkpoint.
+Files in checkpoints older than `fs.trash.checkpoint.interval`
+will be permanently deleted on the next invocation of `-expunge` command.
+
+If the file system supports the feature,
+users can configure to create and delete checkpoints periodically
+by the parameter stored as `fs.trash.checkpoint.interval` (in core-site.xml).
+This value should be smaller or equal to `fs.trash.interval`.
+
+Refer to the
+[HDFS Architecture guide](../hadoop-hdfs/HdfsDesign.html#File_Deletes_and_Undeletes)
+for more information about trash feature of HDFS.
 
 find
 ----
@@ -368,9 +383,18 @@ Returns 0 on success and non-zero on error.
 getmerge
 --------
 
-Usage: `hadoop fs -getmerge <src> <localdst> [addnl]`
+Usage: `hadoop fs -getmerge [-nl] <src> <localdst>`
 
-Takes a source directory and a destination file as input and concatenates files in src into the destination local file. Optionally addnl can be set to enable adding a newline character at the end of each file.
+Takes a source directory and a destination file as input and concatenates files in src into the destination local file. Optionally -nl can be set to enable adding a newline character (LF) at the end of each file.
+
+Examples:
+
+* `hadoop fs -getmerge -nl  /src  /opt/output.txt`
+* `hadoop fs -getmerge -nl  /src/file1.txt /src/file2.txt  /output.txt`
+
+Exit Code:
+
+Returns 0 on success and non-zero on error.
 
 help
 ----
@@ -382,17 +406,13 @@ Return usage output.
 ls
 ----
 
-Usage: `hadoop fs -ls [-d] [-h] [-R] [-t] [-S] [-r] [-u] <args> `
+Usage: `hadoop fs -ls [-d] [-h] [-R] <args> `
 
 Options:
 
 * -d: Directories are listed as plain files.
 * -h: Format file sizes in a human-readable fashion (eg 64.0m instead of 67108864).
 * -R: Recursively list subdirectories encountered.
-* -t: Sort output by modification time (most recent first).
-* -S: Sort output by file size.
-* -r: Reverse the sort order.
-* -u: Use access time rather than modification time for display and sorting.  
 
 For a file ls returns stat on the file with the following format:
 
@@ -498,6 +518,15 @@ rm
 Usage: `hadoop fs -rm [-f] [-r |-R] [-skipTrash] URI [URI ...]`
 
 Delete files specified as args.
+
+If trash is enabled, file system instead moves the deleted file to a trash directory
+(given by [FileSystem#getTrashRoot](../../api/org/apache/hadoop/fs/FileSystem.html)).
+
+Currently, the trash feature is disabled by default.
+User can enable trash by setting a value greater than zero for parameter
+`fs.trash.interval` (in core-site.xml).
+
+See [expunge](#expunge) about deletion of files in trash.
 
 Options:
 
