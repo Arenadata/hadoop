@@ -36,7 +36,6 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetContainerReportRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptReport;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
-import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerReport;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
@@ -51,6 +50,7 @@ import org.apache.hadoop.yarn.webapp.YarnWebParams;
 import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
 import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
 import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TBODY;
+import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
 import org.apache.hadoop.yarn.webapp.view.InfoBlock;
 
@@ -62,7 +62,6 @@ public class AppBlock extends HtmlBlock {
   protected ApplicationBaseProtocol appBaseProt;
   protected Configuration conf;
   protected ApplicationId appID = null;
-  protected UserGroupInformation callerUGI;
 
   @Inject
   protected AppBlock(ApplicationBaseProtocol appBaseProt, ViewContext ctx,
@@ -88,8 +87,8 @@ public class AppBlock extends HtmlBlock {
       return;
     }
 
-    callerUGI = getCallerUGI();
-    ApplicationReport appReport = null;
+    UserGroupInformation callerUGI = getCallerUGI();
+    ApplicationReport appReport;
     try {
       final GetApplicationReportRequest request =
           GetApplicationReportRequest.newInstance(appID);
@@ -155,15 +154,20 @@ public class AppBlock extends HtmlBlock {
       html.script().$type("text/javascript")._(script.toString())._();
     }
 
+    String schedulerPath = WebAppUtils.getResolvedRMWebAppURLWithScheme(conf) +
+        "/cluster/scheduler?openQueues=" + app.getQueue();
+
     info("Application Overview")
-      ._("User:", app.getUser())
+      ._("User:", schedulerPath, app.getUser())
       ._("Name:", app.getName())
       ._("Application Type:", app.getType())
       ._("Application Tags:",
         app.getApplicationTags() == null ? "" : app.getApplicationTags())
-      ._("YarnApplicationState:",
+      ._(
+        "YarnApplicationState:",
         app.getAppState() == null ? UNAVAILABLE : clarifyAppState(app
           .getAppState()))
+      ._("Queue:", schedulerPath, app.getQueue())
       ._("FinalStatus Reported by AM:",
         clairfyAppFinalStatus(app.getFinalAppStatus()))
       ._("Started:", Times.format(app.getStartedTime()))
@@ -171,16 +175,19 @@ public class AppBlock extends HtmlBlock {
         "Elapsed:",
         StringUtils.formatTime(Times.elapsed(app.getStartedTime(),
           app.getFinishedTime())))
-      ._("Tracking URL:",
-        app.getTrackingUrl() == null || app.getTrackingUrl() == UNAVAILABLE
-            ? null : root_url(app.getTrackingUrl()),
-        app.getTrackingUrl() == null || app.getTrackingUrl() == UNAVAILABLE
-            ? "Unassigned" : app.getAppState() == YarnApplicationState.FINISHED
-                || app.getAppState() == YarnApplicationState.FAILED
-                || app.getAppState() == YarnApplicationState.KILLED ? "History"
-                : "ApplicationMaster")
+      ._(
+        "Tracking URL:",
+        app.getTrackingUrl() == null
+            || app.getTrackingUrl().equals(UNAVAILABLE) ? null : root_url(app
+          .getTrackingUrl()),
+        app.getTrackingUrl() == null
+            || app.getTrackingUrl().equals(UNAVAILABLE) ? "Unassigned" : app
+          .getAppState() == YarnApplicationState.FINISHED
+            || app.getAppState() == YarnApplicationState.FAILED
+            || app.getAppState() == YarnApplicationState.KILLED ? "History"
+            : "ApplicationMaster")
       ._("Diagnostics:",
-          app.getDiagnosticsInfo() == null ? "" : app.getDiagnosticsInfo());
+        app.getDiagnosticsInfo() == null ? "" : app.getDiagnosticsInfo());
 
     Collection<ApplicationAttemptReport> attempts;
     try {
@@ -211,12 +218,14 @@ public class AppBlock extends HtmlBlock {
 
     html._(InfoBlock.class);
 
-    // Application Attempt Table
-    createApplicationAttemptTable(html, attempts);
+    generateApplicationTable(html, callerUGI, attempts);
+
   }
 
-  protected void createApplicationAttemptTable(Block html,
+  protected void generateApplicationTable(Block html,
+      UserGroupInformation callerUGI,
       Collection<ApplicationAttemptReport> attempts) {
+    // Application Attempt Table
     TBODY<TABLE<Hamlet>> tbody =
         html.table("#attempts").thead().tr().th(".id", "Attempt ID")
           .th(".started", "Started").th(".node", "Node").th(".logs", "Logs")
@@ -225,26 +234,27 @@ public class AppBlock extends HtmlBlock {
     StringBuilder attemptsTableData = new StringBuilder("[\n");
     for (final ApplicationAttemptReport appAttemptReport : attempts) {
       AppAttemptInfo appAttempt = new AppAttemptInfo(appAttemptReport);
-      ContainerReport containerReport = null;
+      ContainerReport containerReport;
       try {
-        // AM container is always the first container of the attempt
         final GetContainerReportRequest request =
-            GetContainerReportRequest.newInstance(ContainerId.newContainerId(
-              appAttemptReport.getApplicationAttemptId(), 1));
+                GetContainerReportRequest.newInstance(
+                      appAttemptReport.getAMContainerId());
         if (callerUGI == null) {
           containerReport =
               appBaseProt.getContainerReport(request).getContainerReport();
         } else {
           containerReport = callerUGI.doAs(
-              new PrivilegedExceptionAction<ContainerReport> () {
+              new PrivilegedExceptionAction<ContainerReport>() {
             @Override
             public ContainerReport run() throws Exception {
               ContainerReport report = null;
-              try {
-                report = appBaseProt.getContainerReport(request)
-                    .getContainerReport();
-              } catch (ContainerNotFoundException ex) {
-                LOG.warn(ex.getMessage());
+              if (request.getContainerId() != null) {
+                  try {
+                    report = appBaseProt.getContainerReport(request)
+                        .getContainerReport();
+                  } catch (ContainerNotFoundException ex) {
+                    LOG.warn(ex.getMessage());
+                  }
               }
               return report;
             }

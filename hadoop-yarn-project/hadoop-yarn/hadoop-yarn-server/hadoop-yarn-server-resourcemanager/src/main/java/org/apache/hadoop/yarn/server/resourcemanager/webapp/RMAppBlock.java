@@ -20,10 +20,11 @@ package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
 import static org.apache.hadoop.yarn.webapp.view.JQueryUI._INFO_WRAP;
 
-import java.util.Collection;
-
 import org.apache.commons.lang.StringEscapeUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptReport;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
@@ -33,26 +34,30 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppAttemptInfo;
 import org.apache.hadoop.yarn.server.webapp.AppBlock;
+import org.apache.hadoop.yarn.util.Times;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
 import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.DIV;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
-import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TBODY;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.hadoop.yarn.webapp.view.InfoBlock;
 
 import com.google.inject.Inject;
 
+import java.util.Collection;
+import java.util.Set;
+
 public class RMAppBlock extends AppBlock{
 
+  private static final Log LOG = LogFactory.getLog(RMAppBlock.class);
   private final ResourceManager rm;
   private final Configuration conf;
+
 
   @Inject
   RMAppBlock(ViewContext ctx, Configuration conf, ResourceManager rm) {
     super(rm.getClientRMService(), ctx, conf);
-    this.rm = rm;
     this.conf = conf;
+    this.rm = rm;
   }
 
   @Override
@@ -104,12 +109,15 @@ public class RMAppBlock extends AppBlock{
   }
 
   @Override
-  protected void createApplicationAttemptTable(Block html,
+  protected void generateApplicationTable(Block html,
+      UserGroupInformation callerUGI,
       Collection<ApplicationAttemptReport> attempts) {
-    TBODY<TABLE<Hamlet>> tbody =
+    // Application Attempt Table
+    Hamlet.TBODY<Hamlet.TABLE<Hamlet>> tbody =
         html.table("#attempts").thead().tr().th(".id", "Attempt ID")
-          .th(".started", "Started").th(".node", "Node").th(".logs", "Logs")
-          ._()._().tbody();
+            .th(".started", "Started").th(".node", "Node").th(".logs", "Logs")
+            .th(".blacklistednodes", "Blacklisted Nodes")._()._().tbody();
+
     RMApp rmApp = this.rm.getRMContext().getRMApps().get(this.appID);
     if (rmApp == null) {
       return;
@@ -122,36 +130,44 @@ public class RMAppBlock extends AppBlock{
         continue;
       }
       AppAttemptInfo attemptInfo =
-          new AppAttemptInfo(rmAppAttempt, rmApp.getUser());
+          new AppAttemptInfo(this.rm, rmAppAttempt, rmApp.getUser(),
+              WebAppUtils.getHttpSchemePrefix(conf));
+      String blacklistedNodesCount = "N/A";
+      Set<String> nodes =
+          RMAppAttemptBlock.getBlacklistedNodes(rm,
+            rmAppAttempt.getAppAttemptId());
+      if(nodes != null) {
+        blacklistedNodesCount = String.valueOf(nodes.size());
+      }
       String nodeLink = attemptInfo.getNodeHttpAddress();
       if (nodeLink != null) {
         nodeLink = WebAppUtils.getHttpSchemePrefix(conf) + nodeLink;
       }
       String logsLink = attemptInfo.getLogsLink();
       attemptsTableData
-        .append("[\"<a href='")
-        .append(url("appattempt", rmAppAttempt.getAppAttemptId().toString()))
-        .append("'>")
-        .append(String.valueOf(rmAppAttempt.getAppAttemptId()))
-        .append("</a>\",\"")
-        .append(attemptInfo.getStartTime())
-        .append("\",\"<a ")
-        .append(nodeLink == null ? "#" : "href='" + nodeLink)
-        .append("'>")
-        .append(
-          nodeLink == null ? "N/A" : StringEscapeUtils
-            .escapeJavaScript(StringEscapeUtils.escapeHtml(nodeLink)))
-        .append("</a>\",\"<a ")
-        .append(logsLink == null ? "#" : "href='" + logsLink).append("'>")
-        .append(logsLink == null ? "N/A" : "Logs").append("</a>\"],\n");
+          .append("[\"<a href='")
+          .append(url("appattempt", rmAppAttempt.getAppAttemptId().toString()))
+          .append("'>")
+          .append(String.valueOf(rmAppAttempt.getAppAttemptId()))
+          .append("</a>\",\"")
+          .append(attemptInfo.getStartTime())
+          .append("\",\"<a ")
+          .append(nodeLink == null ? "#" : "href='" + nodeLink)
+          .append("'>")
+          .append(nodeLink == null ? "N/A" : StringEscapeUtils
+              .escapeJavaScript(StringEscapeUtils.escapeHtml(nodeLink)))
+          .append("</a>\",\"<a ")
+          .append(logsLink == null ? "#" : "href='" + logsLink).append("'>")
+          .append(logsLink == null ? "N/A" : "Logs").append("</a>\",").append(
+          "\"").append(blacklistedNodesCount).append("\"],\n");
     }
     if (attemptsTableData.charAt(attemptsTableData.length() - 2) == ',') {
       attemptsTableData.delete(attemptsTableData.length() - 2,
-        attemptsTableData.length() - 1);
+          attemptsTableData.length() - 1);
     }
     attemptsTableData.append("]");
     html.script().$type("text/javascript")
-      ._("var attemptsTableData=" + attemptsTableData)._();
+        ._("var attemptsTableData=" + attemptsTableData)._();
 
     tbody._()._();
   }

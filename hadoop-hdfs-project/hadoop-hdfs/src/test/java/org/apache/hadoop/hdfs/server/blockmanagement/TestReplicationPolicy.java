@@ -29,6 +29,7 @@ import static org.mockito.Mockito.when;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -50,6 +51,7 @@ import org.apache.hadoop.hdfs.TestBlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.StatefulBlockInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
@@ -101,6 +103,16 @@ public class TestReplicationPolicy {
         dnCacheCapacity, dnCacheUsed, xceiverCount, volFailures, null);
   }
 
+  private static void updateHeartbeatForExtraStorage(long capacity,
+      long dfsUsed, long remaining, long blockPoolUsed) {
+    DatanodeDescriptor dn = dataNodes[5];
+    dn.getStorageInfos()[1].setUtilizationForTesting(
+        capacity, dfsUsed, remaining, blockPoolUsed);
+    dn.updateHeartbeat(
+        BlockManagerTestUtil.getStorageReportsForDatanode(dn),
+        0L, 0L, 0, 0, null);
+  }
+
   @BeforeClass
   public static void setupCluster() throws Exception {
     Configuration conf = new HdfsConfiguration();
@@ -113,6 +125,16 @@ public class TestReplicationPolicy {
         "/d2/r3"};
     storages = DFSTestUtil.createDatanodeStorageInfos(racks);
     dataNodes = DFSTestUtil.toDatanodeDescriptor(storages);
+
+    // create an extra storage for dn5.
+    DatanodeStorage extraStorage = new DatanodeStorage(
+        storages[5].getStorageID() + "-extra", DatanodeStorage.State.NORMAL,
+        StorageType.DEFAULT);
+/*    DatanodeStorageInfo si = new DatanodeStorageInfo(
+        storages[5].getDatanodeDescriptor(), extraStorage);
+*/
+    BlockManagerTestUtil.updateStorage(storages[5].getDatanodeDescriptor(),
+        extraStorage);
 
     FileSystem.setDefaultUri(conf, "hdfs://localhost:0");
     conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY, "0.0.0.0:0");
@@ -136,11 +158,17 @@ public class TestReplicationPolicy {
       bm.getDatanodeManager().getHeartbeatManager().addDatanode(
           dataNodes[i]);
     }
+    resetHeartbeatForStorages();
+  }
+
+  private static void resetHeartbeatForStorages() {
     for (int i=0; i < NUM_OF_DATANODES; i++) {
       updateHeartbeatWithUsage(dataNodes[i],
           2*HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE, 0L,
-          2*HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE, 0L, 0L, 0L, 0, 0);
+          HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE, 0L, 0L, 0L, 0, 0);
     }    
+    // No available space in the extra storage of dn0
+    updateHeartbeatForExtraStorage(0L, 0L, 0L, 0L);
   }
 
   private static boolean isOnSameRack(DatanodeStorageInfo left, DatanodeStorageInfo right) {
@@ -150,6 +178,31 @@ public class TestReplicationPolicy {
   private static boolean isOnSameRack(DatanodeStorageInfo left, DatanodeDescriptor right) {
     return cluster.isOnSameRack(left.getDatanodeDescriptor(), right);
   }
+
+  /**
+   * Test whether the remaining space per storage is individually
+   * considered.
+   */
+  @Test
+  public void testChooseNodeWithMultipleStorages() throws Exception {
+    updateHeartbeatWithUsage(dataNodes[5],
+        2* HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE, 0L,
+        (2*HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE)/3, 0L,
+        0L, 0L, 0, 0);
+
+    updateHeartbeatForExtraStorage(
+        2* HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE, 0L,
+        (2*HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE)/3, 0L);
+
+    DatanodeStorageInfo[] targets;
+    targets = chooseTarget (1, dataNodes[5],
+        new ArrayList<DatanodeStorageInfo>(), null);
+    assertEquals(1, targets.length);
+    assertEquals(storages[4], targets[0]);
+
+    resetHeartbeatForStorages();
+  }
+
   /**
    * In this testcase, client is dataNodes[0]. So the 1st replica should be
    * placed on dataNodes[0], the 2nd replica should be placed on 
@@ -989,23 +1042,169 @@ public class TestReplicationPolicy {
     {
       // test returning null
       excessTypes.add(StorageType.SSD);
-      assertNull(replicator.chooseReplicaToDelete(
-          null, null, (short)3, first, second, excessTypes));
+      assertNull(((BlockPlacementPolicyDefault) replicator)
+          .chooseReplicaToDelete(first, second, excessTypes, rackMap));
     }
     excessTypes.add(StorageType.DEFAULT);
-    DatanodeStorageInfo chosen = replicator.chooseReplicaToDelete(
-        null, null, (short)3, first, second, excessTypes);
-    // Within first set, storages[1] with less free space
-    assertEquals(chosen, storages[1]);
+    DatanodeStorageInfo chosen = ((BlockPlacementPolicyDefault) replicator)
+        .chooseReplicaToDelete(first, second, excessTypes, rackMap);
+    // Within all storages, storages[5] with least free space
+    assertEquals(chosen, storages[5]);
 
     replicator.adjustSetsWithChosenReplica(rackMap, first, second, chosen);
-    assertEquals(0, first.size());
-    assertEquals(3, second.size());
-    // Within second set, storages[5] with less free space
+    assertEquals(2, first.size());
+    assertEquals(1, second.size());
+    // Within first set, storages[1] with less free space
     excessTypes.add(StorageType.DEFAULT);
-    chosen = replicator.chooseReplicaToDelete(
-        null, null, (short)2, first, second, excessTypes);
-    assertEquals(chosen, storages[5]);
+    chosen = ((BlockPlacementPolicyDefault) replicator).chooseReplicaToDelete(
+        first, second, excessTypes, rackMap);
+    assertEquals(chosen, storages[1]);
+  }
+
+  @Test
+  public void testChooseReplicasToDelete() throws Exception {
+    Collection<DatanodeStorageInfo> nonExcess = new ArrayList<DatanodeStorageInfo>();
+    nonExcess.add(storages[0]);
+    nonExcess.add(storages[1]);
+    nonExcess.add(storages[2]);
+    nonExcess.add(storages[3]);
+    List<DatanodeStorageInfo> excessReplicas = new ArrayList<>();
+    BlockStoragePolicySuite POLICY_SUITE = BlockStoragePolicySuite
+        .createDefaultSuite();
+    BlockStoragePolicy storagePolicy = POLICY_SUITE.getDefaultPolicy();
+    DatanodeStorageInfo excessSSD = DFSTestUtil.createDatanodeStorageInfo(
+        "Storage-excess-SSD-ID", "localhost",
+        storages[0].getDatanodeDescriptor().getNetworkLocation(),
+        "foo.com", StorageType.SSD);
+    updateHeartbeatWithUsage(excessSSD.getDatanodeDescriptor(),
+        2* HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE, 0L,
+        2* HdfsConstants.MIN_BLOCKS_FOR_WRITE*BLOCK_SIZE, 0L, 0L, 0L, 0,
+        0);
+
+    // use delete hint case.
+
+    DatanodeDescriptor delHintNode = storages[0].getDatanodeDescriptor();
+    List<StorageType> excessTypes = storagePolicy.chooseExcess((short) 3,
+        DatanodeStorageInfo.toStorageTypes(nonExcess));
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+        excessTypes, storages[3].getDatanodeDescriptor(), delHintNode);
+    assertTrue(excessReplicas.size() > 0);
+    assertTrue(excessReplicas.contains(storages[0]));
+
+    // Excess type deletion
+
+    DatanodeStorageInfo excessStorage = DFSTestUtil.createDatanodeStorageInfo(
+        "Storage-excess-ID", "localhost", delHintNode.getNetworkLocation(),
+        "foo.com", StorageType.ARCHIVE);
+    nonExcess.add(excessStorage);
+    excessTypes = storagePolicy.chooseExcess((short) 3,
+        DatanodeStorageInfo.toStorageTypes(nonExcess));
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+        excessTypes, storages[3].getDatanodeDescriptor(), null);
+    assertTrue(excessReplicas.contains(excessStorage));
+
+    // The block was initially created on excessSSD(rack r1),
+    // storages[4](rack r3) and storages[5](rack r3) with
+    // ONESSD_STORAGE_POLICY_NAME storage policy. Replication factor = 3.
+    // Right after balancer moves the block from storages[5] to
+    // storages[3](rack r2), the application changes the storage policy from
+    // ONESSD_STORAGE_POLICY_NAME to HOT_STORAGE_POLICY_ID. In this case,
+    // we should be able to delete excessSSD since the remaining
+    // storages ({storages[3]}, {storages[4], storages[5]})
+    // are on different racks (r2, r3).
+    nonExcess.clear();
+    nonExcess.add(excessSSD);
+    nonExcess.add(storages[3]);
+    nonExcess.add(storages[4]);
+    nonExcess.add(storages[5]);
+    excessTypes = storagePolicy.chooseExcess((short) 3,
+        DatanodeStorageInfo.toStorageTypes(nonExcess));
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+        excessTypes, storages[3].getDatanodeDescriptor(),
+        storages[5].getDatanodeDescriptor());
+    assertEquals(1, excessReplicas.size());
+    assertTrue(excessReplicas.contains(excessSSD));
+
+    // Similar to above, but after policy change and before deletion,
+    // the replicas are located on excessSSD(rack r1), storages[1](rack r1),
+    // storages[2](rack r2) and storages[3](rack r2). Replication factor = 3.
+    // In this case, we should be able to delete excessSSD since the remaining
+    // storages ({storages[1]} , {storages[2], storages[3]})
+    // are on different racks (r1, r2).
+    nonExcess.clear();
+    nonExcess.add(excessSSD);
+    nonExcess.add(storages[1]);
+    nonExcess.add(storages[2]);
+    nonExcess.add(storages[3]);
+    excessTypes = storagePolicy.chooseExcess((short) 3,
+        DatanodeStorageInfo.toStorageTypes(nonExcess));
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 3,
+        excessTypes, storages[1].getDatanodeDescriptor(),
+        storages[3].getDatanodeDescriptor());
+    assertEquals(1, excessReplicas.size());
+    assertTrue(excessReplicas.contains(excessSSD));
+
+    // Similar to above, but after policy change and before deletion,
+    // the replicas are located on excessSSD(rack r1), storages[2](rack r2)
+    // Replication factor = 1. We should be able to delete excessSSD.
+    nonExcess.clear();
+    nonExcess.add(excessSSD);
+    nonExcess.add(storages[2]);
+    excessTypes = storagePolicy.chooseExcess((short) 1,
+        DatanodeStorageInfo.toStorageTypes(nonExcess));
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 1,
+        excessTypes, storages[2].getDatanodeDescriptor(), null);
+    assertEquals(1, excessReplicas.size());
+    assertTrue(excessReplicas.contains(excessSSD));
+
+    // The block was initially created on excessSSD(rack r1),
+    // storages[4](rack r3) and storages[5](rack r3) with
+    // ONESSD_STORAGE_POLICY_NAME storage policy. Replication factor = 2.
+    // In this case, no replica can be chosen as the excessive replica by
+    // chooseReplicasToDelete because if the SSD storage is deleted,
+    // the remaining storages[4] and storages[5] are the same rack (r3),
+    // violating block placement policy (i.e. the number of racks >= 2).
+    // TODO BlockPlacementPolicyDefault should be able to rebalance the replicas
+    // and then delete excessSSD.
+    nonExcess.clear();
+    nonExcess.add(excessSSD);
+    nonExcess.add(storages[4]);
+    nonExcess.add(storages[5]);
+    excessTypes = storagePolicy.chooseExcess((short) 2,
+        DatanodeStorageInfo.toStorageTypes(nonExcess));
+    excessReplicas = replicator.chooseReplicasToDelete(nonExcess, 2,
+        excessTypes, null, null);
+    assertEquals(0, excessReplicas.size());
+  }
+
+ @Test
+  public void testUseDelHint() throws Exception {
+    List<StorageType> excessTypes = new ArrayList<StorageType>();
+    excessTypes.add(StorageType.ARCHIVE);
+    // only consider delHint for the first case
+    assertFalse(BlockPlacementPolicyDefault.useDelHint(false, null, null, null,
+        null));
+    // no delHint
+    assertFalse(BlockPlacementPolicyDefault.useDelHint(true, null, null, null,
+        null));
+    // delHint storage type is not an excess type
+    assertFalse(BlockPlacementPolicyDefault.useDelHint(true, storages[0], null,
+        null, excessTypes));
+    // check if removing delHint reduces the number of racks
+    List<DatanodeStorageInfo> chosenNodes = new ArrayList<DatanodeStorageInfo>();
+    chosenNodes.add(storages[0]);
+    chosenNodes.add(storages[2]);
+    excessTypes.add(StorageType.DEFAULT);
+    assertTrue(BlockPlacementPolicyDefault.useDelHint(true, storages[0], null,
+        chosenNodes, excessTypes));
+    // the added node adds a new rack
+    assertTrue(BlockPlacementPolicyDefault.useDelHint(true, storages[3],
+        storages[5], chosenNodes, excessTypes));
+    // removing delHint reduces the number of racks;
+    assertFalse(BlockPlacementPolicyDefault.useDelHint(true, storages[3],
+        storages[0], chosenNodes, excessTypes));
+    assertFalse(BlockPlacementPolicyDefault.useDelHint(true, storages[3], null,
+        chosenNodes, excessTypes));
   }
 
   /**

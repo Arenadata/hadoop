@@ -194,9 +194,10 @@ public class Client {
             clientExecutor.shutdownNow();
           }
         } catch (InterruptedException e) {
-          LOG.error("Interrupted while waiting for clientExecutor" +
-              "to stop", e);
+          LOG.warn("Interrupted while waiting for clientExecutor" +
+              " to stop");
           clientExecutor.shutdownNow();
+          Thread.currentThread().interrupt();
         }
         clientExecutor = null;
       }
@@ -211,7 +212,7 @@ public class Client {
    * @param conf Configuration
    * @param pingInterval the ping interval
    */
-  final public static void setPingInterval(Configuration conf, int pingInterval) {
+  static final void setPingInterval(Configuration conf, int pingInterval) {
     conf.setInt(CommonConfigurationKeys.IPC_PING_INTERVAL_KEY, pingInterval);
   }
 
@@ -222,7 +223,7 @@ public class Client {
    * @param conf Configuration
    * @return the ping interval
    */
-  final public static int getPingInterval(Configuration conf) {
+  static final int getPingInterval(Configuration conf) {
     return conf.getInt(CommonConfigurationKeys.IPC_PING_INTERVAL_KEY,
         CommonConfigurationKeys.IPC_PING_INTERVAL_DEFAULT);
   }
@@ -253,6 +254,10 @@ public class Client {
     conf.setInt(CommonConfigurationKeys.IPC_CLIENT_CONNECT_TIMEOUT_KEY, timeout);
   }
 
+  @VisibleForTesting
+  public static final ExecutorService getClientExecutor() {
+    return Client.clientExcecutorFactory.clientExecutor;
+  }
   /**
    * Increment this client's reference count
    *
@@ -1455,20 +1460,14 @@ public class Client {
       throw new IOException(e);
     }
 
-    boolean interrupted = false;
     synchronized (call) {
       while (!call.done) {
         try {
           call.wait();                           // wait for the result
         } catch (InterruptedException ie) {
-          // save the fact that we were interrupted
-          interrupted = true;
+          Thread.currentThread().interrupt();
+          throw new InterruptedIOException("Call interrupted");
         }
-      }
-
-      if (interrupted) {
-        // set the interrupt flag now that we are done waiting
-        Thread.currentThread().interrupt();
       }
 
       if (call.error != null) {

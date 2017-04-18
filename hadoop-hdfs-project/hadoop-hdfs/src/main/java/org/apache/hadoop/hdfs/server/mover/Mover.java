@@ -455,7 +455,9 @@ public class Mover {
         List<StorageType> targetTypes, Matcher matcher) {
       final NetworkTopology cluster = dispatcher.getCluster(); 
       for (StorageType t : targetTypes) {
-        for(StorageGroup target : storages.getTargetStorages(t)) {
+        final List<StorageGroup> targets = storages.getTargetStorages(t);
+        Collections.shuffle(targets);
+        for (StorageGroup target : targets) {
           if (matcher.match(cluster, source.getDatanodeInfo(),
               target.getDatanodeInfo())) {
             final PendingMove pm = source.addPendingMove(db, target);
@@ -630,7 +632,7 @@ public class Mover {
       } else if (line.hasOption("p")) {
         paths = line.getOptionValues("p");
       }
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       if (paths == null || paths.length == 0) {
         for (URI namenode : namenodes) {
           map.put(namenode, null);

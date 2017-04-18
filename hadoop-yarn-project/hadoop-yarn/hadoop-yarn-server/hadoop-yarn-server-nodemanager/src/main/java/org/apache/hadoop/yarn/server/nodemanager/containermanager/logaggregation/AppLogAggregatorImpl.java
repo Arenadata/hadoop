@@ -270,10 +270,10 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
             aggregator.doContainerLogAggregation(writer, appFinished);
         if (uploadedFilePathsInThisCycle.size() > 0) {
           uploadedLogsInThisCycle = true;
+          this.delService.delete(this.userUgi.getShortUserName(), null,
+              uploadedFilePathsInThisCycle
+                  .toArray(new Path[uploadedFilePathsInThisCycle.size()]));
         }
-        this.delService.delete(this.userUgi.getShortUserName(), null,
-          uploadedFilePathsInThisCycle
-            .toArray(new Path[uploadedFilePathsInThisCycle.size()]));
 
         // This container is finished, and all its logs have been uploaded,
         // remove it from containerLogAggregators.
@@ -284,12 +284,13 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
 
       // Before upload logs, make sure the number of existing logs
       // is smaller than the configured NM log aggregation retention size.
-      if (uploadedLogsInThisCycle) {
+      if (uploadedLogsInThisCycle && logAggregationInRolling) {
         cleanOldLogs();
       }
 
       if (writer != null) {
         writer.close();
+        writer = null;
       }
 
       final Path renamedPath = this.rollingMonitorInterval <= 0
@@ -520,6 +521,11 @@ public class AppLogAggregatorImpl implements AppLogAggregator {
     LOG.info("Aborting log aggregation for " + this.applicationId);
     this.aborted.set(true);
     this.notifyAll();
+  }
+
+  @Override
+  public void disableLogAggregation() {
+    this.logAggregationDisabled = true;
   }
 
   @Private

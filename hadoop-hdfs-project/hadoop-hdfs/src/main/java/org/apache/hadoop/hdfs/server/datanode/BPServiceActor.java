@@ -539,6 +539,7 @@ class BPServiceActor implements Runnable {
   }
   
   HeartbeatResponse sendHeartBeat() throws IOException {
+    scheduler.scheduleNextHeartbeat();
     StorageReport[] reports =
         dn.getFSDataset().getStorageReports(bpos.getBlockPoolId());
     if (LOG.isDebugEnabled()) {
@@ -613,7 +614,7 @@ class BPServiceActor implements Runnable {
           " in HeartbeatResponse. Expected " +
           bpos.getBlockPoolId());
     } else {
-      bpos.signalRollingUpgrade(rollingUpgradeStatus != null);
+      bpos.signalRollingUpgrade(rollingUpgradeStatus);
     }
   }
 
@@ -648,7 +649,6 @@ class BPServiceActor implements Runnable {
           // -- Total capacity
           // -- Bytes remaining
           //
-          scheduler.scheduleNextHeartbeat();
           if (!dn.areHeartbeatsDisabledForTests()) {
             HeartbeatResponse resp = sendHeartBeat();
             assert resp != null;
@@ -744,15 +744,16 @@ class BPServiceActor implements Runnable {
   void register(NamespaceInfo nsInfo) throws IOException {
     // The handshake() phase loaded the block pool storage
     // off disk - so update the bpRegistration object from that info
-    bpRegistration = bpos.createRegistration();
+    DatanodeRegistration newBpRegistration = bpos.createRegistration();
 
     LOG.info(this + " beginning handshake with NN");
 
     while (shouldRun()) {
       try {
         // Use returned registration from namenode with updated fields
-        bpRegistration = bpNamenode.registerDatanode(bpRegistration);
-        bpRegistration.setNamespaceInfo(nsInfo);
+        newBpRegistration = bpNamenode.registerDatanode(newBpRegistration);
+        newBpRegistration.setNamespaceInfo(nsInfo);
+        bpRegistration = newBpRegistration;
         break;
       } catch(EOFException e) {  // namenode might have just restarted
         LOG.info("Problem connecting to server: " + nnAddr + " :"
@@ -884,6 +885,11 @@ class BPServiceActor implements Runnable {
       // and re-register
       register(nsInfo);
       scheduler.scheduleHeartbeat();
+      // HDFS-9917,Standby NN IBR can be very huge if standby namenode is down
+      // for sometime.
+      if (state == HAServiceState.STANDBY) {
+        pendingIncrementalBRperStorage.clear();
+      }
     }
   }
 
@@ -992,6 +998,10 @@ class BPServiceActor implements Runnable {
       }
     }
   }
+  @VisibleForTesting
+  int getPendingIBRSize() {
+    return pendingIncrementalBRperStorage.size();
+  }
 
   Scheduler getScheduler() {
     return scheduler;
@@ -1037,7 +1047,7 @@ class BPServiceActor implements Runnable {
 
     long scheduleNextHeartbeat() {
       // Numerical overflow is possible here and is okay.
-      nextHeartbeatTime += heartbeatIntervalMs;
+      nextHeartbeatTime = monotonicNow() + heartbeatIntervalMs;
       return nextHeartbeatTime;
     }
 

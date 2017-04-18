@@ -265,11 +265,13 @@ public class RawLocalFileSystem extends FileSystem {
     if (!exists(f)) {
       throw new FileNotFoundException("File " + f + " not found");
     }
-    if (getFileStatus(f).isDirectory()) {
+    FileStatus status = getFileStatus(f);
+    if (status.isDirectory()) {
       throw new IOException("Cannot append to a diretory (=" + f + " )");
     }
     return new FSDataOutputStream(new BufferedOutputStream(
-        createOutputStreamWithMode(f, true, null), bufferSize), statistics);
+        createOutputStreamWithMode(f, true, null), bufferSize), statistics,
+        status.getLen());
   }
 
   @Override
@@ -428,35 +430,38 @@ public class RawLocalFileSystem extends FileSystem {
     if (!localf.exists()) {
       throw new FileNotFoundException("File " + f + " does not exist");
     }
-    if (localf.isFile()) {
-      if (!useDeprecatedFileStatus) {
-        return new FileStatus[] { getFileStatus(f) };
+
+    if (localf.isDirectory()) {
+      String[] names = localf.list();
+      if (names == null) {
+        return null;
       }
-      return new FileStatus[] {
-        new DeprecatedRawLocalFileStatus(localf, getDefaultBlockSize(f), this)};
+      results = new FileStatus[names.length];
+      int j = 0;
+      for (int i = 0; i < names.length; i++) {
+        try {
+          // Assemble the path using the Path 3 arg constructor to make sure
+          // paths with colon are properly resolved on Linux
+          results[j] = getFileStatus(new Path(f, new Path(null, null,
+                                                          names[i])));
+          j++;
+        } catch (FileNotFoundException e) {
+          // ignore the files not found since the dir list may have have
+          // changed since the names[] list was generated.
+        }
+      }
+      if (j == names.length) {
+        return results;
+      }
+      return Arrays.copyOf(results, j);
     }
 
-    String[] names = localf.list();
-    if (names == null) {
-      return null;
+    if (!useDeprecatedFileStatus) {
+      return new FileStatus[] { getFileStatus(f) };
     }
-    results = new FileStatus[names.length];
-    int j = 0;
-    for (int i = 0; i < names.length; i++) {
-      try {
-        // Assemble the path using the Path 3 arg constructor to make sure
-        // paths with colon are properly resolved on Linux
-        results[j] = getFileStatus(new Path(f, new Path(null, null, names[i])));
-        j++;
-      } catch (FileNotFoundException e) {
-        // ignore the files not found since the dir list may have have changed
-        // since the names[] list was generated.
-      }
-    }
-    if (j == names.length) {
-      return results;
-    }
-    return Arrays.copyOf(results, j);
+    return new FileStatus[] {
+        new DeprecatedRawLocalFileStatus(localf,
+        getDefaultBlockSize(f), this) };
   }
   
   protected boolean mkOneDir(File p2f) throws IOException {

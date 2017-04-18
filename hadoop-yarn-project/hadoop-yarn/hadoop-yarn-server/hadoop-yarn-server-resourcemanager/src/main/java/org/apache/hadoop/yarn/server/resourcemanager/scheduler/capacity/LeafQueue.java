@@ -93,6 +93,7 @@ public class LeafQueue extends AbstractCSQueue {
   private float maxAMResourcePerQueuePercent;
   
   private int nodeLocalityDelay;
+  private volatile boolean rackLocalityFullReset;
 
   Set<FiCaSchedulerApp> activeApplications;
   Map<ApplicationAttemptId, FiCaSchedulerApp> applicationAttemptMap = 
@@ -169,8 +170,8 @@ public class LeafQueue extends AbstractCSQueue {
       maxApplications =
           (int) (maxSystemApps * queueCapacities.getAbsoluteCapacity());
     }
-    maxApplicationsPerUser = 
-      (int)(maxApplications * (userLimit / 100.0f) * userLimitFactor);
+    maxApplicationsPerUser = Math.min(maxApplications,
+        (int)(maxApplications * (userLimit / 100.0f) * userLimitFactor));
     
     maxAMResourcePerQueuePercent =
         conf.getMaximumApplicationMasterResourcePerQueuePercent(getQueuePath());
@@ -190,6 +191,7 @@ public class LeafQueue extends AbstractCSQueue {
     }
     
     nodeLocalityDelay = conf.getNodeLocalityDelay();
+    rackLocalityFullReset = conf.getRackLocalityFullReset();
 
     // re-init this since max allocation could have changed
     this.minimumAllocationFactor =
@@ -422,13 +424,33 @@ public class LeafQueue extends AbstractCSQueue {
     ArrayList<UserInfo> usersToReturn = new ArrayList<UserInfo>();
     for (Map.Entry<String, User> entry : users.entrySet()) {
       User user = entry.getValue();
-      usersToReturn.add(new UserInfo(entry.getKey(), Resources.clone(user
-          .getUsed()), user.getActiveApplications(), user
+      Resource usedRes = Resource.newInstance(0, 0);
+      for (String nl : getAccessibleLabelSet()) {
+        Resources.addTo(usedRes, user.getUsed(nl));
+      }
+      usersToReturn.add(new UserInfo(entry.getKey(), usedRes,
+          user.getActiveApplications(), user
           .getPendingApplications(), Resources.clone(user
           .getConsumedAMResources()), Resources.clone(user
           .getUserResourceLimit())));
     }
     return usersToReturn;
+  }
+
+  /**
+   * Gets the labels which are accessible by this queue. If ANY label can be
+   * accessed, put all labels in the set.
+   * @return accessiglbe node labels
+   */
+  protected final Set<String> getAccessibleLabelSet() {
+    Set<String> nodeLabels = new HashSet<String>();
+    if (this.getAccessibleNodeLabels().contains(RMNodeLabelsManager.ANY)) {
+      nodeLabels.addAll(labelManager.getClusterNodeLabels());
+    } else {
+      nodeLabels.addAll(this.getAccessibleNodeLabels());
+    }
+    nodeLabels.add(RMNodeLabelsManager.NO_LABEL);
+    return nodeLabels;
   }
 
   @Override
@@ -767,6 +789,9 @@ public class LeafQueue extends AbstractCSQueue {
       }
     }
     
+    Resource initAmountNeededUnreserve =
+        currentResourceLimits.getAmountNeededUnreserve();
+
     // Try to assign containers to applications in order
     for (FiCaSchedulerApp application : activeApplications) {
       
@@ -819,6 +844,9 @@ public class LeafQueue extends AbstractCSQueue {
               computeUserLimitAndSetHeadroom(application, clusterResource, 
                   required, requestedNodeLabels);          
           
+          currentResourceLimits.setAmountNeededUnreserve(
+              initAmountNeededUnreserve);
+
           // Check queue max-capacity limit
           if (!super.canAssignToThisQueue(clusterResource, node.getLabels(),
               currentResourceLimits, required, application.getCurrentReservation())) {
@@ -863,7 +891,13 @@ public class LeafQueue extends AbstractCSQueue {
               if (LOG.isDebugEnabled()) {
                 LOG.debug("Resetting scheduling opportunities");
               }
-              application.resetSchedulingOpportunities(priority);
+              // Only reset scheduling opportunities for RACK_LOCAL if configured
+              // to do so. Not resetting means we will continue to schedule
+              // RACK_LOCAL without delay.
+              if (assignment.getType() == NodeType.NODE_LOCAL
+                  || getRackLocalityFullReset()) {
+                application.resetSchedulingOpportunities(priority);
+              }
             }
             
             // Done
@@ -931,7 +965,7 @@ public class LeafQueue extends AbstractCSQueue {
      *
      */
     Resource headroom = 
-      Resources.min(resourceCalculator, clusterResource,
+      Resources.componentwiseMin(
         Resources.subtract(userLimit, user.getUsed()),
         Resources.subtract(currentResourceLimit, queueUsage.getUsed())
         );
@@ -985,7 +1019,12 @@ public class LeafQueue extends AbstractCSQueue {
     
     return userLimit;
   }
-  
+
+  @Lock(NoLock.class)
+  public boolean getRackLocalityFullReset() {
+    return rackLocalityFullReset;
+  }
+
   @Lock(NoLock.class)
   private Resource computeUserLimit(FiCaSchedulerApp application,
       Resource clusterResource, Resource required, User user,
@@ -1348,8 +1387,12 @@ public class LeafQueue extends AbstractCSQueue {
       float localityWaitFactor = 
         application.getLocalityWaitFactor(priority, 
             scheduler.getNumClusterNodes());
-      
-      return ((requiredContainers * localityWaitFactor) < missedOpportunities);
+
+      // Cap the delay by the number of nodes in the cluster. Under most conditions
+      // this means we will consider each node in the cluster before
+      // accepting an off-switch assignment.
+      return (Math.min(scheduler.getNumClusterNodes(),
+        (requiredContainers * localityWaitFactor)) < missedOpportunities);
     }
 
     // Check if we need containers on this rack 
@@ -1512,7 +1555,9 @@ public class LeafQueue extends AbstractCSQueue {
           " application attempt=" + application.getApplicationAttemptId() +
           " container=" + container + 
           " queue=" + this + 
-          " clusterResource=" + clusterResource);
+          " clusterResource=" + clusterResource + 
+          " type=" + type);
+
       createdContainer.setValue(allocatedContainer);
       return container.getResource();
     } else {
@@ -1826,12 +1871,34 @@ public class LeafQueue extends AbstractCSQueue {
   }
 
   // return a single Resource capturing the overal amount of pending resources
-  public synchronized Resource getTotalResourcePending() {
-    Resource ret = BuilderUtils.newResource(0, 0);
-    for (FiCaSchedulerApp f : activeApplications) {
-      Resources.addTo(ret, f.getTotalPendingRequests());
+  // Consider the headroom for each user in the queue.
+  // Total pending for the queue =
+  //   sum for each user(min( (user's headroom), sum(user's pending requests) ))
+  //  NOTE: Used for calculating pedning resources in the preemption monitor.
+  public synchronized Resource getTotalPendingResourcesConsideringUserLimit(
+      Resource resources) {
+    Map<String, Resource> userNameToHeadroom = new HashMap<String, Resource>();
+    Resource pendingConsideringUserLimit = Resource.newInstance(0, 0);
+
+    for (FiCaSchedulerApp app : activeApplications) {
+      String userName = app.getUser();
+      if (!userNameToHeadroom.containsKey(userName)) {
+        User user = getUser(userName);
+        Resource headroom = Resources.subtract(
+            computeUserLimit(app, resources, minimumAllocation, user, null),
+            user.getUsed());
+        // Make sure none of the the components of headroom is negative.
+        headroom = Resources.componentwiseMax(headroom, Resources.none());
+        userNameToHeadroom.put(userName, headroom);
+      }
+      Resource minpendingConsideringUserLimit =
+          Resources.componentwiseMin(userNameToHeadroom.get(userName),
+                                     app.getTotalPendingRequests());
+      Resources.addTo(pendingConsideringUserLimit, minpendingConsideringUserLimit);
+      Resources.subtractFrom(userNameToHeadroom.get(userName),
+                             minpendingConsideringUserLimit);
     }
-    return ret;
+    return pendingConsideringUserLimit;
   }
 
   @Override

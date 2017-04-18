@@ -916,23 +916,9 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
   void closeConnectionToNamenode() {
     RPC.stopProxy(namenode);
   }
-  
-  /** Abort and release resources held.  Ignore all errors. */
-  void abort() {
-    clientRunning = false;
-    closeAllFilesBeingWritten(true);
-    try {
-      // remove reference to this client and stop the renewer,
-      // if there is no more clients under the renewer.
-      getLeaseRenewer().closeClient(this);
-    } catch (IOException ioe) {
-       LOG.info("Exception occurred while aborting the client " + ioe);
-    }
-    closeConnectionToNamenode();
-  }
 
   /** Close/abort all files being written. */
-  private void closeAllFilesBeingWritten(final boolean abort) {
+  public void closeAllFilesBeingWritten(final boolean abort) {
     for(;;) {
       final long inodeId;
       final DFSOutputStream out;
@@ -1821,9 +1807,15 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     try {
       LastBlockWithStatus blkWithStatus = namenode.append(src, clientName,
           new EnumSetWritable<>(flag, CreateFlag.class));
+      HdfsFileStatus status = blkWithStatus.getFileStatus();
+      if (status == null) {
+        DFSClient.LOG.debug("NameNode is on an older version, request file " +
+            "info with additional RPC call for file: " + src);
+        status = getFileInfo(src);
+      }
       return DFSOutputStream.newStreamForAppend(this, src, flag, buffersize,
           progress, blkWithStatus.getLastBlock(),
-          blkWithStatus.getFileStatus(), dfsClientConf.createChecksum(),
+          status, dfsClientConf.createChecksum(),
           favoredNodes);
     } catch(RemoteException re) {
       throw re.unwrapRemoteException(AccessControlException.class,

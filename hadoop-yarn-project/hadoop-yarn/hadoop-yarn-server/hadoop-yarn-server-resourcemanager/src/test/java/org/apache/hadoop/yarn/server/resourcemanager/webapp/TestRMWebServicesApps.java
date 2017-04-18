@@ -1598,7 +1598,7 @@ public class TestRMWebServicesApps extends JerseyTestBase {
       String user)
       throws JSONException, Exception {
 
-    assertEquals("incorrect number of elements", 6, info.length());
+    assertEquals("incorrect number of elements", 7, info.length());
 
     verifyAppAttemptInfoGeneric(appAttempt, info.getInt("id"),
         info.getLong("startTime"), info.getString("containerId"),
@@ -1621,7 +1621,7 @@ public class TestRMWebServicesApps extends JerseyTestBase {
         .getMasterContainer().getNodeHttpAddress(), nodeHttpAddress);
     WebServicesTestUtils.checkStringMatch("nodeId", appAttempt
         .getMasterContainer().getNodeId().toString(), nodeId);
-    assertTrue("logsLink doesn't match", logsLink.startsWith("//"));
+    assertTrue("logsLink doesn't match ", logsLink.startsWith("http://"));
     assertTrue(
         "logsLink doesn't contain user info", logsLink.endsWith("/"
         + user));

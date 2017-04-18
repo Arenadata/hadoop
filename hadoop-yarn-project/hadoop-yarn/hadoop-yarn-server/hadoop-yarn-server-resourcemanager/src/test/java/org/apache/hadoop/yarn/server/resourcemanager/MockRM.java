@@ -54,6 +54,8 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.event.Dispatcher;
+import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
@@ -69,7 +71,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptE
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
-import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptLaunchFailedEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
@@ -133,6 +134,20 @@ public class MockRM extends ResourceManager {
     }
   }
 
+  @Override
+  protected Dispatcher createDispatcher() {
+    return new DrainDispatcher();
+  }
+
+  public void drainEvents() {
+    Dispatcher rmDispatcher = getRmDispatcher();
+    if (rmDispatcher instanceof DrainDispatcher) {
+      ((DrainDispatcher) rmDispatcher).await();
+    } else {
+      throw new UnsupportedOperationException("Not a Drain Dispatcher!");
+    }
+  }
+
   public void waitForState(ApplicationId appId, RMAppState finalState)
       throws Exception {
     RMApp app = getRMContext().getRMApps().get(appId);
@@ -147,15 +162,20 @@ public class MockRM extends ResourceManager {
     Assert.assertEquals("App state is not correct (timedout)", finalState,
         app.getState());
   }
-  
-  public void waitForState(ApplicationAttemptId attemptId, 
-                           RMAppAttemptState finalState)
+
+  public void waitForState(ApplicationAttemptId attemptId,
+      RMAppAttemptState finalState)
       throws Exception {
+    waitForState(attemptId, finalState, 40000);
+  }
+
+  public void waitForState(ApplicationAttemptId attemptId,
+      RMAppAttemptState finalState, int timeoutMsecs) throws Exception {
     RMApp app = getRMContext().getRMApps().get(attemptId.getApplicationId());
     Assert.assertNotNull("app shouldn't be null", app);
     RMAppAttempt attempt = app.getRMAppAttempt(attemptId);
     int timeoutSecs = 0;
-    while (!finalState.equals(attempt.getAppAttemptState()) && timeoutSecs++ < 40) {
+    while (!finalState.equals(attempt.getAppAttemptState()) && timeoutSecs++ < timeoutMsecs) {
       System.out.println("AppAttempt : " + attemptId 
           + " State is : " + attempt.getAppAttemptState()
           + " Waiting for state : " + finalState);
@@ -526,7 +546,8 @@ public class MockRM extends ResourceManager {
     MockAM am = new MockAM(getRMContext(), masterService, appAttemptId);
     am.waitForState(RMAppAttemptState.ALLOCATED);
     getRMContext().getDispatcher().getEventHandler()
-        .handle(new RMAppAttemptLaunchFailedEvent(appAttemptId, "Failed"));
+        .handle(new RMAppAttemptEvent(appAttemptId,
+            RMAppAttemptEventType.LAUNCH_FAILED, "Failed"));
   }
 
   @Override

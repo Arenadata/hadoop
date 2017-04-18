@@ -33,6 +33,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.security.alias.AbstractJavaKeyStoreProvider;
 
 /** 
  * A base class for running a Unix command.
@@ -82,8 +83,23 @@ abstract public class Shell {
     }
   }
 
-  /** a Unix command to get the current user's name */
-  public final static String USER_NAME_COMMAND = "whoami";
+  /**
+   * Quote the given arg so that bash will interpret it as a single value.
+   * Note that this quotes it for one level of bash, if you are passing it
+   * into a badly written shell script, you need to fix your shell script.
+   * @param arg the argument to quote
+   * @return the quoted string
+   */
+  static String bashQuote(String arg) {
+    StringBuilder buffer = new StringBuilder(arg.length() + 2);
+    buffer.append('\'');
+    buffer.append(arg.replace("'", "'\\''"));
+    buffer.append('\'');
+    return buffer.toString();
+  }
+
+  /** a Unix command to get the current user's name: {@value}. */
+  public static final String USER_NAME_COMMAND = "whoami";
 
   /** Windows CreateProcess synchronization object */
   public static final Object WindowsProcessLaunchLock = new Object();
@@ -133,7 +149,7 @@ abstract public class Shell {
   /** a Unix command to get the current user's groups list */
   public static String[] getGroupsCommand() {
     return (WINDOWS)? new String[]{"cmd", "/c", "groups"}
-                    : new String[]{"bash", "-c", "groups"};
+                    : new String[]{"groups"};
   }
 
   /**
@@ -143,17 +159,21 @@ abstract public class Shell {
    * i.e. the user's primary group will be included twice.
    */
   public static String[] getGroupsForUserCommand(final String user) {
-    //'groups username' command return is non-consistent across different unixes
-    return (WINDOWS)? new String[] { WINUTILS, "groups", "-F", "\"" + user + "\""}
-                    : new String [] {"bash", "-c", "id -gn " + user
-                                     + "&& id -Gn " + user};
+    //'groups username' command return is inconsistent across different unixes
+    if (WINDOWS) {
+      return new String[]
+          {getWinUtilsPath(), "groups", "-F", "\"" + user + "\""};
+    } else {
+      String quotedUser = bashQuote(user);
+      return new String[] {"bash", "-c", "id -gn " + quotedUser +
+                            "; id -Gn " + quotedUser};
+    }
   }
 
   /** a Unix command to get a given netgroup's user list */
   public static String[] getUsersForNetgroupCommand(final String netgroup) {
     //'groups username' command return is non-consistent across different unixes
-    return (WINDOWS)? new String [] {"cmd", "/c", "getent netgroup " + netgroup}
-                    : new String [] {"bash", "-c", "getent netgroup " + netgroup};
+    return new String[] {"getent", "netgroup", netgroup};
   }
 
   /** Return a command to get permission information. */
@@ -259,8 +279,9 @@ abstract public class Shell {
    */
   public static String[] getRunScriptCommand(File script) {
     String absolutePath = script.getAbsolutePath();
-    return WINDOWS ? new String[] { "cmd", "/c", absolutePath } :
-      new String[] { "/bin/bash", absolutePath };
+    return WINDOWS ?
+      new String[] {"cmd", "/c", absolutePath }
+      : new String[] {"/bin/bash", bashQuote(absolutePath) };
   }
 
   /** a Unix command to set permission */
@@ -280,6 +301,8 @@ abstract public class Shell {
   /** If or not script timed out*/
   private AtomicBoolean timedOut;
 
+  /** Indicates if the parent env vars should be inherited or not*/
+  protected boolean inheritParentEnv = true;
 
   /** Centralized logic to discover and validate the sanity of the Hadoop 
    *  home directory. Returns either NULL or a directory that exists and 
@@ -467,6 +490,20 @@ abstract public class Shell {
     if (environment != null) {
       builder.environment().putAll(this.environment);
     }
+
+    // Remove all env vars from the Builder to prevent leaking of env vars from
+    // the parent process.
+    if (!inheritParentEnv) {
+      // branch-2: Only do this for HADOOP_CREDSTORE_PASSWORD
+      // Sometimes daemons are configured to use the CredentialProvider feature
+      // and given their jceks password via an environment variable.  We need to
+      // make sure to remove it so it doesn't leak to child processes, which
+      // might be owned by a different user.  For example, the NodeManager
+      // running a User's container.
+      builder.environment().remove(
+          AbstractJavaKeyStoreProvider.CREDENTIAL_PASSWORD_NAME);
+    }
+
     if (dir != null) {
       builder.directory(this.dir);
     }
@@ -690,6 +727,11 @@ abstract public class Shell {
       this(execString, dir, env , 0L);
     }
 
+    public ShellCommandExecutor(String[] execString, File dir,
+                                Map<String, String> env, long timeout) {
+      this(execString, dir, env , timeout, true);
+    }
+
     /**
      * Create a new instance of the ShellCommandExecutor to execute a command.
      * 
@@ -702,10 +744,12 @@ abstract public class Shell {
      *            environment is not modified.
      * @param timeout Specifies the time in milliseconds, after which the
      *                command will be killed and the status marked as timedout.
-     *                If 0, the command will not be timed out. 
+     *                If 0, the command will not be timed out.
+     * @param inheritParentEnv Indicates if the process should inherit the env
+     *                         vars from the parent process or not.
      */
     public ShellCommandExecutor(String[] execString, File dir, 
-        Map<String, String> env, long timeout) {
+        Map<String, String> env, long timeout, boolean inheritParentEnv) {
       command = execString.clone();
       if (dir != null) {
         setWorkingDirectory(dir);
@@ -714,12 +758,19 @@ abstract public class Shell {
         setEnvironment(env);
       }
       timeOutInterval = timeout;
+      this.inheritParentEnv = inheritParentEnv;
     }
         
 
     /** Execute the shell command. */
     public void execute() throws IOException {
-      this.run();    
+      for (String s : command) {
+        if (s == null) {
+          throw new IOException("(null) entry in command string: "
+              + StringUtils.join(" ", command));
+        }
+      }
+      this.run();
     }
 
     @Override

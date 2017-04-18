@@ -171,7 +171,25 @@ class LocalResourcesTrackerImpl implements LocalResourcesTracker {
       break;
     }
 
+    if (rsrc == null) {
+      LOG.warn("Received " + event.getType() + " event for request " + req
+          + " but localized resource is missing");
+      return;
+    }
     rsrc.handle(event);
+
+    // Remove the resource if its downloading and its reference count has
+    // become 0 after RELEASE. This maybe because a container was killed while
+    // localizing and no other container is referring to the resource.
+    // NOTE: This should NOT be done for public resources since the
+    //       download is not associated with a container-specific localizer.
+    if (event.getType() == ResourceEventType.RELEASE) {
+      if (rsrc.getState() == ResourceState.DOWNLOADING &&
+          rsrc.getRefCount() <= 0 &&
+          rsrc.getRequest().getVisibility() != LocalResourceVisibility.PUBLIC) {
+        removeResource(req);
+      }
+    }
 
     if (event.getType() == ResourceEventType.LOCALIZED) {
       if (rsrc.getLocalPath() != null) {
@@ -392,10 +410,12 @@ class LocalResourcesTrackerImpl implements LocalResourcesTracker {
    * @param {@link LocalResourceRequest} Resource localization request to
    *        localize the resource.
    * @param {@link Path} local directory path
+   * @param {@link DeletionService} Deletion Service to delete existing
+   *        path for localization.
    */
   @Override
-  public Path
-      getPathForLocalization(LocalResourceRequest req, Path localDirPath) {
+  public Path getPathForLocalization(LocalResourceRequest req,
+      Path localDirPath, DeletionService delService) {
     Path rPath = localDirPath;
     if (useLocalCacheDirectoryManager && localDirPath != null) {
 
@@ -415,8 +435,22 @@ class LocalResourcesTrackerImpl implements LocalResourcesTracker {
       inProgressLocalResourcesMap.put(req, rPath);
     }
 
-    rPath = new Path(rPath,
-        Long.toString(uniqueNumberGenerator.incrementAndGet()));
+    while (true) {
+      Path uniquePath = new Path(rPath,
+          Long.toString(uniqueNumberGenerator.incrementAndGet()));
+      File file = new File(uniquePath.toUri().getRawPath());
+      if (!file.exists()) {
+        rPath = uniquePath;
+        break;
+      }
+      // If the directory already exists, delete it and move to next one.
+      LOG.warn("Directory " + uniquePath + " already exists, " +
+          "try next one.");
+      if (delService != null) {
+        delService.delete(getUser(), uniquePath);
+      }
+    }
+
     Path localPath = new Path(rPath, req.getPath().getName());
     LocalizedResource rsrc = localrsrc.get(req);
     rsrc.setLocalPath(localPath);

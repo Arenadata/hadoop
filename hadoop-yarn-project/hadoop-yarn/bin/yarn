@@ -87,7 +87,6 @@ function print_usage(){
   echo "  cluster                               prints cluster information"
   echo "  daemonlog                             get/set the log level for each"
   echo "                                        daemon"
-  echo "  envvars                               display computed Hadoop environment variables"
   echo ""
   echo "Most commands print help when invoked w/o parameters."
 }
@@ -215,14 +214,6 @@ if [ "$COMMAND" = "classpath" ] ; then
     echo $CLASSPATH
     exit 0
   fi
-elif [ "$COMMAND" = "envvars" ] ; then
-  echo "JAVA_HOME='${JAVA_HOME}'"
-  echo "HADOOP_YARN_HOME='${HADOOP_YARN_HOME}'"
-  echo "YARN_DIR='${YARN_DIR}'"
-  echo "YARN_LIB_JARS_DIR='${YARN_LIB_JARS_DIR}'"
-  echo "HADOOP_CONF_DIR='${HADOOP_CONF_DIR}'"
-  echo "HADOOP_TOOLS_PATH='${TOOL_PATH}'"
-  exit 0
 elif [ "$COMMAND" = "rmadmin" ] ; then
   CLASS='org.apache.hadoop.yarn.client.cli.RMAdminCLI'
   YARN_OPTS="$YARN_OPTS $YARN_CLIENT_OPTS"
@@ -321,12 +312,15 @@ YARN_OPTS="$YARN_OPTS -Dyarn.log.dir=$YARN_LOG_DIR"
 YARN_OPTS="$YARN_OPTS -Dhadoop.log.file=$YARN_LOGFILE"
 YARN_OPTS="$YARN_OPTS -Dyarn.log.file=$YARN_LOGFILE"
 YARN_OPTS="$YARN_OPTS -Dyarn.home.dir=$HADOOP_YARN_HOME"
-HADOOP_HOME=$HADOOP_PREFIX
+
 if $cygwin; then
-  HADOOP_HOME=$(cygpath -w "$HADOOP_HOME" 2>/dev/null)
+  HADOOP_HOME=$(cygpath -w "$HADOOP_PREFIX" 2>/dev/null)
+  YARN_OPTS="$YARN_OPTS -Dhadoop.home.dir=$HADOOP_HOME"
+  export HADOOP_HOME
+else
+  YARN_OPTS="$YARN_OPTS -Dhadoop.home.dir=$HADOOP_PREFIX"
 fi
-export HADOOP_HOME
-YARN_OPTS="$YARN_OPTS -Dhadoop.home.dir=$HADOOP_HOME"
+
 YARN_OPTS="$YARN_OPTS -Dhadoop.root.logger=${YARN_ROOT_LOGGER:-${HADOOP_LOGLEVEL},console}"
 YARN_OPTS="$YARN_OPTS -Dyarn.root.logger=${YARN_ROOT_LOGGER:-${HADOOP_LOGLEVEL},console}"
 if [ "x$JAVA_LIBRARY_PATH" != "x" ]; then

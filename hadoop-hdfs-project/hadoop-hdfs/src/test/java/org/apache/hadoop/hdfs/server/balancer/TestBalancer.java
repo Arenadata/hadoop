@@ -323,12 +323,12 @@ public class TestBalancer {
     conf.setBoolean(DFS_DATANODE_BLOCK_PINNING_ENABLED, true);
     
     long[] capacities =  new long[] { CAPACITY, CAPACITY };
+    String[] hosts = {"host0", "host1"};
     String[] racks = { RACK0, RACK1 };
     int numOfDatanodes = capacities.length;
 
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(capacities.length)
-      .hosts(new String[]{"localhost", "localhost"})
-      .racks(racks).simulatedCapacities(capacities).build();
+        .hosts(hosts).racks(racks).simulatedCapacities(capacities).build();
 
     try {
       cluster.waitActive();
@@ -340,7 +340,10 @@ public class TestBalancer {
       long totalUsedSpace = totalCapacity * 8 / 10;
       InetSocketAddress[] favoredNodes = new InetSocketAddress[numOfDatanodes];
       for (int i = 0; i < favoredNodes.length; i++) {
-        favoredNodes[i] = cluster.getDataNodes().get(i).getXferAddress();
+        // DFSClient will attempt reverse lookup. In case it resolves
+        // "127.0.0.1" to "localhost", we manually specify the hostname.
+        int port = cluster.getDataNodes().get(i).getXferAddress().getPort();
+        favoredNodes[i] = new InetSocketAddress(hosts[i], port);
       }
 
       DFSTestUtil.createFile(cluster.getFileSystem(0), filePath, false, 1024,
@@ -357,7 +360,7 @@ public class TestBalancer {
       waitForHeartBeat(totalUsedSpace, totalCapacity, client, cluster);
 
       // start rebalancing
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       int r = Balancer.run(namenodes, Balancer.Parameters.DEFAULT, conf);
       assertEquals(ExitStatus.NO_MOVE_PROGRESS.getExitCode(), r);
       
@@ -658,7 +661,7 @@ public class TestBalancer {
     waitForHeartBeat(totalUsedSpace, totalCapacity, client, cluster);
 
     // start rebalancing
-    Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+    Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
     final int r = runBalancer(namenodes, p, conf);
     if (conf.getInt(DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY, 
         DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_DEFAULT) ==0) {
@@ -855,7 +858,7 @@ public class TestBalancer {
           new String[]{RACK0}, null,new long[]{CAPACITY});
       cluster.triggerHeartbeats();
 
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       Set<String>  datanodes = new HashSet<String>();
       datanodes.add(cluster.getDataNodes().get(0).getDatanodeId().getHostName());
       Balancer.Parameters p = new Balancer.Parameters(
@@ -1290,7 +1293,7 @@ public class TestBalancer {
         null, null, storageCapacities, null, false, false, false, null);
 
       cluster.triggerHeartbeats();
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
 
       // Run Balancer
       Balancer.Parameters p = new Balancer.Parameters(
@@ -1362,7 +1365,7 @@ public class TestBalancer {
       cluster.triggerHeartbeats();
 
       Balancer.Parameters p = Balancer.Parameters.DEFAULT;
-      Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
+      Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
       final int r = Balancer.run(namenodes, p, conf);
 
       // Replica in (DN0,SSD) was not moved to (DN1,SSD), because (DN1,DISK)

@@ -242,8 +242,10 @@ public class TestNodeStatusUpdater {
                 firstContainerID, InetAddress.getByName("localhost")
                     .getCanonicalHostName(), 1234, user, resource,
                 currentTime + 10000, 123, "password".getBytes(), currentTime));
+        Context context = mock(Context.class);
+        when(context.getNMStateStore()).thenReturn(stateStore);
         Container container = new ContainerImpl(conf, mockDispatcher,
-            stateStore, launchContext, null, mockMetrics, containerToken);
+            launchContext, null, mockMetrics, containerToken, context);
         this.context.getContainers().put(firstContainerID, container);
       } else if (heartBeatID == 2) {
         // Checks on the RM end
@@ -272,8 +274,10 @@ public class TestNodeStatusUpdater {
                 secondContainerID, InetAddress.getByName("localhost")
                     .getCanonicalHostName(), 1234, user, resource,
                 currentTime + 10000, 123, "password".getBytes(), currentTime));
+        Context context = mock(Context.class);
+        when(context.getNMStateStore()).thenReturn(stateStore);
         Container container = new ContainerImpl(conf, mockDispatcher,
-            stateStore, launchContext, null, mockMetrics, containerToken);
+            launchContext, null, mockMetrics, containerToken, context);
         this.context.getContainers().put(secondContainerID, container);
       } else if (heartBeatID == 3) {
         // Checks on the RM end
@@ -889,8 +893,9 @@ public class TestNodeStatusUpdater {
             BuilderUtils.newResource(1024, 1), 0, 123,
             "password".getBytes(), 0);
     Container anyCompletedContainer = new ContainerImpl(conf, null,
-        null, null, null, null,
-        BuilderUtils.newContainerTokenIdentifier(containerToken)) {
+        null, null, null,
+        BuilderUtils.newContainerTokenIdentifier(containerToken),
+        nm.getNMContext()) {
 
       @Override
       public ContainerState getCurrentState() {
@@ -910,8 +915,9 @@ public class TestNodeStatusUpdater {
           1234, "anyUser", BuilderUtils.newResource(1024, 1), 0, 123,
           "password".getBytes(), 0);
     Container runningContainer =
-        new ContainerImpl(conf, null, null, null, null, null,
-          BuilderUtils.newContainerTokenIdentifier(runningContainerToken)) {
+        new ContainerImpl(conf, null, null, null, null,
+          BuilderUtils.newContainerTokenIdentifier(runningContainerToken),
+          nm.getNMContext()) {
           @Override
           public ContainerState getCurrentState() {
             return ContainerState.RUNNING;
@@ -950,6 +956,41 @@ public class TestNodeStatusUpdater {
     Assert.assertTrue(containerIdSet.contains(runningContainerId));
   }
 
+  @Test(timeout = 10000)
+  public void testCompletedContainersIsRecentlyStopped() throws Exception {
+    NodeManager nm = new NodeManager();
+    nm.init(conf);
+    NodeStatusUpdaterImpl nodeStatusUpdater =
+        (NodeStatusUpdaterImpl) nm.getNodeStatusUpdater();
+    ApplicationId appId = ApplicationId.newInstance(0, 0);
+    Application completedApp = mock(Application.class);
+    when(completedApp.getApplicationState()).thenReturn(
+        ApplicationState.FINISHED);
+    ApplicationAttemptId appAttemptId =
+        ApplicationAttemptId.newInstance(appId, 0);
+    ContainerId containerId = ContainerId.newContainerId(appAttemptId, 1);
+    Token containerToken =
+        BuilderUtils.newContainerToken(containerId, "host", 1234, "user",
+            BuilderUtils.newResource(1024, 1), 0, 123,
+            "password".getBytes(), 0);
+    Container completedContainer = new ContainerImpl(conf, null,
+        null, null, null,
+        BuilderUtils.newContainerTokenIdentifier(containerToken),
+        nm.getNMContext()) {
+      @Override
+      public ContainerState getCurrentState() {
+        return ContainerState.COMPLETE;
+      }
+    };
+
+    nm.getNMContext().getApplications().putIfAbsent(appId, completedApp);
+    nm.getNMContext().getContainers().put(containerId, completedContainer);
+
+    Assert.assertEquals(1, nodeStatusUpdater.getContainerStatuses().size());
+    Assert.assertTrue(nodeStatusUpdater.isContainerRecentlyStopped(
+        containerId));
+  }
+
   @Test
   public void testCleanedupApplicationContainerCleanup() throws IOException {
     NodeManager nm = new NodeManager();
@@ -971,8 +1012,9 @@ public class TestNodeStatusUpdater {
             BuilderUtils.newResource(1024, 1), 0, 123,
             "password".getBytes(), 0);
     Container anyCompletedContainer = new ContainerImpl(conf, null,
-        null, null, null, null,
-        BuilderUtils.newContainerTokenIdentifier(containerToken)) {
+        null, null, null,
+        BuilderUtils.newContainerTokenIdentifier(containerToken),
+        nm.getNMContext()) {
 
       @Override
       public ContainerState getCurrentState() {

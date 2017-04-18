@@ -226,7 +226,7 @@ public class DFSOutputStream extends FSOutputSummer
   //
   class DataStreamer extends Daemon {
     private volatile boolean streamerClosed = false;
-    private ExtendedBlock block; // its length is number of bytes acked
+    private volatile ExtendedBlock block; // its length is number of bytes acked
     private Token<BlockTokenIdentifier> accessToken;
     private DataOutputStream blockStream;
     private DataInputStream blockReplyStream;
@@ -265,9 +265,8 @@ public class DFSOutputStream extends FSOutputSummer
 
     /** Nodes have been used in the pipeline before and have failed. */
     private final List<DatanodeInfo> failed = new ArrayList<DatanodeInfo>();
-    /** The last ack sequence number before pipeline failure. */
-    private long lastAckedSeqnoBeforeFailure = -1;
-    private int pipelineRecoveryCount = 0;
+    /** The times have retried to recover pipeline, for the same packet. */
+    private volatile int pipelineRecoveryCount = 0;
     /** Has the current block been hflushed? */
     private boolean isHflushed = false;
     /** Append on an existing block? */
@@ -803,6 +802,7 @@ public class DFSOutputStream extends FSOutputSummer
               scope = Trace.continueSpan(one.getTraceSpan());
               one.setTraceSpan(null);
               lastAckedSeqno = seqno;
+              pipelineRecoveryCount = 0;
               ackQueue.removeFirst();
               dataQueue.notifyAll();
 
@@ -856,23 +856,18 @@ public class DFSOutputStream extends FSOutputSummer
         ackQueue.clear();
       }
 
-      // Record the new pipeline failure recovery.
-      if (lastAckedSeqnoBeforeFailure != lastAckedSeqno) {
-         lastAckedSeqnoBeforeFailure = lastAckedSeqno;
-         pipelineRecoveryCount = 1;
-      } else {
-        // If we had to recover the pipeline five times in a row for the
-        // same packet, this client likely has corrupt data or corrupting
-        // during transmission.
-        if (++pipelineRecoveryCount > 5) {
-          DFSClient.LOG.warn("Error recovering pipeline for writing " +
-              block + ". Already retried 5 times for the same packet.");
-          lastException.set(new IOException("Failing write. Tried pipeline " +
-              "recovery 5 times without success."));
-          streamerClosed = true;
-          return false;
-        }
+      // If we had to recover the pipeline five times in a row for the
+      // same packet, this client likely has corrupt data or corrupting
+      // during transmission.
+      if (restartingNodeIndex.get() == -1 && ++pipelineRecoveryCount > 5) {
+        DFSClient.LOG.warn("Error recovering pipeline for writing " +
+            block + ". Already retried 5 times for the same packet.");
+        lastException.set(new IOException("Failing write. Tried pipeline " +
+            "recovery 5 times without success."));
+        streamerClosed = true;
+        return false;
       }
+
       boolean doSleep = setupPipelineForAppendOrRecovery();
       
       if (!streamerClosed && dfsClient.clientRunning) {
@@ -897,6 +892,7 @@ public class DFSOutputStream extends FSOutputSummer
             assert endOfBlockPacket.isLastPacketInBlock();
             assert lastAckedSeqno == endOfBlockPacket.getSeqno() - 1;
             lastAckedSeqno = endOfBlockPacket.getSeqno();
+            pipelineRecoveryCount = 0;
             dataQueue.notifyAll();
           }
           endBlock();
@@ -972,22 +968,46 @@ public class DFSOutputStream extends FSOutputSummer
         return;
       }
 
-      //get a new datanode
+      int tried = 0;
       final DatanodeInfo[] original = nodes;
-      final LocatedBlock lb = dfsClient.namenode.getAdditionalDatanode(
-          src, fileId, block, nodes, storageIDs,
-          failed.toArray(new DatanodeInfo[failed.size()]),
-          1, dfsClient.clientName);
-      setPipeline(lb);
+      final StorageType[] originalTypes = storageTypes;
+      final String[] originalIDs = storageIDs;
+      IOException caughtException = null;
+      ArrayList<DatanodeInfo> exclude = new ArrayList<DatanodeInfo>(failed);
+      while (tried < 3) {
+        LocatedBlock lb;
+        //get a new datanode
+        lb = dfsClient.namenode.getAdditionalDatanode(
+            src, fileId, block, nodes, storageIDs,
+            exclude.toArray(new DatanodeInfo[exclude.size()]),
+            1, dfsClient.clientName);
+        // a new node was allocated by the namenode. Update nodes.
+        setPipeline(lb);
 
-      //find the new datanode
-      final int d = findNewDatanode(original);
+        //find the new datanode
+        final int d = findNewDatanode(original);
+        //transfer replica. pick a source from the original nodes
+        final DatanodeInfo src = original[tried % original.length];
+        final DatanodeInfo[] targets = {nodes[d]};
+        final StorageType[] targetStorageTypes = {storageTypes[d]};
 
-      //transfer replica
-      final DatanodeInfo src = d == 0? nodes[1]: nodes[d - 1];
-      final DatanodeInfo[] targets = {nodes[d]};
-      final StorageType[] targetStorageTypes = {storageTypes[d]};
-      transfer(src, targets, targetStorageTypes, lb.getBlockToken());
+        try {
+          transfer(src, targets, targetStorageTypes, lb.getBlockToken());
+        } catch (IOException ioe) {
+          DFSClient.LOG.warn("Error transferring data from " + src + " to " +
+              nodes[d] + ": " + ioe.getMessage());
+          caughtException = ioe;
+          // add the allocated node to the exclude list.
+          exclude.add(nodes[d]);
+          setPipeline(original, originalTypes, originalIDs);
+          tried++;
+          continue;
+        }
+        return; // finished successfully
+      }
+      // All retries failed
+      throw (caughtException != null) ? caughtException :
+         new IOException("Failed to add a node");
     }
 
     private void transfer(final DatanodeInfo src, final DatanodeInfo[] targets,
@@ -1001,8 +1021,13 @@ public class DFSOutputStream extends FSOutputSummer
         sock = createSocketForPipeline(src, 2, dfsClient);
         final long writeTimeout = dfsClient.getDatanodeWriteTimeout(2);
         
+        // transfer timeout multiplier based on the transfer size
+        // One per 200 packets = 12.8MB. Minimum is 2.
+        int multi = 2 + (int)(bytesSent/dfsClient.getConf().writePacketSize)/200;
+        final long readTimeout = dfsClient.getDatanodeReadTimeout(multi);
+
         OutputStream unbufOut = NetUtils.getOutputStream(sock, writeTimeout);
-        InputStream unbufIn = NetUtils.getInputStream(sock);
+        InputStream unbufIn = NetUtils.getInputStream(sock, readTimeout);
         IOStreamPair saslStreams = dfsClient.saslClient.socketSend(sock,
           unbufOut, unbufIn, dfsClient, blockToken, src);
         unbufOut = saslStreams.out;
@@ -2145,13 +2170,15 @@ public class DFSOutputStream extends FSOutputSummer
    * Aborts this output stream and releases any system 
    * resources associated with this stream.
    */
-  synchronized void abort() throws IOException {
-    if (isClosed()) {
-      return;
+  void abort() throws IOException {
+    synchronized (this) {
+      if (isClosed()) {
+        return;
+      }
+      streamer.setLastException(new IOException("Lease timeout of "
+          + (dfsClient.getHdfsTimeout() / 1000) + " seconds expired."));
+      closeThreads(true);
     }
-    streamer.setLastException(new IOException("Lease timeout of "
-        + (dfsClient.getHdfsTimeout()/1000) + " seconds expired."));
-    closeThreads(true);
     dfsClient.endFileLease(fileId);
   }
 
@@ -2197,14 +2224,17 @@ public class DFSOutputStream extends FSOutputSummer
    * resources associated with this stream.
    */
   @Override
-  public synchronized void close() throws IOException {
-    TraceScope scope =
-        dfsClient.getPathTraceScope("DFSOutputStream#close", src);
-    try {
-      closeImpl();
-    } finally {
-      scope.close();
+  public void close() throws IOException {
+    synchronized (this) {
+      TraceScope scope = dfsClient.getPathTraceScope("DFSOutputStream#close",
+          src);
+      try {
+        closeImpl();
+      } finally {
+        scope.close();
+      }
     }
+    dfsClient.endFileLease(fileId);
   }
 
   private synchronized void closeImpl() throws IOException {
@@ -2232,17 +2262,20 @@ public class DFSOutputStream extends FSOutputSummer
       flushInternal();             // flush all data to Datanodes
       // get last block before destroying the streamer
       ExtendedBlock lastBlock = streamer.getBlock();
-      closeThreads(false);
       TraceScope scope = Trace.startSpan("completeFile", Sampler.NEVER);
       try {
         completeFile(lastBlock);
       } finally {
         scope.close();
       }
-      dfsClient.endFileLease(fileId);
     } catch (ClosedChannelException e) {
     } finally {
-      setClosed();
+      // Failures may happen when flushing data.
+      // Streamers may keep waiting for the new block information.
+      // Thus need to force closing these threads.
+      // Don't need to call setClosed() because closeThreads(true)
+      // calls setClosed() in the finally block.
+      closeThreads(true);
     }
   }
 
@@ -2335,7 +2368,7 @@ public class DFSOutputStream extends FSOutputSummer
   }
 
   @VisibleForTesting
-  ExtendedBlock getBlock() {
+  synchronized ExtendedBlock getBlock() {
     return streamer.getBlock();
   }
 
@@ -2347,5 +2380,13 @@ public class DFSOutputStream extends FSOutputSummer
   private static <T> void arraycopy(T[] srcs, T[] dsts, int skipIndex) {
     System.arraycopy(srcs, 0, dsts, 0, skipIndex);
     System.arraycopy(srcs, skipIndex+1, dsts, skipIndex, dsts.length-skipIndex);
+  }
+
+  /**
+   * @return The times have retried to recover pipeline, for the same packet.
+   */
+  @VisibleForTesting
+  synchronized int getPipelineRecoveryCount() {
+    return streamer.pipelineRecoveryCount;
   }
 }

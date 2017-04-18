@@ -53,7 +53,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.resource.ResourceWeights;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
-import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppRejectedEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEventType;
@@ -76,6 +75,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptA
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.ContainerExpiredSchedulerEvent;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.ContainerRescheduledEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeResourceUpdateSchedulerEvent;
@@ -450,7 +450,6 @@ public class FairScheduler extends
           SchedulerUtils.createPreemptedContainerStatus(
             container.getContainerId(), SchedulerUtils.PREEMPTED_CONTAINER);
 
-        recoverResourceRequestForContainer(container);
         // TODO: Not sure if this ever actually adds this to the list of cleanup
         // containers on the RMNode (see SchedulerNode.releaseContainer()).
         completedContainer(container, status, RMContainerEventType.KILL);
@@ -582,7 +581,8 @@ public class FairScheduler extends
               " submitted by user " + user + " with an empty queue name.";
       LOG.info(message);
       rmContext.getDispatcher().getEventHandler()
-          .handle(new RMAppRejectedEvent(applicationId, message));
+          .handle(new RMAppEvent(applicationId,
+              RMAppEventType.APP_REJECTED, message));
       return;
     }
 
@@ -593,7 +593,8 @@ public class FairScheduler extends
           + "The queue name cannot start/end with period.";
       LOG.info(message);
       rmContext.getDispatcher().getEventHandler()
-          .handle(new RMAppRejectedEvent(applicationId, message));
+          .handle(new RMAppEvent(applicationId,
+              RMAppEventType.APP_REJECTED, message));
       return;
     }
 
@@ -612,7 +613,8 @@ public class FairScheduler extends
               " cannot submit applications to queue " + queue.getName();
       LOG.info(msg);
       rmContext.getDispatcher().getEventHandler()
-          .handle(new RMAppRejectedEvent(applicationId, msg));
+          .handle(new RMAppEvent(applicationId,
+              RMAppEventType.APP_REJECTED, msg));
       return;
     }
   
@@ -708,7 +710,8 @@ public class FairScheduler extends
     if (appRejectMsg != null && rmApp != null) {
       LOG.error(appRejectMsg);
       rmContext.getDispatcher().getEventHandler().handle(
-          new RMAppRejectedEvent(rmApp.getApplicationId(), appRejectMsg));
+          new RMAppEvent(rmApp.getApplicationId(),
+              RMAppEventType.APP_REJECTED, appRejectMsg));
       return null;
     }
 
@@ -831,7 +834,7 @@ public class FairScheduler extends
   private synchronized void addNode(RMNode node) {
     FSSchedulerNode schedulerNode = new FSSchedulerNode(node, usePortForNodeName);
     nodes.put(node.getNodeID(), schedulerNode);
-    Resources.addTo(clusterResource, node.getTotalCapability());
+    Resources.addTo(clusterResource, schedulerNode.getTotalResource());
     updateRootQueueMetrics();
     updateMaximumAllocation(schedulerNode, true);
 
@@ -847,7 +850,7 @@ public class FairScheduler extends
     if (node == null) {
       return;
     }
-    Resources.subtractFrom(clusterResource, rmNode.getTotalCapability());
+    Resources.subtractFrom(clusterResource, node.getTotalResource());
     updateRootQueueMetrics();
 
     // Remove running containers
@@ -1010,6 +1013,13 @@ public class FairScheduler extends
       } catch (Throwable ex) {
         LOG.error("Error while attempting scheduling for node " + node +
             ": " + ex.toString(), ex);
+        if ((ex instanceof YarnRuntimeException) &&
+            (ex.getCause() instanceof InterruptedException)) {
+          // AsyncDispatcher translates InterruptedException to
+          // YarnRuntimeException with cause InterruptedException.
+          // Need to throw InterruptedException to stop schedulingThread.
+          throw (InterruptedException)ex.getCause();
+        }
       }
     }
 
@@ -1246,6 +1256,15 @@ public class FairScheduler extends
               SchedulerUtils.EXPIRED_CONTAINER),
           RMContainerEventType.EXPIRE);
       break;
+    case CONTAINER_RESCHEDULED:
+      if (!(event instanceof ContainerRescheduledEvent)) {
+        throw new RuntimeException("Unexpected event type: " + event);
+      }
+      ContainerRescheduledEvent containerRescheduledEvent =
+          (ContainerRescheduledEvent) event;
+      RMContainer container = containerRescheduledEvent.getContainer();
+      recoverResourceRequestForContainer(container);
+      break;
     default:
       LOG.error("Unknown event arrived at FairScheduler: " + event.toString());
     }
@@ -1269,7 +1288,8 @@ public class FairScheduler extends
                 + " submitted to a reservation which is not yet currently active: "
                 + resQName;
         this.rmContext.getDispatcher().getEventHandler()
-            .handle(new RMAppRejectedEvent(applicationId, message));
+            .handle(new RMAppEvent(applicationId,
+                RMAppEventType.APP_REJECTED, message));
         return null;
       }
       if (!queue.getParent().getQueueName().equals(queueName)) {
@@ -1278,7 +1298,8 @@ public class FairScheduler extends
                 + resQName + " which does not belong to the specified queue: "
                 + queueName;
         this.rmContext.getDispatcher().getEventHandler()
-            .handle(new RMAppRejectedEvent(applicationId, message));
+            .handle(new RMAppEvent(applicationId,
+                RMAppEventType.APP_REJECTED, message));
         return null;
       }
       // use the reservation queue to run the app

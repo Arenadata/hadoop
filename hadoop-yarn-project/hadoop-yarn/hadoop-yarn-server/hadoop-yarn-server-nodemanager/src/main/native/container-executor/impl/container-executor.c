@@ -1160,21 +1160,13 @@ int signal_container_as_user(const char *user, int pid, int sig) {
   }
 
   //Don't continue if the process-group is not alive anymore.
-  int has_group = 1;
   if (kill(-pid,0) < 0) {
-    if (kill(pid, 0) < 0) {
-      if (errno == ESRCH) {
-        return INVALID_CONTAINER_PID;
-      }
-      fprintf(LOGFILE, "Error signalling container %d with %d - %s\n",
-	      pid, sig, strerror(errno));
-      return -1;
-    } else {
-      has_group = 0;
-    }
+    fprintf(LOGFILE, "Error signalling not exist process group %d "
+            "with signal %d\n", pid, sig);
+    return INVALID_CONTAINER_PID;
   }
 
-  if (kill((has_group ? -1 : 1) * pid, sig) < 0) {
+  if (kill(-pid, sig) < 0) {
     if(errno != ESRCH) {
       fprintf(LOGFILE, 
               "Error signalling process group %d with signal %d - %s\n", 
@@ -1188,8 +1180,7 @@ int signal_container_as_user(const char *user, int pid, int sig) {
       return INVALID_CONTAINER_PID;
     }
   }
-  fprintf(LOGFILE, "Killing process %s%d with %d\n",
-	  (has_group ? "group " :""), pid, sig);
+  fprintf(LOGFILE, "Killing process group %d with %d\n", pid, sig);
   return 0;
 }
 
@@ -1368,8 +1359,13 @@ int delete_as_user(const char *user,
     char* full_path = NULL;
     struct stat sb;
     if (stat(*ptr, &sb) != 0) {
-      fprintf(LOGFILE, "Could not stat %s\n", *ptr);
-      return -1;
+      if (errno == ENOENT) {
+        // Ignore missing dir. Continue deleting other directories.
+        continue;
+      } else {
+        fprintf(LOGFILE, "Could not stat %s - %s\n", *ptr, strerror(errno));
+        return -1;
+      }
     }
     if (!S_ISDIR(sb.st_mode)) {
       if (!subDirEmptyStr) {

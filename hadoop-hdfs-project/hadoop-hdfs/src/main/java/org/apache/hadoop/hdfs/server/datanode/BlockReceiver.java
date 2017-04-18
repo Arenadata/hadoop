@@ -24,6 +24,7 @@ import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.EOFException;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -134,6 +135,8 @@ class BlockReceiver implements Closeable {
   private DataOutputStream replyOut = null;
   
   private boolean pinning;
+  private long lastSentTime;
+  private long maxSendIdleTime;
 
   BlockReceiver(final ExtendedBlock block, final StorageType storageType,
       final DataInputStream in,
@@ -160,7 +163,8 @@ class BlockReceiver implements Closeable {
       this.datanodeSlowLogThresholdMs = datanode.getDnConf().datanodeSlowIoWarningThresholdMs;
       // For replaceBlock() calls response should be sent to avoid socketTimeout
       // at clients. So sending with the interval of 0.5 * socketTimeout
-      this.responseInterval = (long) (datanode.getDnConf().socketTimeout * 0.5);
+      final long readTimeout = datanode.getDnConf().socketTimeout;
+      this.responseInterval = (long) (readTimeout * 0.5);
       //for datanode, we have
       //1: clientName.length() == 0, and
       //2: stage == null or PIPELINE_SETUP_CREATE
@@ -169,6 +173,12 @@ class BlockReceiver implements Closeable {
           || stage == BlockConstructionStage.TRANSFER_FINALIZED;
 
       this.pinning = pinning;
+      this.lastSentTime = Time.monotonicNow();
+      // Downstream will timeout in readTimeout on receiving the next packet.
+      // If there is no data traffic, a heartbeat packet is sent at
+      // the interval of 0.5*readTimeout. Here, we set 0.9*readTimeout to be
+      // the threshold for detecting congestion.
+      this.maxSendIdleTime = (long) (readTimeout * 0.9);
       if (LOG.isDebugEnabled()) {
         LOG.debug(getClass().getSimpleName() + ": " + block
             + "\n  isClient  =" + isClient + ", clientname=" + clientname
@@ -351,6 +361,25 @@ class BlockReceiver implements Closeable {
     }
   }
 
+  synchronized void setLastSentTime(long sentTime) {
+    lastSentTime = sentTime;
+  }
+
+  /**
+   * It can return false if
+   * - upstream did not send packet for a long time
+   * - a packet was received but got stuck in local disk I/O.
+   * - a packet was received but got stuck on send to mirror.
+   */
+  synchronized boolean packetSentInTime() {
+    long diff = Time.monotonicNow() - lastSentTime;
+    if (diff > maxSendIdleTime) {
+      LOG.info("A packet was last sent " + diff + " milliseconds ago.");
+      return false;
+    }
+    return true;
+  }
+
   /**
    * Flush block data and metadata files to disk.
    * @throws IOException
@@ -514,13 +543,23 @@ class BlockReceiver implements Closeable {
           lastPacketInBlock, offsetInBlock, Status.SUCCESS);
     }
 
+    // Drop heartbeat for testing.
+    if (seqno < 0 && len == 0 &&
+        DataNodeFaultInjector.get().dropHeartbeatPacket()) {
+      return 0;
+    }
+
     //First write the packet to the mirror:
     if (mirrorOut != null && !mirrorError) {
       try {
         long begin = Time.monotonicNow();
+        // For testing. Normally no-op.
+        DataNodeFaultInjector.get().stopSendingPacketDownstream();
         packetReceiver.mirrorPacketTo(mirrorOut);
         mirrorOut.flush();
-        long duration = Time.monotonicNow() - begin;
+        long now = Time.monotonicNow();
+        setLastSentTime(now);
+        long duration = now - begin;
         if (duration > datanodeSlowLogThresholdMs) {
           LOG.warn("Slow BlockReceiver write packet to mirror took " + duration
               + "ms (threshold=" + datanodeSlowLogThresholdMs + "ms)");
@@ -598,14 +637,19 @@ class BlockReceiver implements Closeable {
           // bytes should be skipped when writing the data and checksum
           // buffers out to disk.
           long partialChunkSizeOnDisk = onDiskLen % bytesPerChecksum;
+          long lastChunkBoundary = onDiskLen - partialChunkSizeOnDisk;
           boolean alignedOnDisk = partialChunkSizeOnDisk == 0;
           boolean alignedInPacket = firstByteInBlock % bytesPerChecksum == 0;
 
-          // Since data is always appended, not overwritten, partial CRC
-          // recalculation is necessary if the on-disk data is not chunk-
-          // aligned, regardless of whether the beginning of the data in
-          // the packet is chunk-aligned.
-          boolean doPartialCrc = !alignedOnDisk && !shouldNotWriteChecksum;
+          // If the end of the on-disk data is not chunk-aligned, the last
+          // checksum needs to be overwritten.
+          boolean overwriteLastCrc = !alignedOnDisk && !shouldNotWriteChecksum;
+          // If the starting offset of the packat data is at the last chunk
+          // boundary of the data on disk, the partial checksum recalculation
+          // can be skipped and the checksum supplied by the client can be used
+          // instead. This reduces disk reads and cpu load.
+          boolean doCrcRecalc = overwriteLastCrc &&
+              (lastChunkBoundary != firstByteInBlock);
 
           // If this is a partial chunk, then verify that this is the only
           // chunk in the packet. If the starting offset is not chunk
@@ -621,9 +665,10 @@ class BlockReceiver implements Closeable {
           // If the last portion of the block file is not a full chunk,
           // then read in pre-existing partial data chunk and recalculate
           // the checksum so that the checksum calculation can continue
-          // from the right state.
+          // from the right state. If the client provided the checksum for
+          // the whole chunk, this is not necessary.
           Checksum partialCrc = null;
-          if (doPartialCrc) {
+          if (doCrcRecalc) {
             if (LOG.isDebugEnabled()) {
               LOG.debug("receivePacket for " + block 
                   + ": previous write did not end at the chunk boundary."
@@ -659,8 +704,15 @@ class BlockReceiver implements Closeable {
             int skip = 0;
             byte[] crcBytes = null;
 
-            // First, overwrite the partial crc at the end, if necessary.
-            if (doPartialCrc) { // not chunk-aligned on disk
+            // First, prepare to overwrite the partial crc at the end.
+            if (overwriteLastCrc) { // not chunk-aligned on disk
+              // prepare to overwrite last checksum
+              adjustCrcFilePosition();
+            }
+
+            // The CRC was recalculated for the last partial chunk. Update the
+            // CRC by reading the rest of the chunk, then write it out.
+            if (doCrcRecalc) {
               // Calculate new crc for this chunk.
               int bytesToReadForRecalc =
                   (int)(bytesPerChecksum - partialChunkSizeOnDisk);
@@ -673,8 +725,6 @@ class BlockReceiver implements Closeable {
               byte[] buf = FSOutputSummer.convertToByteStream(partialCrc,
                   checksumSize);
               crcBytes = copyLastChunkChecksum(buf, checksumSize, buf.length);
-              // prepare to overwrite last checksum
-              adjustCrcFilePosition();
               checksumOut.write(buf);
               if(LOG.isDebugEnabled()) {
                 LOG.debug("Writing out partial crc for data len " + len +
@@ -687,7 +737,6 @@ class BlockReceiver implements Closeable {
             // boundary. The checksum after the boundary was already counted
             // above. Only count the number of checksums skipped up to the
             // boundary here.
-            long lastChunkBoundary = onDiskLen - (onDiskLen%bytesPerChecksum);
             long skippedDataBytes = lastChunkBoundary - firstByteInBlock;
 
             if (skippedDataBytes > 0) {
@@ -700,11 +749,10 @@ class BlockReceiver implements Closeable {
             final int offset = checksumBuf.arrayOffset() +
                 checksumBuf.position() + skip;
             final int end = offset + checksumLen - skip;
-            // If offset > end, there is no more checksum to write.
+            // If offset >= end, there is no more checksum to write.
             // I.e. a partial chunk checksum rewrite happened and there is no
             // more to write after that.
-            if (offset > end) {
-              assert crcBytes != null;
+            if (offset >= end && doCrcRecalc) {
               lastCrc = crcBytes;
             } else {
               final int remainingBytes = checksumLen - skip;
@@ -1288,6 +1336,17 @@ class BlockReceiver implements Closeable {
           } catch (IOException ioe) {
             if (Thread.interrupted()) {
               isInterrupted = true;
+            } else if (ioe instanceof EOFException && !packetSentInTime()) {
+              // The downstream error was caused by upstream including this
+              // node not sending packet in time. Let the upstream determine
+              // who is at fault.  If the immediate upstream node thinks it
+              // has sent a packet in time, this node will be reported as bad.
+              // Otherwise, the upstream node will propagate the error up by
+              // closing the connection.
+              LOG.warn("The downstream error might be due to congestion in " +
+                  "upstream including this node. Propagating the error: ",
+                  ioe);
+              throw ioe;
             } else {
               // continue to run even if can not read from mirror
               // notify client of the error
