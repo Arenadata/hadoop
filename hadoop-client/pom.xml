@@ -26,8 +26,8 @@
   <version>2.7.3</version>
   <packaging>jar</packaging>
 
-  <description>Apache Hadoop Client</description>
-  <name>Apache Hadoop Client</name>
+  <description>Arenadata Hadoop Client</description>
+  <name>Arenadata Hadoop Client</name>
 
 <properties>
    <hadoop.component>client</hadoop.component>
