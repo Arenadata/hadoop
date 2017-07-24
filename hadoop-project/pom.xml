@@ -25,8 +25,8 @@
   <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-project</artifactId>
   <version>2.7.3</version>
-  <description>Arenadata Hadoop Project POM</description>
-  <name>Arenadata Hadoop Project POM</name>
+  <description>Apache Hadoop Project POM</description>
+  <name>Apache Hadoop Project POM</name>
   <packaging>pom</packaging>
 
   <properties>
