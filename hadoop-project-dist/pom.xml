@@ -26,8 +26,8 @@
   <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-project-dist</artifactId>
   <version>2.7.3</version>
-  <description>Arenadata Hadoop Project Dist POM</description>
-  <name>Arenadata Hadoop Project Dist POM</name>
+  <description>Apache Hadoop Project Dist POM</description>
+  <name>Apache Hadoop Project Dist POM</name>
   <packaging>pom</packaging>
 
   <properties>
