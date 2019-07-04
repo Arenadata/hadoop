@@ -21,7 +21,6 @@ import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.net.URI;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -30,18 +29,18 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 public class TestHttpsFileSystem {
-  private static final String BASEDIR = System.getProperty("test.build.dir",
-      "target/test-dir") + "/" + TestHttpsFileSystem.class.getSimpleName();
+  private static final String BASEDIR =
+      GenericTestUtils.getTempPath(TestHttpsFileSystem.class.getSimpleName());
 
   private static MiniDFSCluster cluster;
   private static Configuration conf;
@@ -53,7 +52,6 @@ public class TestHttpsFileSystem {
   @BeforeClass
   public static void setUp() throws Exception {
     conf = new Configuration();
-    conf.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
     conf.set(DFSConfigKeys.DFS_HTTP_POLICY_KEY, HttpConfig.Policy.HTTPS_ONLY.name());
     conf.set(DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY, "localhost:0");
     conf.set(DFSConfigKeys.DFS_DATANODE_HTTPS_ADDRESS_KEY, "localhost:0");
@@ -87,16 +85,6 @@ public class TestHttpsFileSystem {
     }
     FileUtil.fullyDelete(new File(BASEDIR));
     KeyStoreTestUtil.cleanupSSLConfig(keystoresDir, sslConfDir);
-  }
-
-  @Test
-  public void testHsftpFileSystem() throws Exception {
-    FileSystem fs = FileSystem.get(new URI("hsftp://" + nnAddr), conf);
-    Assert.assertTrue(fs.exists(new Path("/test")));
-    InputStream is = fs.open(new Path("/test"));
-    Assert.assertEquals(23, is.read());
-    is.close();
-    fs.close();
   }
 
   @Test

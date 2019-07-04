@@ -30,6 +30,7 @@ import java.util.Map.Entry;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.LogAggregationStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
@@ -57,6 +58,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeStatusEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.timelineservice.RMTimelineCollectorManager;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -89,8 +91,11 @@ public class TestRMAppLogAggregationStatus {
     rmContext =
         new RMContextImpl(rmDispatcher, null, null, null,
           null, null, null, null, null);
-    rmContext.setSystemMetricsPublisher(new SystemMetricsPublisher());
+    rmContext.setSystemMetricsPublisher(mock(SystemMetricsPublisher.class));
     rmContext.setRMApplicationHistoryWriter(mock(RMApplicationHistoryWriter.class));
+
+    rmContext
+        .setRMTimelineCollectorManager(mock(RMTimelineCollectorManager.class));
 
     scheduler = mock(YarnScheduler.class);
     doAnswer(
@@ -167,7 +172,7 @@ public class TestRMAppLogAggregationStatus {
     NodeStatus nodeStatus1 = NodeStatus.newInstance(node1.getNodeID(), 0,
         new ArrayList<ContainerStatus>(), null,
         NodeHealthStatus.newInstance(true, null, 0), null, null, null);
-    node1.handle(new RMNodeStatusEvent(node1.getNodeID(), nodeStatus1, null,
+    node1.handle(new RMNodeStatusEvent(node1.getNodeID(), nodeStatus1,
         node1ReportForApp));
 
     List<LogAggregationReport> node2ReportForApp =
@@ -181,7 +186,7 @@ public class TestRMAppLogAggregationStatus {
     NodeStatus nodeStatus2 = NodeStatus.newInstance(node2.getNodeID(), 0,
         new ArrayList<ContainerStatus>(), null,
         NodeHealthStatus.newInstance(true, null, 0), null, null, null);
-    node2.handle(new RMNodeStatusEvent(node2.getNodeID(), nodeStatus2, null,
+    node2.handle(new RMNodeStatusEvent(node2.getNodeID(), nodeStatus2,
         node2ReportForApp));
     // node1 and node2 has updated its log aggregation status
     // verify that the log aggregation status for node1, node2
@@ -218,7 +223,7 @@ public class TestRMAppLogAggregationStatus {
         LogAggregationReport.newInstance(appId,
           LogAggregationStatus.RUNNING, messageForNode1_2);
     node1ReportForApp2.add(report1_2);
-    node1.handle(new RMNodeStatusEvent(node1.getNodeID(), nodeStatus1, null,
+    node1.handle(new RMNodeStatusEvent(node1.getNodeID(), nodeStatus1,
         node1ReportForApp2));
 
     // verify that the log aggregation status for node1
@@ -286,7 +291,7 @@ public class TestRMAppLogAggregationStatus {
       LogAggregationStatus.SUCCEEDED, ""));
     // For every logAggregationReport cached in memory, we can only save at most
     // 10 diagnostic messages/failure messages
-    node1.handle(new RMNodeStatusEvent(node1.getNodeID(), nodeStatus1, null,
+    node1.handle(new RMNodeStatusEvent(node1.getNodeID(), nodeStatus1,
         node1ReportForApp3));
 
     logAggregationStatus = rmApp.getLogAggregationReportsForApp();
@@ -330,7 +335,7 @@ public class TestRMAppLogAggregationStatus {
           LogAggregationStatus.FAILED, "");
     node2ReportForApp2.add(report2_2);
     node2ReportForApp2.add(report2_3);
-    node2.handle(new RMNodeStatusEvent(node2.getNodeID(), nodeStatus2, null,
+    node2.handle(new RMNodeStatusEvent(node2.getNodeID(), nodeStatus2,
         node2ReportForApp2));
     Assert.assertEquals(LogAggregationStatus.FAILED,
       rmApp.getLogAggregationStatusForAppReport());
@@ -408,6 +413,8 @@ public class TestRMAppLogAggregationStatus {
     Assert.assertEquals(LogAggregationStatus.TIME_OUT,
       rmApp.getLogAggregationStatusForAppReport());
 
+    rmApp = (RMAppImpl)createRMApp(conf);
+    rmApp.handle(new RMAppEvent(rmApp.getApplicationId(), RMAppEventType.KILL));
     // If the log aggregation status for all NMs are SUCCEEDED and Application
     // is at the final state, the log aggregation status for this app will
     // return SUCCEEDED
@@ -486,9 +493,10 @@ public class TestRMAppLogAggregationStatus {
 
   private RMApp createRMApp(Configuration conf) {
     ApplicationSubmissionContext submissionContext =
-        ApplicationSubmissionContext.newInstance(appId, "test", "default",
-          Priority.newInstance(0), null, false, true,
-          2, Resource.newInstance(10, 2), "test");
+        ApplicationSubmissionContext
+            .newInstance(appId, "test", "default", Priority.newInstance(0),
+                mock(ContainerLaunchContext.class), false, true, 2,
+                Resource.newInstance(10, 2), "test");
     return new RMAppImpl(this.appId, this.rmContext,
       conf, "test", "test", "default", submissionContext,
       scheduler,

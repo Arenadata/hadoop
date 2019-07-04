@@ -186,7 +186,7 @@ public class TestHDFSTrash {
         .append(trashId.toString());
     Path userTrashRoot = new Path(TRASH_ROOT, sb.toString());
     FileSystem spyUserFs = Mockito.spy(fileSystem);
-    Mockito.when(spyUserFs.getTrashRoot(Mockito.any(Path.class)))
+    Mockito.when(spyUserFs.getTrashRoot(Mockito.any()))
         .thenReturn(userTrashRoot);
     return new Trash(spyUserFs, config);
   }

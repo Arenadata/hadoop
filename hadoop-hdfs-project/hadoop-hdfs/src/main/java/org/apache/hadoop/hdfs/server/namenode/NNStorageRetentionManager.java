@@ -134,7 +134,7 @@ public class NNStorageRetentionManager {
     long purgeLogsFrom = Math.max(0, minimumRequiredTxId - numExtraEditsToRetain);
     
     ArrayList<EditLogInputStream> editLogs = new ArrayList<EditLogInputStream>();
-    purgeableLogs.selectInputStreams(editLogs, purgeLogsFrom, false);
+    purgeableLogs.selectInputStreams(editLogs, purgeLogsFrom, false, false);
     Collections.sort(editLogs, new Comparator<EditLogInputStream>() {
       @Override
       public int compare(EditLogInputStream a, EditLogInputStream b) {
@@ -255,24 +255,27 @@ public class NNStorageRetentionManager {
     });
 
     // Check whether there is any work to do.
-    if (filesInStorage.length <= numCheckpointsToRetain) {
+    if (filesInStorage != null
+        && filesInStorage.length <= numCheckpointsToRetain) {
       return;
     }
 
     // Create a sorted list of txids from the file names.
     TreeSet<Long> sortedTxIds = new TreeSet<Long>();
-    for (String fName : filesInStorage) {
-      // Extract the transaction id from the file name.
-      long fTxId;
-      try {
-        fTxId = Long.parseLong(fName.substring(oivImagePrefix.length() + 1));
-      } catch (NumberFormatException nfe) {
-        // This should not happen since we have already filtered it.
-        // Log and continue.
-        LOG.warn("Invalid file name. Skipping " + fName);
-        continue;
+    if (filesInStorage != null) {
+      for (String fName : filesInStorage) {
+        // Extract the transaction id from the file name.
+        long fTxId;
+        try {
+          fTxId = Long.parseLong(fName.substring(oivImagePrefix.length() + 1));
+        } catch (NumberFormatException nfe) {
+          // This should not happen since we have already filtered it.
+          // Log and continue.
+          LOG.warn("Invalid file name. Skipping " + fName);
+          continue;
+        }
+        sortedTxIds.add(Long.valueOf(fTxId));
       }
-      sortedTxIds.add(Long.valueOf(fTxId));
     }
 
     int numFilesToDelete = sortedTxIds.size() - numCheckpointsToRetain;

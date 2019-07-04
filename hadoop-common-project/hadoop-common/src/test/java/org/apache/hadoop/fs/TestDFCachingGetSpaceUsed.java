@@ -34,8 +34,7 @@ import static org.junit.Assert.assertTrue;
  * Test to make sure df can run and work.
  */
 public class TestDFCachingGetSpaceUsed {
-  final static private File DF_DIR =
-      new File(System.getProperty("test.build.data","/tmp"), "testdfspace");
+  final static private File DF_DIR = GenericTestUtils.getTestDir("testdfspace");
   public static final int FILE_SIZE = 1024;
 
   @Before

@@ -43,6 +43,10 @@ public class FileSystemStorageStatistics extends StorageStatistics {
       "readOps",
       "largeReadOps",
       "writeOps",
+      "bytesReadLocalHost",
+      "bytesReadDistanceOfOneOrTwo",
+      "bytesReadDistanceOfThreeOrFour",
+      "bytesReadDistanceOfFiveOrLarger"
   };
 
   private static class LongStatisticIterator
@@ -92,6 +96,14 @@ public class FileSystemStorageStatistics extends StorageStatistics {
       return Long.valueOf(data.getLargeReadOps());
     case "writeOps":
       return Long.valueOf(data.getWriteOps());
+    case "bytesReadLocalHost":
+      return data.getBytesReadLocalHost();
+    case "bytesReadDistanceOfOneOrTwo":
+      return data.getBytesReadDistanceOfOneOrTwo();
+    case "bytesReadDistanceOfThreeOrFour":
+      return data.getBytesReadDistanceOfThreeOrFour();
+    case "bytesReadDistanceOfFiveOrLarger":
+      return data.getBytesReadDistanceOfFiveOrLarger();
     default:
       return null;
     }

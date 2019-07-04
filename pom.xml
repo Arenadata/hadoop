@@ -18,7 +18,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-main</artifactId>
-  <version>2.8.0-arenadata</version>
+  <version>3.1.0-arenadata</version>
   <description>Apache Hadoop Main</description>
   <name>Apache Hadoop Main</name>
   <packaging>pom</packaging>
@@ -92,21 +92,24 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
 
     <!-- maven plugin versions -->
     <maven-deploy-plugin.version>2.8.1</maven-deploy-plugin.version>
-    <maven-site-plugin.version>3.5</maven-site-plugin.version>
+    <maven-site-plugin.version>3.6</maven-site-plugin.version>
     <maven-stylus-skin.version>1.5</maven-stylus-skin.version>
     <maven-antrun-plugin.version>1.7</maven-antrun-plugin.version>
     <maven-assembly-plugin.version>2.4</maven-assembly-plugin.version>
-    <maven-dependency-plugin.version>2.8</maven-dependency-plugin.version>
-    <maven-enforcer-plugin.version>1.3.1</maven-enforcer-plugin.version>
-    <maven-javadoc-plugin.version>2.9.1</maven-javadoc-plugin.version>
+    <maven-dependency-plugin.version>3.0.2</maven-dependency-plugin.version>
+    <maven-enforcer-plugin.version>3.0.0-M1</maven-enforcer-plugin.version>
+    <maven-javadoc-plugin.version>3.0.0-M1</maven-javadoc-plugin.version>
     <maven-gpg-plugin.version>1.5</maven-gpg-plugin.version>
-    <apache-rat-plugin.version>0.10</apache-rat-plugin.version>
+    <maven-remote-resources-plugin.version>1.5</maven-remote-resources-plugin.version>
+    <maven-resources-plugin.version>3.0.1</maven-resources-plugin.version>
+    <apache-rat-plugin.version>0.12</apache-rat-plugin.version>
     <wagon-ssh.version>1.0</wagon-ssh.version>
     <maven-clover2-plugin.version>3.3.0</maven-clover2-plugin.version>
     <maven-bundle-plugin.version>2.5.0</maven-bundle-plugin.version>
-    <maven-checkstyle-plugin.version>2.15</maven-checkstyle-plugin.version>
-    <checkstyle.version>6.6</checkstyle.version>
-    <dependency-check-maven.version>1.3.6</dependency-check-maven.version>
+    <lifecycle-mapping.version>1.0.0</lifecycle-mapping.version>
+    <maven-checkstyle-plugin.version>3.0.0</maven-checkstyle-plugin.version>
+    <checkstyle.version>8.8</checkstyle.version>
+    <dependency-check-maven.version>1.4.3</dependency-check-maven.version>
 
     <shell-executable>bash</shell-executable>
   </properties>
@@ -122,9 +125,10 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
     <module>hadoop-mapreduce-project</module>
     <module>hadoop-tools</module>
     <module>hadoop-dist</module>
-    <module>hadoop-client</module>
     <module>hadoop-minicluster</module>
+    <module>hadoop-client-modules</module>
     <module>hadoop-build-tools</module>
+    <module>hadoop-cloud-storage-project</module>
   </modules>
 
   <build>
@@ -145,7 +149,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
                 <version>[3.0.2,)</version>
               </requireMavenVersion>
               <requireJavaVersion>
-                <version>[1.7,)</version>
+                <version>[1.8,)</version>
               </requireJavaVersion>
             </rules>
           </configuration>
@@ -180,7 +184,119 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
               <artifactId>wagon-ssh</artifactId>
               <version>${wagon-ssh.version}</version>
             </dependency>
+            <dependency>
+              <groupId>org.apache.maven.doxia</groupId>
+              <artifactId>doxia-module-markdown</artifactId>
+              <version>1.8</version>
+            </dependency>
           </dependencies>
+        </plugin>
+        <!--This plugin's configuration is used to store Eclipse m2e settings only.
+        It has no influence on the Maven build itself.-->
+        <plugin>
+          <groupId>org.eclipse.m2e</groupId>
+          <artifactId>lifecycle-mapping</artifactId>
+          <version>${lifecycle-mapping.version}</version>
+          <configuration>
+            <lifecycleMappingMetadata>
+              <pluginExecutions>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-antrun-plugin</artifactId>
+                    <versionRange>[1.7,)</versionRange>
+                    <goals>
+                      <goal>run</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <versionRange>[2.2,)</versionRange>
+                    <goals>
+                      <goal>testResources</goal>
+                      <goal>resources</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.avro</groupId>
+                    <artifactId>avro-maven-plugin</artifactId>
+                    <versionRange>[1.5.3,)</versionRange>
+                    <goals>
+                      <goal>schema</goal>
+                      <goal>protocol</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.codehaus.mojo.jspc</groupId>
+                    <artifactId>jspc-maven-plugin</artifactId>
+                    <versionRange>[2.0-alpha-3,)</versionRange>
+                    <goals>
+                      <goal>compile</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <versionRange>[2.4,)</versionRange>
+                    <goals>
+                      <goal>copy-dependencies</goal>
+                      <goal>build-classpath</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>exec-maven-plugin</artifactId>
+                    <versionRange>[1.2,)</versionRange>
+                    <goals>
+                      <goal>exec</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <versionRange>[2.3.1,)</versionRange>
+                    <goals>
+                      <goal>test-jar</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+              </pluginExecutions>
+            </lifecycleMappingMetadata>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>com.atlassian.maven.plugins</groupId>
@@ -210,6 +326,8 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
           </dependencies>
           <configuration>
             <configLocation>checkstyle/checkstyle.xml</configLocation>
+            <suppressionsLocation>checkstyle/suppressions.xml</suppressionsLocation>
+            <includeTestSourceDirectory>true</includeTestSourceDirectory>
             <failOnViolation>false</failOnViolation>
             <format>xml</format>
             <format>html</format>
@@ -262,8 +380,9 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
             <exclude>.gitignore</exclude>
             <exclude>.git/**</exclude>
             <exclude>.idea/**</exclude>
-	    <exclude>**/build/**</exclude>
+            <exclude>**/build/**</exclude>
             <exclude>**/patchprocess/**</exclude>
+            <exclude>**/*.js</exclude>
          </excludes>
        </configuration>
       </plugin>
@@ -275,9 +394,6 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
             <goals>
               <goal>attach-descriptor</goal>
             </goals>
-            <configuration>
-              <generateReports>true</generateReports>
-            </configuration>
           </execution>
         </executions>
       </plugin>
@@ -297,7 +413,8 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
              dependencies of this project for known CVEs (security
              vulnerabilities against them). It will produce a report
              in target/dependency-check-report.html. To invoke, run
-             'mvn dependency-check:aggregate'
+             'mvn dependency-check:aggregate'. Note that this plugin
+             requires maven 3.1.1 or greater.
         -->
         <groupId>org.owasp</groupId>
         <artifactId>dependency-check-maven</artifactId>
@@ -319,7 +436,6 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
             <id>aggregate</id>
             <configuration>
               <maxmemory>1024m</maxmemory>
-              <linksource>true</linksource>
               <quiet>true</quiet>
               <verbose>false</verbose>
               <source>${maven.compile.source}</source>
@@ -327,11 +443,15 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
               <reportOutputDirectory>${project.build.directory}/site</reportOutputDirectory>
               <destDir>hadoop-project/api</destDir>
               <!-- Non-public APIs -->
-              <excludePackageNames>org.apache.hadoop.authentication*,org.apache.hadoop.hdfs*,org.apache.hadoop.mapreduce.v2.proto,org.apache.hadoop.yarn.proto,org.apache.hadoop.yarn.server*,org.apache.hadoop.yarn.webapp*</excludePackageNames>
+              <excludePackageNames>org.apache.hadoop.authentication*,org.apache.hadoop.mapreduce.v2.proto,org.apache.hadoop.yarn.proto,org.apache.hadoop.yarn.server*,org.apache.hadoop.yarn.webapp*</excludePackageNames>
               <groups>
                 <group>
                   <title>Common</title>
                   <packages>org.apache.hadoop*</packages>
+                </group>
+                <group>
+                  <title>HDFS</title>
+                  <packages>org.apache.hadoop.hdfs*</packages>
                 </group>
                 <group>
                   <title>MapReduce</title>

@@ -17,12 +17,7 @@
  */
 package org.apache.hadoop.util;
 
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.UnsupportedEncodingException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URLEncoder;
+import java.io.*;
 import java.util.Calendar;
 
 import javax.servlet.*;
@@ -32,7 +27,6 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
 import com.google.common.base.Preconditions;
-import org.apache.http.client.utils.URIBuilder;
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
@@ -90,60 +84,6 @@ public class ServletUtil {
    */
   public static String htmlFooter() {
     return HTML_TAIL;
-  }
-  /**
-   * Escape and encode a string regarded as within the query component of an URI.
-   * @param value the value to encode
-   * @return encoded query, null if the default charset is not supported
-   */
-  public static String encodeQueryValue(final String value) {
-    try {
-      return URLEncoder.encode(value, "UTF-8");
-    } catch (UnsupportedEncodingException e) {
-      throw new AssertionError("Failed to encode query value in UTF-8: " +
-          value);
-    }
-  }
-
-  /**
-   * Escape and encode a string regarded as the path component of an URI.
-   * @param path the path component to encode
-   * @return encoded path, null if UTF-8 is not supported
-   */
-  public static String encodePath(final String path) {
-    return new URIBuilder().setPath(path).toString();
-  }
-
-  /**
-   * Decode a string regarded as the path component of an URI.
-   *
-   * @param path the path component to decode
-   * @return decoded path, null if UTF-8 is not supported
-   * @throws URISyntaxException
-   */
-  public static String decodePath(final String path) {
-    try {
-      return new URI(path).getPath();
-    } catch (URISyntaxException e) {
-      throw new AssertionError("Failed to decode URI: " + path);
-    }
-  }
-
-  /**
-   * Parse and decode the path component from the given request.
-   * @param request Http request to parse
-   * @param servletName the name of servlet that precedes the path
-   * @return decoded path component, null if UTF-8 is not supported
-   */
-  public static String getDecodedPath(final HttpServletRequest request,
-      String servletName) {
-    String requestURI = request.getRequestURI();
-    String uriPath = getRawPath(request, servletName);
-    try {
-      return new URI(uriPath).getPath();
-    } catch (URISyntaxException e) {
-      throw new AssertionError("Failed to decode URI: " + requestURI);
-    }
   }
 
   /**

@@ -17,10 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.*;
 import static org.mockito.Mockito.mock;
 
 import java.io.IOException;
@@ -176,7 +173,7 @@ public class TestGenericJournalConf {
 
     @Override
     public void selectInputStreams(Collection<EditLogInputStream> streams,
-        long fromTxnId, boolean inProgressOk) {
+        long fromTxnId, boolean inProgressOk, boolean onlyDurableTxns) {
     }
 
     @Override
@@ -228,29 +225,6 @@ public class TestGenericJournalConf {
   public static class BadConstructorJournalManager extends DummyJournalManager {
     public BadConstructorJournalManager() {
       super(null, null, null);
-    }
-
-    @Override
-    public void doPreUpgrade() throws IOException {}
-
-    @Override
-    public void doUpgrade(Storage storage) throws IOException {}
-
-    @Override
-    public void doFinalize() throws IOException {}
-
-    @Override
-    public boolean canRollBack(StorageInfo storage, StorageInfo prevStorage, int targetLayoutVersion)
-        throws IOException {
-      return false;
-    }
-
-    @Override
-    public void doRollback() throws IOException {}
-
-    @Override
-    public long getJournalCTime() throws IOException {
-      return -1;
     }
   }
 }

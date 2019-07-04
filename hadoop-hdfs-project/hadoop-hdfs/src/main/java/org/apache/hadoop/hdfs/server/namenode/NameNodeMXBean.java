@@ -65,8 +65,14 @@ public interface NameNodeMXBean {
    * @return the total raw bytes including non-dfs used space
    */
   public long getTotal();
-  
-  
+
+  /**
+   * Gets capacity of the provided storage mounted, in bytes.
+   *
+   * @return the total raw bytes present in the provided storage.
+   */
+  public long getProvidedCapacity();
+
   /**
    * Gets the safemode status
    * 
@@ -141,16 +147,6 @@ public interface NameNodeMXBean {
   public long getTotalBlocks();
   
   /**
-   * Gets the total number of files on the cluster
-   *
-   * @return the total number of files on the cluster
-   * @deprecated Use
-   * {@link org.apache.hadoop.hdfs.server.namenode.metrics.FSNamesystemMBean#getFilesTotal()} instead.
-   */
-  @Deprecated
-  public long getTotalFiles();
-  
-  /**
    * Gets the total number of missing blocks on the cluster
    * 
    * @return the total number of missing blocks on the cluster
@@ -200,7 +196,14 @@ public interface NameNodeMXBean {
    * @return the decommissioning node information
    */
   public String getDecomNodes();
-  
+
+  /**
+   * Gets the information on nodes entering maintenance.
+   *
+   * @return the information on nodes entering maintenance
+   */
+  String getEnteringMaintenanceNodes();
+
   /**
    * Gets the cluster id.
    * 
@@ -242,15 +245,6 @@ public interface NameNodeMXBean {
    * transaction ID and the most recent checkpoint's transaction ID
    */
   public String getJournalTransactionInfo();
-
-  /**
-   * Gets the NN start time
-   * @deprecated Use
-   * {@link #getNNStartedTimeInMillis()} instead.
-   * @return the NN start time
-   */
-  @Deprecated
-  public String getNNStarted();
 
   /**
    * Gets the NN start time in milliseconds.

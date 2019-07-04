@@ -17,6 +17,10 @@
  */
 #include "configuration.h"
 #include "container-executor.h"
+#include "utils/string-utils.h"
+#include "util.h"
+#include "get_executable.h"
+#include "test/test-container-executor-common.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -29,29 +33,11 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-#ifdef __APPLE__
-#include <CoreFoundation/CFString.h>
-#include <CoreFoundation/CFPreferences.h>
-
-#define TMPDIR "/private/tmp"
-#define RELTMPDIR "../.."
-#else
-#define RELTMPDIR ".."
-#define TMPDIR "/tmp"
-#endif
-
-#define TEST_ROOT TMPDIR "/test-container-executor"
-
-#define DONT_TOUCH_FILE "dont-touch-me"
-#define NM_LOCAL_DIRS       TEST_ROOT "/local-1%" TEST_ROOT "/local-2%" \
-               TEST_ROOT "/local-3%" TEST_ROOT "/local-4%" TEST_ROOT "/local-5"
-#define NM_LOG_DIRS         TEST_ROOT "/logs/userlogs"
-#define ARRAY_SIZE 1000
-
 static char* username = NULL;
 static char* yarn_username = NULL;
 static char** local_dirs = NULL;
 static char** log_dirs = NULL;
+static uid_t nm_uid = -1;
 
 /**
  * Run the command using the effective user id.
@@ -167,8 +153,8 @@ void check_pid_file(const char* pid_file, pid_t mypid) {
 }
 
 void test_get_user_directory() {
-  char *user_dir = get_user_directory(TMPDIR, "user");
-  char *expected = TMPDIR "/usercache/user";
+  char *user_dir = get_user_directory(TEST_ROOT, "user");
+  char *expected = TEST_ROOT "/usercache/user";
   if (strcmp(user_dir, expected) != 0) {
     printf("test_get_user_directory expected %s got %s\n", expected, user_dir);
     exit(1);
@@ -176,9 +162,32 @@ void test_get_user_directory() {
   free(user_dir);
 }
 
+void test_check_nm_local_dir() {
+  // check filesystem is same as running user.
+  int expected = 0;
+  char *local_path = TEST_ROOT "target";
+  char *root_path = "/";
+  if (mkdirs(local_path, 0700) != 0) {
+    printf("FAIL: unble to create node manager local directory: %s\n", local_path);
+    exit(1);
+  }
+  int actual = check_nm_local_dir(nm_uid, local_path);
+  if (expected != actual) {
+    printf("test_nm_local_dir expected %d got %d\n", expected, actual);
+    exit(1);
+  }
+  // check filesystem is different from running user.
+  expected = 1;
+  actual = check_nm_local_dir(nm_uid, root_path);
+  if (expected != actual && nm_uid != 0) {
+    printf("test_nm_local_dir expected %d got %d\n", expected, actual);
+    exit(1);
+  }
+}
+
 void test_get_app_directory() {
-  char *expected = TMPDIR "/usercache/user/appcache/app_200906101234_0001";
-  char *app_dir = (char *) get_app_directory(TMPDIR, "user",
+  char *expected = TEST_ROOT "/usercache/user/appcache/app_200906101234_0001";
+  char *app_dir = (char *) get_app_directory(TEST_ROOT, "user",
       "app_200906101234_0001");
   if (strcmp(app_dir, expected) != 0) {
     printf("test_get_app_directory expected %s got %s\n", expected, app_dir);
@@ -188,9 +197,9 @@ void test_get_app_directory() {
 }
 
 void test_get_container_directory() {
-  char *container_dir = get_container_work_directory(TMPDIR, "owen", "app_1",
+  char *container_dir = get_container_work_directory(TEST_ROOT, "owen", "app_1",
 						 "container_1");
-  char *expected = TMPDIR"/usercache/owen/appcache/app_1/container_1";
+  char *expected = TEST_ROOT "/usercache/owen/appcache/app_1/container_1";
   if (strcmp(container_dir, expected) != 0) {
     printf("Fail get_container_work_directory got %s expected %s\n",
 	   container_dir, expected);
@@ -200,9 +209,9 @@ void test_get_container_directory() {
 }
 
 void test_get_container_launcher_file() {
-  char *expected_file = (TMPDIR"/usercache/user/appcache/app_200906101234_0001"
+  char *expected_file = (TEST_ROOT "/usercache/user/appcache/app_200906101234_0001"
 			 "/launch_container.sh");
-  char *app_dir = get_app_directory(TMPDIR, "user",
+  char *app_dir = get_app_directory(TEST_ROOT, "user",
                                     "app_200906101234_0001");
   char *container_file =  get_container_launcher_file(app_dir);
   if (strcmp(container_file, expected_file) != 0) {
@@ -248,8 +257,9 @@ void test_check_user(int expectedFailure) {
 
 void test_resolve_config_path() {
   printf("\nTesting resolve_config_path\n");
-  if (strcmp(resolve_config_path("/bin/ls", NULL), "/bin/ls") != 0) {
-    printf("FAIL: failed to resolve config_name on an absolute path name: /bin/ls\n");
+  if (strcmp(resolve_config_path(TEST_ROOT, NULL), TEST_ROOT) != 0) {
+    printf("FAIL: failed to resolve config_name on an absolute path name: "
+           TEST_ROOT "\n");
     exit(1);
   }
   if (strcmp(resolve_config_path(RELTMPDIR TEST_ROOT, TEST_ROOT), TEST_ROOT) != 0) {
@@ -284,6 +294,8 @@ void test_delete_container() {
   char buffer[100000];
   sprintf(buffer, "mkdir -p %s/who/let/the/dogs/out/who/who", container_dir);
   run(buffer);
+  sprintf(buffer, "mknod %s/who/let/the/dogs/out/who/who/p p", container_dir);
+  run(buffer);
   sprintf(buffer, "touch %s", dont_touch);
   run(buffer);
 
@@ -301,8 +313,14 @@ void test_delete_container() {
   run(buffer);
   sprintf(buffer, "chmod 000 %s/who/let/protect", container_dir);
   run(buffer);
+  // create a no execute permission directory
+  sprintf(buffer, "chmod 600 %s/who/let/the", container_dir);
+  run(buffer);
   // create a no permission directory
   sprintf(buffer, "chmod 000 %s/who/let", container_dir);
+  run(buffer);
+  // create a no write permission directory
+  sprintf(buffer, "chmod 500 %s/who", container_dir);
   run(buffer);
 
   // delete container directory
@@ -367,7 +385,7 @@ void test_delete_app() {
   sprintf(buffer, "chmod 000 %s/who/let", container_dir);
   run(buffer);
 
-  // delete container directory
+  // delete application directory
   int ret = delete_as_user(yarn_username, app_dir, NULL);
   if (ret != 0) {
     printf("FAIL: return code from delete_as_user is %d\n", ret);
@@ -389,11 +407,74 @@ void test_delete_app() {
     printf("FAIL: accidently deleted file %s\n", dont_touch);
     exit(1);
   }
+  // verify attempt to delete a nonexistent directory does not fail
+  ret = delete_as_user(yarn_username, app_dir, NULL);
+  if (ret != 0) {
+    printf("FAIL: return code from delete_as_user is %d\n", ret);
+    exit(1);
+  }
+
   free(app_dir);
   free(container_dir);
   free(dont_touch);
 }
 
+void validate_feature_enabled_value(int expected_value, const char* key,
+    int default_value, struct section *cfg) {
+  int value = is_feature_enabled(key, default_value, cfg);
+
+  if (value != expected_value) {
+    printf("FAIL: expected value %d for key %s but found %d\n",
+    expected_value, key, value);
+    exit(1);
+  }
+}
+
+void test_is_feature_enabled() {
+  char* filename = TEST_ROOT "/feature_flag_test.cfg";
+  FILE *file = fopen(filename, "w");
+  int disabled = 0;
+  int enabled = 1;
+  struct configuration exec_cfg = {.size=0, .sections=NULL};
+  struct section cfg = {.size=0, .kv_pairs=NULL};
+
+  if (file == NULL) {
+    printf("FAIL: Could not open configuration file: %s\n", filename);
+    exit(1);
+  }
+
+  fprintf(file, "feature.name1.enabled=0\n");
+  fprintf(file, "feature.name2.enabled=1\n");
+  fprintf(file, "feature.name3.enabled=1klajdflkajdsflk\n");
+  fprintf(file, "feature.name4.enabled=asdkjfasdkljfklsdjf0\n");
+  fprintf(file, "feature.name5.enabled=-1\n");
+  fprintf(file, "feature.name6.enabled=2\n");
+  fprintf(file, "feature.name7.enabled=true\n");
+  fprintf(file, "feature.name8.enabled=True\n");
+  fclose(file);
+  read_config(filename, &exec_cfg);
+  cfg = *(get_configuration_section("", &exec_cfg));
+
+  validate_feature_enabled_value(disabled, "feature.name1.enabled",
+      disabled, &cfg);
+  validate_feature_enabled_value(enabled, "feature.name2.enabled",
+          disabled, &cfg);
+  validate_feature_enabled_value(disabled, "feature.name3.enabled",
+          disabled, &cfg);
+  validate_feature_enabled_value(disabled, "feature.name4.enabled",
+          disabled, &cfg);
+  validate_feature_enabled_value(enabled, "feature.name5.enabled",
+          enabled, &cfg);
+  validate_feature_enabled_value(disabled, "feature.name6.enabled",
+          disabled, &cfg);
+  validate_feature_enabled_value(enabled, "feature.name7.enabled",
+          disabled, &cfg);
+  validate_feature_enabled_value(enabled, "feature.name8.enabled",
+          disabled, &cfg);
+
+
+  free_configuration(&exec_cfg);
+}
 
 void test_delete_user() {
   printf("\nTesting delete_user\n");
@@ -450,6 +531,163 @@ void test_delete_user() {
     printf("FAIL: local-1 directory does not exist\n");
     exit(1);
   }
+  free(app_dir);
+}
+
+/**
+ * Read a file and tokenize it on newlines.  Place up to max lines into lines.
+ * The max+1st element of lines will be set to NULL.
+ *
+ * @param file the name of the file to open
+ * @param lines the pointer array into which to place the lines
+ * @param max the max number of lines to add to lines
+ */
+void read_lines(const char* file, char **lines, size_t max) {
+  char buf[4096];
+  size_t nread;
+
+  int fd = open(file, O_RDONLY);
+
+  if (fd < 0) {
+    printf("FAIL: failed to open directory listing file: %s\n", file);
+    exit(1);
+  } else {
+    char *cur = buf;
+    size_t count = sizeof buf;
+
+    while ((nread = read(fd, cur, count)) > 0) {
+      cur += nread;
+      count -= nread;
+    }
+
+    if (nread < 0) {
+      printf("FAIL: failed to read directory listing file: %s\n", file);
+      exit(1);
+    }
+
+    close(fd);
+  }
+
+  char* entity = strtok(buf, "\n");
+  int i;
+
+  for (i = 0; i < max; i++) {
+    if (entity == NULL) {
+      break;
+    }
+
+    lines[i] = (char *)malloc(sizeof(char) * (strlen(entity) + 1));
+    strcpy(lines[i], entity);
+    entity = strtok(NULL, "\n");
+  }
+
+  lines[i] = NULL;
+}
+
+void test_list_as_user() {
+  printf("\nTesting list_as_user\n");
+  char buffer[4096];
+
+  char *app_dir =
+      get_app_directory(TEST_ROOT "/local-1", "yarn", "app_4");
+
+  if (mkdirs(app_dir, 0700) != 0) {
+    printf("FAIL: unble to create application directory: %s\n", app_dir);
+    exit(1);
+  }
+
+  // Test with empty dir string
+  strcpy(buffer, "");
+  int ret = list_as_user(buffer);
+
+  if (ret == 0) {
+    printf("FAIL: did not fail on empty directory string\n");
+    exit(1);
+  }
+
+  // Test with a non-existent directory
+  sprintf(buffer, "%s/output", app_dir);
+
+  ret = list_as_user(buffer);
+
+  if (ret == 0) {
+    printf("FAIL: did not fail on non-existent directory\n");
+    exit(1);
+  }
+
+  // Write a couple files to list
+  sprintf(buffer, "%s/file1", app_dir);
+
+  if (write_config_file(buffer, 1) != 0) {
+    exit(1);
+  }
+
+  sprintf(buffer, "%s/.file2", app_dir);
+
+  if (write_config_file(buffer, 1) != 0) {
+    exit(1);
+  }
+
+  // Also create a directory
+  sprintf(buffer, "%s/output", app_dir);
+
+  if (mkdirs(buffer, 0700) != 0) {
+    exit(1);
+  }
+
+  // Test the regular case
+  // Store a copy of stdout, then redirect it to a file
+  sprintf(buffer, "%s/output/files", app_dir);
+
+  int oldout = dup(STDOUT_FILENO);
+  int fd = open(buffer, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
+
+  dup2(fd, STDOUT_FILENO);
+
+  // Now list the files
+  ret = list_as_user(app_dir);
+
+  if (ret != 0) {
+    printf("FAIL: unable to list files in regular case\n");
+    exit(1);
+  }
+
+  // Restore stdout
+  close(fd);
+  dup2(oldout, STDOUT_FILENO);
+
+  // Check the output -- shouldn't be more than a couple lines
+  char *lines[16];
+
+  read_lines(buffer, lines, 15);
+
+  int got_file1 = 0;
+  int got_file2 = 0;
+  int got_output = 0;
+  int i;
+
+  for (i = 0; i < sizeof lines; i++) {
+    if (lines[i] == NULL) {
+      break;
+    } else if (strcmp("file1", lines[i]) == 0) {
+      got_file1 = 1;
+    } else if (strcmp(".file2", lines[i]) == 0) {
+      got_file2 = 1;
+    } else if (strcmp("output", lines[i]) == 0) {
+      got_output = 1;
+    } else {
+      printf("FAIL: listed extraneous file: %s\n", lines[i]);
+      exit(1);
+    }
+
+    free(lines[i]);
+  }
+
+  if (!got_file1 || !got_file2 || !got_output) {
+    printf("FAIL: missing files in listing\n");
+    exit(1);
+  }
+
   free(app_dir);
 }
 
@@ -566,7 +804,8 @@ void test_init_app() {
     exit(1);
   } else if (child == 0) {
     char *final_pgm[] = {"touch", "my-touch-file", 0};
-    if (initialize_app(yarn_username, "app_4", TEST_ROOT "/creds.txt",
+    if (initialize_app(yarn_username, "app_4", "container_1",
+                       TEST_ROOT "/creds.txt",
                        local_dirs, log_dirs, final_pgm) != 0) {
       printf("FAIL: failed in child\n");
       exit(42);
@@ -607,6 +846,14 @@ void test_init_app() {
     exit(1);
   }
   free(app_dir);
+
+  char *container_dir = get_container_log_directory(TEST_ROOT "/logs/userlogs",
+                  "app_4", "container_1");
+  if (container_dir != NULL && access(container_dir, R_OK) != 0) {
+    printf("FAIL: failed to create container log directory %s\n", container_dir);
+    exit(1);
+  }
+  free(container_dir);
 }
 
 void test_run_container() {
@@ -713,6 +960,249 @@ void test_run_container() {
   check_pid_file(cgroups_pids[1], child);
 }
 
+static void mkdir_or_die(const char *path) {
+  if (mkdir(path, 0777) < 0) {
+    int err = errno;
+    printf("mkdir(%s) failed: %s\n", path, strerror(err));
+    exit(1);
+  }
+}
+
+static void touch_or_die(const char *path) {
+  FILE* f = fopen(path, "w");
+  if (!f) {
+    int err = errno;
+    printf("fopen(%s, w) failed: %s\n", path, strerror(err));
+    exit(1);
+  }
+  if (fclose(f) < 0) {
+    int err = errno;
+    printf("fclose(%s) failed: %s\n", path, strerror(err));
+    exit(1);
+  }
+}
+
+static void symlink_or_die(const char *old, const char *new) {
+  if (symlink(old, new) < 0) {
+    int err = errno;
+    printf("symlink(%s, %s) failed: %s\n", old, new, strerror(err));
+    exit(1);
+  }
+}
+
+static void expect_type(const char *path, int mode) {
+  struct stat st_buf;
+
+  if (stat(path, &st_buf) < 0) {
+    int err = errno;
+    if (err == ENOENT) {
+      if (mode == 0) {
+        return;
+      }
+      printf("expect_type(%s): stat failed unexpectedly: %s\n",
+             path, strerror(err));
+      exit(1);
+    }
+  }
+  if (mode == 0) {
+    printf("expect_type(%s): we expected the file to be gone, but it "
+           "existed.\n", path);
+    exit(1);
+  }
+  if (!(st_buf.st_mode & mode)) {
+    printf("expect_type(%s): the file existed, but it had mode 0%4o, "
+           "which didn't have bit 0%4o\n", path, st_buf.st_mode, mode);
+    exit(1);
+  }
+}
+
+static void test_delete_race_internal() {
+  char* app_dir = get_app_directory(TEST_ROOT "/local-2", yarn_username, "app_1");
+  char* container_dir = get_container_work_directory(TEST_ROOT "/local-2",
+                          yarn_username, "app_1", "container_1");
+  char buffer[100000];
+
+  sprintf(buffer, "mkdir -p %s/a/b/c/d", container_dir);
+  run(buffer);
+  int i;
+  for (i = 0; i < 100; ++i) {
+    sprintf(buffer, "%s/a/f%d", container_dir, i);
+    touch_or_die(buffer);
+    sprintf(buffer, "%s/a/b/f%d", container_dir, i);
+    touch_or_die(buffer);
+    sprintf(buffer, "%s/a/b/c/f%d", container_dir, i);
+    touch_or_die(buffer);
+    sprintf(buffer, "%s/a/b/c/d/f%d", container_dir, i);
+    touch_or_die(buffer);
+  }
+
+  pid_t child = fork();
+  if (child == -1) {
+    printf("FAIL: fork failed\n");
+    exit(1);
+  } else if (child == 0) {
+    // delete container directory
+    char * dirs[] = {app_dir, 0};
+    int ret = delete_as_user(yarn_username, "container_1" , dirs);
+    if (ret != 0) {
+      printf("FAIL: return code from delete_as_user is %d\n", ret);
+      exit(1);
+    }
+    exit(0);
+  } else {
+    // delete application directory
+    int ret = delete_as_user(yarn_username, app_dir, NULL);
+    int status = 0;
+    if (waitpid(child, &status, 0) == -1) {
+      printf("FAIL: waitpid %" PRId64 " failed - %s\n", (int64_t)child, strerror(errno));
+      exit(1);
+    }
+    if (!WIFEXITED(status)) {
+      printf("FAIL: child %" PRId64 " didn't exit - %d\n", (int64_t)child, status);
+      exit(1);
+    }
+    if (WEXITSTATUS(status) != 0) {
+      printf("FAIL: child %" PRId64 " exited with bad status %d\n",
+             (int64_t)child, WEXITSTATUS(status));
+      exit(1);
+    }
+    if (ret != 0) {
+      printf("FAIL: return code from delete_as_user is %d\n", ret);
+      exit(1);
+    }
+  }
+
+  // check to make sure the app directory is gone
+  if (access(app_dir, R_OK) == 0) {
+    printf("FAIL: didn't delete the directory - %s\n", app_dir);
+    exit(1);
+  }
+
+  free(app_dir);
+  free(container_dir);
+}
+
+void test_delete_race() {
+  if (initialize_user(yarn_username, local_dirs)) {
+    printf("FAIL: failed to initialize user %s\n", yarn_username);
+    exit(1);
+  }
+  int i;
+  for (i = 0; i < 100; ++i) {
+    test_delete_race_internal();
+  }
+}
+
+int recursive_unlink_children(const char *name);
+
+void test_recursive_unlink_children() {
+  int ret;
+
+  mkdir_or_die(TEST_ROOT "/unlinkRoot");
+  mkdir_or_die(TEST_ROOT "/unlinkRoot/a");
+  touch_or_die(TEST_ROOT "/unlinkRoot/b");
+  mkdir_or_die(TEST_ROOT "/unlinkRoot/c");
+  touch_or_die(TEST_ROOT "/unlinkRoot/c/d");
+  touch_or_die(TEST_ROOT "/external");
+  symlink_or_die(TEST_ROOT "/external",
+                 TEST_ROOT "/unlinkRoot/c/external");
+  ret = recursive_unlink_children(TEST_ROOT "/unlinkRoot");
+  if (ret != 0) {
+    printf("recursive_unlink_children(%s) failed: error %d\n",
+           TEST_ROOT "/unlinkRoot", ret);
+    exit(1);
+  }
+  // unlinkRoot should still exist.
+  expect_type(TEST_ROOT "/unlinkRoot", S_IFDIR);
+  // Other files under unlinkRoot should have been deleted.
+  expect_type(TEST_ROOT "/unlinkRoot/a", 0);
+  expect_type(TEST_ROOT "/unlinkRoot/b", 0);
+  expect_type(TEST_ROOT "/unlinkRoot/c", 0);
+  // We shouldn't have followed the symlink.
+  expect_type(TEST_ROOT "/external", S_IFREG);
+  // Clean up.
+  if (rmdir(TEST_ROOT "/unlinkRoot") < 0) {
+    int err = errno;
+    printf("failed to rmdir " TEST_ROOT "/unlinkRoot: %s\n", strerror(err));
+  }
+  if (unlink(TEST_ROOT "/external") < 0) {
+    int err = errno;
+    printf("failed to unlink " TEST_ROOT "/external: %s\n", strerror(err));
+  }
+}
+
+
+/**
+ * This test is used to verify that trim() works correctly
+ */
+void test_trim_function() {
+  char* trimmed = NULL;
+
+  printf("\nTesting trim function\n");
+
+  // Check NULL input
+  if (trim(NULL) != NULL) {
+    printf("FAIL: trim(NULL) should be NULL\n");
+    exit(1);
+  }
+
+  // Check empty input
+  trimmed = trim("");
+  if (strcmp(trimmed, "") != 0) {
+    printf("FAIL: trim(\"\") should be \"\"\n");
+    exit(1);
+  }
+  free(trimmed);
+
+  // Check single space input
+  trimmed = trim(" ");
+  if (strcmp(trimmed, "") != 0) {
+    printf("FAIL: trim(\" \") should be \"\"\n");
+    exit(1);
+  }
+  free(trimmed);
+
+  // Check multi space input
+  trimmed = trim("   ");
+  if (strcmp(trimmed, "") != 0) {
+    printf("FAIL: trim(\"   \") should be \"\"\n");
+    exit(1);
+  }
+  free(trimmed);
+
+  // Check both side trim input
+  trimmed = trim(" foo ");
+  if (strcmp(trimmed, "foo") != 0) {
+    printf("FAIL: trim(\" foo \") should be \"foo\"\n");
+    exit(1);
+  }
+  free(trimmed);
+
+  // Check left side trim input
+  trimmed = trim("foo   ");
+  if (strcmp(trimmed, "foo") != 0) {
+    printf("FAIL: trim(\"foo   \") should be \"foo\"\n");
+    exit(1);
+  }
+  free(trimmed);
+
+  // Check right side trim input
+  trimmed = trim("   foo");
+  if (strcmp(trimmed, "foo") != 0) {
+    printf("FAIL: trim(\"   foo\") should be \"foo\"\n");
+    exit(1);
+  }
+  free(trimmed);
+
+  // Check no trim input
+  trimmed = trim("foo");
+  if (strcmp(trimmed, "foo") != 0) {
+    printf("FAIL: trim(\"foo\") should be \"foo\"\n");
+    exit(1);
+  }
+  free(trimmed);
+}
+
 // This test is expected to be executed either by a regular
 // user or by root. If executed by a regular user it doesn't
 // test all the functions that would depend on changing the
@@ -731,6 +1221,8 @@ int main(int argc, char **argv) {
   LOGFILE = stdout;
   ERRORFILE = stderr;
 
+  nm_uid = getuid();
+
   printf("Attempting to clean up from any previous runs\n");
   // clean up any junk from previous run
   if (system("chmod -R u=rwx " TEST_ROOT "; rm -fr " TEST_ROOT)) {
@@ -740,7 +1232,7 @@ int main(int argc, char **argv) {
   if (mkdirs(TEST_ROOT "/logs/userlogs", 0755) != 0) {
     exit(1);
   }
-  
+
   if (write_config_file(TEST_ROOT "/test.cfg", 1) != 0) {
     exit(1);
   }
@@ -749,8 +1241,8 @@ int main(int argc, char **argv) {
 
   read_executor_config(TEST_ROOT "/test.cfg");
 
-  local_dirs = extract_values(strdup(NM_LOCAL_DIRS));
-  log_dirs = extract_values(strdup(NM_LOG_DIRS));
+  local_dirs = split(strdup(NM_LOCAL_DIRS));
+  log_dirs = split(strdup(NM_LOG_DIRS));
 
   create_nm_roots(local_dirs);
 
@@ -772,11 +1264,17 @@ int main(int argc, char **argv) {
 
   printf("\nStarting tests\n");
 
+  printf("\nTesting recursive_unlink_children()\n");
+  test_recursive_unlink_children();
+
   printf("\nTesting resolve_config_path()\n");
   test_resolve_config_path();
 
   printf("\nTesting get_user_directory()\n");
   test_get_user_directory();
+
+  printf("\nTesting check_nm_local_dir()\n");
+  test_check_nm_local_dir();
 
   printf("\nTesting get_app_directory()\n");
   test_get_app_directory();
@@ -797,6 +1295,12 @@ int main(int argc, char **argv) {
 
   printf("\nTesting delete_app()\n");
   test_delete_app();
+
+  printf("\nTesting delete race\n");
+  test_delete_race();
+
+  printf("\nTesting is_feature_enabled()\n");
+  test_is_feature_enabled();
 
   test_check_user(0);
 
@@ -869,10 +1373,11 @@ int main(int argc, char **argv) {
   test_check_user(1);
 #endif
 
-  run("rm -fr " TEST_ROOT);
+  test_trim_function();
   printf("\nFinished tests\n");
 
   free(current_username);
   free_executor_configurations();
+
   return 0;
 }

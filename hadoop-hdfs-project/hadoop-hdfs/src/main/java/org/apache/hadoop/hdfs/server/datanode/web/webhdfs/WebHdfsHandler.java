@@ -34,16 +34,19 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.MD5MD5CRC32FileChecksum;
-import org.apache.hadoop.fs.ParentNotDirectoryException;
+import org.apache.hadoop.fs.permission.FsCreateModes;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSClient;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+import org.apache.hadoop.hdfs.web.resources.AclPermissionParam;
 import org.apache.hadoop.hdfs.web.resources.GetOpParam;
 import org.apache.hadoop.hdfs.web.resources.PostOpParam;
 import org.apache.hadoop.hdfs.web.resources.PutOpParam;
+import org.apache.hadoop.hdfs.web.resources.UserParam;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
@@ -55,6 +58,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivilegedExceptionAction;
 import java.util.EnumSet;
@@ -107,6 +111,13 @@ public class WebHdfsHandler extends SimpleChannelInboundHandler<HttpRequest> {
     throws IOException {
     this.conf = conf;
     this.confForCreate = confForCreate;
+    /** set user pattern based on configuration file */
+    UserParam.setUserPattern(
+        conf.get(HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_KEY,
+            HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_DEFAULT));
+    AclPermissionParam.setAclPermissionPattern(
+        conf.get(HdfsClientConfigKeys.DFS_WEBHDFS_ACL_PERMISSION_PATTERN_KEY,
+            HdfsClientConfigKeys.DFS_WEBHDFS_ACL_PERMISSION_PATTERN_DEFAULT));
   }
 
   @Override
@@ -117,7 +128,7 @@ public class WebHdfsHandler extends SimpleChannelInboundHandler<HttpRequest> {
     params = new ParameterParser(queryString, conf);
     DataNodeUGIProvider ugiProvider = new DataNodeUGIProvider(params);
     ugi = ugiProvider.ugi();
-    path = params.path();
+    path = URLDecoder.decode(params.path(), "UTF-8");
 
     injectToken();
     ugi.doAs(new PrivilegedExceptionAction<Void>() {
@@ -163,6 +174,9 @@ public class WebHdfsHandler extends SimpleChannelInboundHandler<HttpRequest> {
     } else if(GetOpParam.Op.GETFILECHECKSUM.name().equalsIgnoreCase(op)
       && method == GET) {
       onGetFileChecksum(ctx);
+    } else if(PutOpParam.Op.CREATE.name().equalsIgnoreCase(op)
+        && method == OPTIONS) {
+      allowCORSOnCreate(ctx);
     } else {
       throw new IllegalArgumentException("Invalid operation " + op);
     }
@@ -184,7 +198,10 @@ public class WebHdfsHandler extends SimpleChannelInboundHandler<HttpRequest> {
     final int bufferSize = params.bufferSize();
     final short replication = params.replication();
     final long blockSize = params.blockSize();
-    final FsPermission permission = params.permission();
+    final FsPermission unmaskedPermission = params.unmaskedPermission();
+    final FsPermission permission = unmaskedPermission == null ?
+        params.permission() :
+        FsCreateModes.create(params.permission(), unmaskedPermission);
     final boolean createParent = params.createParent();
 
     EnumSet<CreateFlag> flags = params.createFlag();
@@ -208,6 +225,8 @@ public class WebHdfsHandler extends SimpleChannelInboundHandler<HttpRequest> {
     final URI uri = new URI(HDFS_URI_SCHEME, nnId, path, null, null);
     resp.headers().set(LOCATION, uri.toString());
     resp.headers().set(CONTENT_LENGTH, 0);
+    resp.headers().set(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+
     ctx.pipeline().replace(this, HdfsWriter.class.getSimpleName(),
       new HdfsWriter(dfsClient, out, resp));
   }
@@ -286,6 +305,21 @@ public class WebHdfsHandler extends SimpleChannelInboundHandler<HttpRequest> {
     resp.headers().set(CONTENT_TYPE, APPLICATION_JSON_UTF8);
     resp.headers().set(CONTENT_LENGTH, js.length);
     resp.headers().set(CONNECTION, CLOSE);
+    ctx.writeAndFlush(resp).addListener(ChannelFutureListener.CLOSE);
+  }
+
+  //Accept preflighted CORS requests
+  private void allowCORSOnCreate(ChannelHandlerContext ctx)
+    throws IOException, URISyntaxException {
+    resp = new DefaultHttpResponse(HTTP_1_1, OK);
+    HttpHeaders headers = resp.headers();
+    headers.set(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    headers.set(ACCESS_CONTROL_ALLOW_HEADERS, ACCEPT);
+    headers.set(ACCESS_CONTROL_ALLOW_METHODS, PUT);
+    headers.set(ACCESS_CONTROL_MAX_AGE, 1728000);
+    headers.set(CONTENT_LENGTH, 0);
+    headers.set(CONNECTION, KEEP_ALIVE);
+
     ctx.writeAndFlush(resp).addListener(ChannelFutureListener.CLOSE);
   }
 

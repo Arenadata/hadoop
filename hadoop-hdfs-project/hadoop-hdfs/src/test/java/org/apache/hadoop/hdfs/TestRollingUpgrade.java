@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs;
 import java.io.File;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 
 import javax.management.AttributeNotFoundException;
@@ -46,6 +47,7 @@ import org.apache.hadoop.hdfs.qjournal.MiniJournalCluster;
 import org.apache.hadoop.hdfs.qjournal.MiniQJMHACluster;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.namenode.CheckpointFaultInjector;
 import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage;
 import org.apache.hadoop.hdfs.server.namenode.SecondaryNameNode;
@@ -80,7 +82,7 @@ public class TestRollingUpgrade {
    */
   @Test
   public void testDFSAdminRollingUpgradeCommands() throws Exception {
-    // start a cluster 
+    // start a cluster
     final Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = null;
     try {
@@ -113,7 +115,7 @@ public class TestRollingUpgrade {
         checkMxBean();
 
         dfs.mkdirs(bar);
-        
+
         //finalize rolling upgrade
         runCmd(dfsadmin, true, "-rollingUpgrade", "finalize");
         // RollingUpgradeInfo should be null after finalization, both via
@@ -163,7 +165,7 @@ public class TestRollingUpgrade {
     String nnDirPrefix = MiniDFSCluster.getBaseDirectory() + "/nn/";
     final File nn1Dir = new File(nnDirPrefix + "image1");
     final File nn2Dir = new File(nnDirPrefix + "image2");
-    
+
     LOG.info("nn1Dir=" + nn1Dir);
     LOG.info("nn2Dir=" + nn2Dir);
 
@@ -207,9 +209,9 @@ public class TestRollingUpgrade {
 
       final RollingUpgradeInfo info1;
       {
-        final DistributedFileSystem dfs = cluster.getFileSystem(); 
+        final DistributedFileSystem dfs = cluster.getFileSystem();
         dfs.mkdirs(foo);
-  
+
         //start rolling upgrade
         dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
         info1 = dfs.rollingUpgrade(RollingUpgradeAction.PREPARE);
@@ -231,7 +233,7 @@ public class TestRollingUpgrade {
         .manageNameDfsDirs(false)
         .build();
       final DistributedFileSystem dfs2 = cluster2.getFileSystem();
-      
+
       // Check that cluster2 sees the edits made on cluster1
       Assert.assertTrue(dfs2.exists(foo));
       Assert.assertTrue(dfs2.exists(bar));
@@ -351,7 +353,7 @@ public class TestRollingUpgrade {
       if(cluster != null) cluster.shutdown();
     }
   }
-  
+
   private static void startRollingUpgrade(Path foo, Path bar,
       Path file, byte[] data,
       MiniDFSCluster cluster) throws IOException {
@@ -373,7 +375,7 @@ public class TestRollingUpgrade {
     TestFileTruncate.checkBlockRecovery(file, dfs);
     AppendTestUtil.checkFullFile(dfs, file, newLength, data);
   }
-  
+
   private static void rollbackRollingUpgrade(Path foo, Path bar,
       Path file, byte[] data,
       MiniDFSCluster cluster) throws IOException {
@@ -419,22 +421,33 @@ public class TestRollingUpgrade {
     }
   }
 
-  @Test (timeout = 300000)
+  @Test(timeout = 300000)
   public void testFinalize() throws Exception {
+    testFinalize(2);
+  }
+
+  @Test(timeout = 300000)
+  public void testFinalizeWithMultipleNN() throws Exception {
+    testFinalize(3);
+  }
+
+  private void testFinalize(int nnCount) throws Exception {
     final Configuration conf = new HdfsConfiguration();
     MiniQJMHACluster cluster = null;
     final Path foo = new Path("/foo");
     final Path bar = new Path("/bar");
 
     try {
-      cluster = new MiniQJMHACluster.Builder(conf).build();
+      cluster = new MiniQJMHACluster.Builder(conf).setNumNameNodes(nnCount).build();
       MiniDFSCluster dfsCluster = cluster.getDfsCluster();
       dfsCluster.waitActive();
 
-      // let NN1 tail editlog every 1s
-      dfsCluster.getConfiguration(1).setInt(
-          DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
-      dfsCluster.restartNameNode(1);
+      // let other NN tail editlog every 1s
+      for(int i=1; i < nnCount; i++) {
+        dfsCluster.getConfiguration(i).setInt(
+            DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+      }
+      dfsCluster.restartNameNodes();
 
       dfsCluster.transitionToActive(0);
       DistributedFileSystem dfs = dfsCluster.getFileSystem(0);
@@ -472,17 +485,29 @@ public class TestRollingUpgrade {
 
   @Test (timeout = 300000)
   public void testQuery() throws Exception {
+    testQuery(2);
+  }
+
+  @Test (timeout = 300000)
+  public void testQueryWithMultipleNN() throws Exception {
+    testQuery(3);
+  }
+
+  private void testQuery(int nnCount) throws Exception{
     final Configuration conf = new Configuration();
     MiniQJMHACluster cluster = null;
     try {
-      cluster = new MiniQJMHACluster.Builder(conf).build();
+      cluster = new MiniQJMHACluster.Builder(conf).setNumNameNodes(nnCount).build();
       MiniDFSCluster dfsCluster = cluster.getDfsCluster();
       dfsCluster.waitActive();
 
       dfsCluster.transitionToActive(0);
       DistributedFileSystem dfs = dfsCluster.getFileSystem(0);
 
-      dfsCluster.shutdownNameNode(1);
+      // shutdown other NNs
+      for (int i = 1; i < nnCount; i++) {
+        dfsCluster.shutdownNameNode(i);
+      }
 
       // start rolling upgrade
       RollingUpgradeInfo info = dfs
@@ -492,13 +517,16 @@ public class TestRollingUpgrade {
       info = dfs.rollingUpgrade(RollingUpgradeAction.QUERY);
       Assert.assertFalse(info.createdRollbackImages());
 
-      dfsCluster.restartNameNode(1);
-
+      // restart other NNs
+      for (int i = 1; i < nnCount; i++) {
+        dfsCluster.restartNameNode(i);
+      }
+      // check that one of the other NNs has created the rollback image and uploaded it
       queryForPreparation(dfs);
 
       // The NN should have a copy of the fsimage in case of rollbacks.
       Assert.assertTrue(dfsCluster.getNamesystem(0).getFSImage()
-          .hasRollbackFSImage());
+              .hasRollbackFSImage());
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -534,6 +562,61 @@ public class TestRollingUpgrade {
 
   @Test(timeout = 300000)
   public void testCheckpoint() throws IOException, InterruptedException {
+    testCheckpoint(2);
+  }
+
+  @Test(timeout = 300000)
+  public void testCheckpointWithMultipleNN() throws IOException, InterruptedException {
+    testCheckpoint(3);
+  }
+
+  @Test(timeout = 60000)
+  public void testRollBackImage() throws Exception {
+    final Configuration conf = new Configuration();
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 10);
+    conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_KEY, 2);
+    MiniQJMHACluster cluster = null;
+    CheckpointFaultInjector old = CheckpointFaultInjector.getInstance();
+    try {
+      cluster = new MiniQJMHACluster.Builder(conf).setNumNameNodes(2).build();
+      MiniDFSCluster dfsCluster = cluster.getDfsCluster();
+      dfsCluster.waitActive();
+      dfsCluster.transitionToActive(0);
+      DistributedFileSystem dfs = dfsCluster.getFileSystem(0);
+      for (int i = 0; i <= 10; i++) {
+        Path foo = new Path("/foo" + i);
+        dfs.mkdirs(foo);
+      }
+      cluster.getDfsCluster().getNameNodeRpc(0).rollEdits();
+      CountDownLatch ruEdit = new CountDownLatch(1);
+      CheckpointFaultInjector.set(new CheckpointFaultInjector() {
+        @Override
+        public void duringUploadInProgess()
+            throws IOException, InterruptedException {
+          if (ruEdit.getCount() == 1) {
+            ruEdit.countDown();
+            Thread.sleep(180000);
+          }
+        }
+      });
+      ruEdit.await();
+      RollingUpgradeInfo info = dfs
+          .rollingUpgrade(RollingUpgradeAction.PREPARE);
+      Assert.assertTrue(info.isStarted());
+      FSImage fsimage = dfsCluster.getNamesystem(0).getFSImage();
+      queryForPreparation(dfs);
+      // The NN should have a copy of the fsimage in case of rollbacks.
+      Assert.assertTrue(fsimage.hasRollbackFSImage());
+    } finally {
+      CheckpointFaultInjector.set(old);
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  public void testCheckpoint(int nnCount) throws IOException, InterruptedException {
     final Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PERIOD_KEY, 1);
@@ -542,7 +625,7 @@ public class TestRollingUpgrade {
     final Path foo = new Path("/foo");
 
     try {
-      cluster = new MiniQJMHACluster.Builder(conf).build();
+      cluster = new MiniQJMHACluster.Builder(conf).setNumNameNodes(nnCount).build();
       MiniDFSCluster dfsCluster = cluster.getDfsCluster();
       dfsCluster.waitActive();
 
@@ -560,22 +643,31 @@ public class TestRollingUpgrade {
       long txid = dfs.rollEdits();
       Assert.assertTrue(txid > 0);
 
-      int retries = 0;
-      while (++retries < 5) {
-        NNStorage storage = dfsCluster.getNamesystem(1).getFSImage()
-            .getStorage();
-        if (storage.getFsImageName(txid - 1) != null) {
-          return;
-        }
-        Thread.sleep(1000);
+      for(int i=1; i< nnCount; i++) {
+        verifyNNCheckpoint(dfsCluster, txid, i);
       }
-      Assert.fail("new checkpoint does not exist");
 
     } finally {
       if (cluster != null) {
         cluster.shutdown();
       }
     }
+  }
+
+  /**
+   * Verify that the namenode at the given index has an FSImage with a TxId up to txid-1
+   */
+  private void verifyNNCheckpoint(MiniDFSCluster dfsCluster, long txid, int nnIndex) throws InterruptedException {
+    int retries = 0;
+    while (++retries < 5) {
+      NNStorage storage = dfsCluster.getNamesystem(nnIndex).getFSImage()
+              .getStorage();
+      if (storage.getFsImageName(txid - 1) != null) {
+        return;
+      }
+      Thread.sleep(1000);
+    }
+    Assert.fail("new checkpoint does not exist");
   }
 
   static void queryForPreparation(DistributedFileSystem dfs) throws IOException,

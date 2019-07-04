@@ -52,8 +52,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 
 /**
- * This class tests that a file need not be closed before its
- * data can be read by another client.
+ * This class tests data node registration.
  */
 public class TestDatanodeRegistration {
   

@@ -161,6 +161,7 @@ public class TestMiniDFSCluster {
       final int fileLen)
       throws IOException, InterruptedException, TimeoutException {
 
+    conf.setBoolean(DFSConfigKeys.DFS_DISK_BALANCER_ENABLED, true);
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, defaultBlockSize);
     conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, defaultBlockSize);
     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
@@ -253,7 +254,7 @@ public class TestMiniDFSCluster {
   @Test
   public void testClusterNoStorageTypeSetForDatanodes() throws IOException {
     final Configuration conf = new HdfsConfiguration();
-    try (final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(3).build()) {
       cluster.waitActive();
       ArrayList<DataNode> dataNodes = cluster.getDataNodes();

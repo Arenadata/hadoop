@@ -59,7 +59,8 @@ public class TestMissingBlocksAlert {
     try {
       Configuration conf = new HdfsConfiguration();
       //minimize test delay
-      conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 0);
+      conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+          0);
       conf.setInt(HdfsClientConfigKeys.Retry.WINDOW_BASE_KEY, 10);
       int fileLen = 10*1024;
       conf.setInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, fileLen/2);
@@ -97,7 +98,7 @@ public class TestMissingBlocksAlert {
         Thread.sleep(100);
       }
       assertTrue(dfs.getMissingBlocksCount() == 1);
-      assertEquals(4, dfs.getUnderReplicatedBlocksCount());
+      assertEquals(4, dfs.getLowRedundancyBlocksCount());
       assertEquals(3, bm.getUnderReplicatedNotMissingBlocks());
 
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
@@ -116,7 +117,7 @@ public class TestMissingBlocksAlert {
         Thread.sleep(100);
       }
 
-      assertEquals(2, dfs.getUnderReplicatedBlocksCount());
+      assertEquals(2, dfs.getLowRedundancyBlocksCount());
       assertEquals(2, bm.getUnderReplicatedNotMissingBlocks());
 
       Assert.assertEquals(0, (long)(Long) mbs.getAttribute(mxbeanName,

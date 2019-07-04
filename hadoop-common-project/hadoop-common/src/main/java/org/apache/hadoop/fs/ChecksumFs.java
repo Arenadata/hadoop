@@ -27,14 +27,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.Options.ChecksumOpt;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.Progressable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Abstract Checksumed Fs.
@@ -57,7 +57,7 @@ public abstract class ChecksumFs extends FilterFs {
     throws IOException, URISyntaxException {
     super(theFs);
     defaultBytesPerChecksum = 
-      getMyFs().getServerDefaults().getBytesPerChecksum();
+      getMyFs().getServerDefaults(new Path("/")).getBytesPerChecksum();
   }
   
   /**
@@ -96,9 +96,10 @@ public abstract class ChecksumFs extends FilterFs {
     return defaultBytesPerChecksum;
   }
 
-  private int getSumBufferSize(int bytesPerSum, int bufferSize)
+  private int getSumBufferSize(int bytesPerSum, int bufferSize, Path file)
     throws IOException {
-    int defaultBufferSize =  getMyFs().getServerDefaults().getFileBufferSize();
+    int defaultBufferSize = getMyFs().getServerDefaults(file)
+        .getFileBufferSize();
     int proportionalBufferSize = bufferSize / bytesPerSum;
     return Math.max(bytesPerSum,
                     Math.max(proportionalBufferSize, defaultBufferSize));
@@ -109,8 +110,8 @@ public abstract class ChecksumFs extends FilterFs {
    * It verifies that data matches checksums.
    *******************************************************/
   private static class ChecksumFSInputChecker extends FSInputChecker {
-    public static final Log LOG 
-      = LogFactory.getLog(FSInputChecker.class);
+    public static final Logger LOG =
+        LoggerFactory.getLogger(FSInputChecker.class);
     private static final int HEADER_LENGTH = 8;
     
     private ChecksumFs fs;
@@ -121,7 +122,7 @@ public abstract class ChecksumFs extends FilterFs {
     
     public ChecksumFSInputChecker(ChecksumFs fs, Path file)
       throws IOException, UnresolvedLinkException {
-      this(fs, file, fs.getServerDefaults().getFileBufferSize());
+      this(fs, file, fs.getServerDefaults(file).getFileBufferSize());
     }
     
     public ChecksumFSInputChecker(ChecksumFs fs, Path file, int bufferSize)
@@ -132,7 +133,7 @@ public abstract class ChecksumFs extends FilterFs {
       Path sumFile = fs.getChecksumFile(file);
       try {
         int sumBufferSize = fs.getSumBufferSize(fs.getBytesPerSum(),
-                                                bufferSize);
+            bufferSize, file);
         sums = fs.getRawFs().open(sumFile, sumBufferSize);
 
         byte[] version = new byte[CHECKSUM_VERSION.length];
@@ -296,7 +297,8 @@ public abstract class ChecksumFs extends FilterFs {
 
   @Override
   public boolean truncate(Path f, long newLength) throws IOException {
-    throw new IOException("Not supported");
+    throw new UnsupportedOperationException("Truncate is not supported "
+        + "by ChecksumFs");
   }
 
   /**
@@ -352,7 +354,7 @@ public abstract class ChecksumFs extends FilterFs {
       
       // Now create the chekcsumfile; adjust the buffsize
       int bytesPerSum = fs.getBytesPerSum();
-      int sumBufferSize = fs.getSumBufferSize(bytesPerSum, bufferSize);
+      int sumBufferSize = fs.getSumBufferSize(bytesPerSum, bufferSize, file);
       this.sums = fs.getRawFs().createInternal(fs.getChecksumFile(file),
           EnumSet.of(CreateFlag.CREATE, CreateFlag.OVERWRITE),
           absolutePermission, sumBufferSize, replication, blockSize, progress,
@@ -504,7 +506,7 @@ public abstract class ChecksumFs extends FilterFs {
    * @param sums the stream open on the checksum file
    * @param sumsPos the position of the beginning of the bad data in the
    *         checksum file
-   * @return if retry is neccessary
+   * @return if retry is necessary
    */
   public boolean reportChecksumFailure(Path f, FSDataInputStream in,
     long inPos, FSDataInputStream sums, long sumsPos) {

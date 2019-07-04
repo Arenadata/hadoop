@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.fs;
 
+import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.junit.Assert.*;
 
 import java.io.IOException;
-import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -37,13 +37,13 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.junit.*;
 
 public class TestGlobPaths {
-  
+
   private static final UserGroupInformation unprivilegedUser =
     UserGroupInformation.createUserForTesting("myuser",
         new String[] { "mygroup" });
 
   static class RegexPathFilter implements PathFilter {
-    
+
     private final String regex;
     public RegexPathFilter(String regex) {
       this.regex = regex;
@@ -55,7 +55,7 @@ public class TestGlobPaths {
     }
 
   }
-  
+
   static private MiniDFSCluster dfsCluster;
   static private FileSystem fs;
   static private FileSystem privilegedFs;
@@ -64,7 +64,7 @@ public class TestGlobPaths {
   static final private int NUM_OF_PATHS = 4;
   static private String USER_DIR;
   private final Path[] path = new Path[NUM_OF_PATHS];
-  
+
   @BeforeClass
   public static void setUp() throws Exception {
     final Configuration conf = new HdfsConfiguration();
@@ -86,6 +86,25 @@ public class TestGlobPaths {
     if(dfsCluster!=null) {
       dfsCluster.shutdown();
     }
+  }
+
+  /**
+   * Test case to ensure that globs work on files with special characters.
+   * Tests with a file pair where one has a \r at end and other does not.
+   */
+  @Test
+  public void testCRInPathGlob() throws IOException {
+    FileStatus[] statuses;
+    Path d1 = new Path(USER_DIR, "dir1");
+    Path fNormal = new Path(d1, "f1");
+    Path fWithCR = new Path(d1, "f1\r");
+    fs.mkdirs(d1);
+    fs.createNewFile(fNormal);
+    fs.createNewFile(fWithCR);
+    statuses = fs.globStatus(new Path(d1, "f1*"));
+    assertEquals("Expected both normal and CR-carrying files in result: ",
+        2, statuses.length);
+    cleanupDFS();
   }
 
   @Test
@@ -476,7 +495,7 @@ public class TestGlobPaths {
   public void pTestEscape() throws IOException {
     // Skip the test case on Windows because backslash will be treated as a
     // path separator instead of an escaping character on Windows.
-    org.junit.Assume.assumeTrue(!Path.WINDOWS);
+    assumeNotWindows();
     try {
       String [] files = new String[] {USER_DIR+"/ab\\[c.d"};
       Path[] matchedPath = prepareTesting(USER_DIR+"/ab\\[c.d", files);

@@ -23,6 +23,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 
+import com.microsoft.azure.datalake.store.oauth2.DeviceCodeTokenProvider;
+import com.microsoft.azure.datalake.store.oauth2.MsiTokenProvider;
 import org.apache.commons.lang.builder.EqualsBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.adl.common.CustomMockTokenProvider;
@@ -40,12 +42,14 @@ import static org.apache.hadoop.fs.adl.AdlConfKeys
     .AZURE_AD_TOKEN_PROVIDER_CLASS_KEY;
 import static org.apache.hadoop.fs.adl.AdlConfKeys
     .AZURE_AD_TOKEN_PROVIDER_TYPE_KEY;
+import static org.apache.hadoop.fs.adl.AdlConfKeys.DEVICE_CODE_CLIENT_APP_ID;
 import static org.apache.hadoop.fs.adl.TokenProviderType.*;
 import static org.junit.Assert.assertEquals;
 
 import org.apache.hadoop.security.ProviderUtils;
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
@@ -97,9 +101,43 @@ public class TestAzureADTokenProvider {
   }
 
   @Test
+  public void testMSITokenProvider()
+          throws IOException, URISyntaxException {
+    Configuration conf = new Configuration();
+    conf.setEnum(AZURE_AD_TOKEN_PROVIDER_TYPE_KEY, MSI);
+
+    URI uri = new URI("adl://localhost:8080");
+    AdlFileSystem fileSystem = new AdlFileSystem();
+    fileSystem.initialize(uri, conf);
+    AccessTokenProvider tokenProvider = fileSystem.getTokenProvider();
+    Assert.assertTrue(tokenProvider instanceof MsiTokenProvider);
+  }
+
+  @Test
+  public void testDeviceCodeTokenProvider()
+          throws IOException, URISyntaxException {
+    boolean runTest = false;
+    if (runTest) {
+      // Device code auth method causes an interactive prompt, so run this only
+      // when running the test interactively at a local terminal. Disabling
+      // test by default, to not break any automation.
+      Configuration conf = new Configuration();
+      conf.setEnum(AZURE_AD_TOKEN_PROVIDER_TYPE_KEY, DeviceCode);
+      conf.set(DEVICE_CODE_CLIENT_APP_ID, "CLIENT_APP_ID_GUID");
+
+      URI uri = new URI("adl://localhost:8080");
+      AdlFileSystem fileSystem = new AdlFileSystem();
+      fileSystem.initialize(uri, conf);
+      AccessTokenProvider tokenProvider = fileSystem.getTokenProvider();
+      Assert.assertTrue(tokenProvider instanceof DeviceCodeTokenProvider);
+    }
+  }
+
+  @Test
   public void testCustomCredTokenProvider()
       throws URISyntaxException, IOException {
     Configuration conf = new Configuration();
+    conf.setEnum(AZURE_AD_TOKEN_PROVIDER_TYPE_KEY, TokenProviderType.Custom);
     conf.setClass(AZURE_AD_TOKEN_PROVIDER_CLASS_KEY,
         CustomMockTokenProvider.class, AzureADTokenProvider.class);
 
@@ -114,6 +152,7 @@ public class TestAzureADTokenProvider {
   public void testInvalidProviderConfigurationForType()
       throws URISyntaxException, IOException {
     Configuration conf = new Configuration();
+    conf.setEnum(AZURE_AD_TOKEN_PROVIDER_TYPE_KEY, TokenProviderType.Custom);
     URI uri = new URI("adl://localhost:8080");
     AdlFileSystem fileSystem = new AdlFileSystem();
     try {
@@ -121,8 +160,8 @@ public class TestAzureADTokenProvider {
       Assert.fail("Initialization should have failed due no token provider "
           + "configuration");
     } catch (IllegalArgumentException e) {
-      Assert.assertTrue(
-          e.getMessage().contains("dfs.adls.oauth2.access.token.provider"));
+      GenericTestUtils.assertExceptionContains(
+          AZURE_AD_TOKEN_PROVIDER_CLASS_KEY, e);
     }
     conf.setClass(AZURE_AD_TOKEN_PROVIDER_CLASS_KEY,
         CustomMockTokenProvider.class, AzureADTokenProvider.class);
@@ -135,6 +174,7 @@ public class TestAzureADTokenProvider {
     Configuration conf = new Configuration();
     URI uri = new URI("adl://localhost:8080");
     AdlFileSystem fileSystem = new AdlFileSystem();
+    conf.setEnum(AZURE_AD_TOKEN_PROVIDER_TYPE_KEY, TokenProviderType.Custom);
     conf.set(AZURE_AD_TOKEN_PROVIDER_CLASS_KEY,
         "wrong.classpath.CustomMockTokenProvider");
     try {

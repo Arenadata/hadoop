@@ -65,19 +65,6 @@ public class TestJMXGet {
   static final int blockSize = 4096;
   static final int fileSize = 8192;
 
-  private void writeFile(FileSystem fileSys, Path name, int repl)
-  throws IOException {
-    FSDataOutputStream stm = fileSys.create(name, true,
-        fileSys.getConf().getInt(CommonConfigurationKeys.IO_FILE_BUFFER_SIZE_KEY, 4096),
-        (short)repl, blockSize);
-    byte[] buffer = new byte[fileSize];
-    Random rand = new Random(seed);
-    rand.nextBytes(buffer);
-    stm.write(buffer);
-    stm.close();
-  }
-
-
   @Before
   public void setUp() throws Exception {
     config = new HdfsConfiguration();
@@ -111,7 +98,8 @@ public class TestJMXGet {
     cluster = new MiniDFSCluster.Builder(config).numDataNodes(numDatanodes).build();
     cluster.waitActive();
 
-    writeFile(cluster.getFileSystem(), new Path("/test1"), 2);
+    DFSTestUtil.createFile(cluster.getFileSystem(), new Path("/test1"),
+        fileSize, fileSize, blockSize, (short) 2, seed);
 
     JMXGet jmx = new JMXGet();
     String serviceName = "NameNode";
@@ -141,7 +129,7 @@ public class TestJMXGet {
     byte[] bytes = null;
     String pattern = "List of all the available keys:";
     PipedOutputStream pipeOut = new PipedOutputStream();
-    PipedInputStream pipeIn = new PipedInputStream(pipeOut);
+    PipedInputStream pipeIn = new PipedInputStream(pipeOut, 1024 * 1024);
     PrintStream oldErr = System.err;
     System.setErr(new PrintStream(pipeOut));
     try {
@@ -168,7 +156,8 @@ public class TestJMXGet {
     cluster = new MiniDFSCluster.Builder(config).numDataNodes(numDatanodes).build();
     cluster.waitActive();
 
-    writeFile(cluster.getFileSystem(), new Path("/test"), 2);
+    DFSTestUtil.createFile(cluster.getFileSystem(), new Path("/test"),
+        fileSize, fileSize, blockSize, (short) 2, seed);
 
     JMXGet jmx = new JMXGet();
     String serviceName = "DataNode";

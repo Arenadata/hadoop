@@ -98,8 +98,7 @@ public class TestViewFileSystemWithTruncate {
   public void testTruncateWithViewFileSystem()
       throws Exception {
     Path filePath = new Path(mountOnNn1 + "/ttest");
-    final Path hdfFilepath = new Path(
-        "/tmp/TestViewFileSystemWithXAttrs/ttest");
+    Path hdfFilepath = new Path("/tmp/TestViewFileSystemWithXAttrs/ttest");
     FSDataOutputStream out = fsView.create(filePath);
     out.writeBytes("drtatedasfdasfgdfas");
     out.close();

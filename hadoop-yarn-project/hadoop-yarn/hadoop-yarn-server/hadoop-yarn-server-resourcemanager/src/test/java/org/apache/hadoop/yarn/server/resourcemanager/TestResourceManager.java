@@ -39,6 +39,7 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
@@ -114,8 +115,7 @@ public class TestResourceManager {
     // Application resource requirements
     final int memory1 = 1024;
     Resource capability1 = Resources.createResource(memory1, 1);
-    Priority priority1 = 
-      org.apache.hadoop.yarn.server.resourcemanager.resource.Priority.create(1);
+    Priority priority1 = Priority.newInstance(1);
     application.addResourceRequestSpec(priority1, capability1);
     
     Task t1 = new Task(application, priority1, new String[] {host1, host2});
@@ -123,8 +123,7 @@ public class TestResourceManager {
     
     final int memory2 = 2048;
     Resource capability2 = Resources.createResource(memory2, 1);
-    Priority priority0 = 
-        org.apache.hadoop.yarn.server.resourcemanager.resource.Priority.create(0); // higher
+    Priority priority0 = Priority.newInstance(0); // higher
     application.addResourceRequestSpec(priority0, capability2);
     
     // Send resource requests to the scheduler
@@ -132,6 +131,7 @@ public class TestResourceManager {
 
    // Send a heartbeat to kick the tires on the Scheduler
     nodeUpdate(nm1);
+    ((AbstractYarnScheduler)resourceManager.getResourceScheduler()).update();
     
     // Get allocations from the scheduler
     application.schedule();

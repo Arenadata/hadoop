@@ -47,7 +47,11 @@ public class TestFileSystemStorageStatistics {
       "bytesWritten",
       "readOps",
       "largeReadOps",
-      "writeOps"
+      "writeOps",
+      "bytesReadLocalHost",
+      "bytesReadDistanceOfOneOrTwo",
+      "bytesReadDistanceOfThreeOrFour",
+      "bytesReadDistanceOfFiveOrLarger"
   };
 
   private FileSystem.Statistics statistics =
@@ -66,6 +70,10 @@ public class TestFileSystemStorageStatistics {
     statistics.incrementBytesWritten(RandomUtils.nextInt(100));
     statistics.incrementLargeReadOps(RandomUtils.nextInt(100));
     statistics.incrementWriteOps(RandomUtils.nextInt(100));
+
+    statistics.incrementBytesReadByDistance(0, RandomUtils.nextInt(100));
+    statistics.incrementBytesReadByDistance(1, RandomUtils.nextInt(100));
+    statistics.incrementBytesReadByDistance(3, RandomUtils.nextInt(100));
   }
 
   @Test
@@ -110,6 +118,14 @@ public class TestFileSystemStorageStatistics {
       return statistics.getLargeReadOps();
     case "writeOps":
       return statistics.getWriteOps();
+    case "bytesReadLocalHost":
+      return statistics.getBytesReadByDistance(0);
+    case "bytesReadDistanceOfOneOrTwo":
+      return statistics.getBytesReadByDistance(1);
+    case "bytesReadDistanceOfThreeOrFour":
+      return statistics.getBytesReadByDistance(3);
+    case "bytesReadDistanceOfFiveOrLarger":
+      return statistics.getBytesReadByDistance(5);
     default:
       return 0;
     }

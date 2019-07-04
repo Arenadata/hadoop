@@ -23,6 +23,8 @@ import org.apache.hadoop.classification.InterfaceStability;
 
 import com.google.common.annotations.VisibleForTesting;
 
+import java.net.InetSocketAddress;
+
 /**
  * This class represents the primary identifier for a Datanode.
  * Datanodes are identified by how they can be contacted (hostname
@@ -38,6 +40,8 @@ import com.google.common.annotations.VisibleForTesting;
 @InterfaceStability.Evolving
 public class DatanodeID implements Comparable<DatanodeID> {
   public static final DatanodeID[] EMPTY_ARRAY = {};
+  public static final DatanodeID EMPTY_DATANODE_ID = new DatanodeID("null",
+      "null", "null", 0, 0, 0, 0);
 
   private String ipAddr;     // IP address
   private String hostName;   // hostname claimed by datanode
@@ -271,5 +275,9 @@ public class DatanodeID implements Comparable<DatanodeID> {
   @Override
   public int compareTo(DatanodeID that) {
     return getXferAddr().compareTo(that.getXferAddr());
+  }
+
+  public InetSocketAddress getResolvedAddress() {
+    return new InetSocketAddress(this.getIpAddr(), this.getXferPort());
   }
 }

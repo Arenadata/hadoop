@@ -31,7 +31,6 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
@@ -69,8 +68,6 @@ import org.junit.Test;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Maps;
 
-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_LAZY_WRITER_INTERVAL_SEC;
-
 /**
  * Test the data migration tool (for Archival Storage)
  */
@@ -96,8 +93,8 @@ public class TestStorageMover {
   static {
     DEFAULT_CONF.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_SIZE);
     DEFAULT_CONF.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
-    DEFAULT_CONF.setLong(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY,
-        2L);
+    DEFAULT_CONF.setLong(
+        DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 2L);
     DEFAULT_CONF.setLong(DFSConfigKeys.DFS_MOVER_MOVEDWINWIDTH_KEY, 2000L);
 
     DEFAULT_POLICIES = BlockStoragePolicySuite.createDefaultSuite();
@@ -286,7 +283,7 @@ public class TestStorageMover {
 
     private void verifyRecursively(final Path parent,
         final HdfsFileStatus status) throws Exception {
-      if (status.isDir()) {
+      if (status.isDirectory()) {
         Path fullPath = parent == null ?
             new Path("/") : status.getFullPath(parent);
         DirectoryListing children = dfs.getClient().listPaths(
@@ -323,7 +320,7 @@ public class TestStorageMover {
       }
       final List<StorageType> types = policy.chooseStorageTypes(
           status.getReplication());
-      for(LocatedBlock lb : fileStatus.getBlockLocations().getLocatedBlocks()) {
+      for(LocatedBlock lb : fileStatus.getLocatedBlocks().getLocatedBlocks()) {
         final Mover.StorageTypeDiff diff = new Mover.StorageTypeDiff(types,
             lb.getStorageTypes());
         Assert.assertTrue(fileStatus.getFullName(parent.toString())
@@ -404,11 +401,6 @@ public class TestStorageMover {
   }
 
   private static StorageType[][] genStorageTypes(int numDataNodes,
-      int numAllDisk, int numAllArchive) {
-    return genStorageTypes(numDataNodes, numAllDisk, numAllArchive, 0);
-  }
-
-  private static StorageType[][] genStorageTypes(int numDataNodes,
       int numAllDisk, int numAllArchive, int numRamDisk) {
     Preconditions.checkArgument(
       (numAllDisk + numAllArchive + numRamDisk) <= numDataNodes);
@@ -429,26 +421,6 @@ public class TestStorageMover {
       types[i] = new StorageType[]{StorageType.DISK, StorageType.ARCHIVE};
     }
     return types;
-  }
-
-  private static long[][] genCapacities(int nDatanodes, int numAllDisk,
-      int numAllArchive, int numRamDisk, long diskCapacity,
-      long archiveCapacity, long ramDiskCapacity) {
-    final long[][] capacities = new long[nDatanodes][];
-    int i = 0;
-    for (; i < numRamDisk; i++) {
-      capacities[i] = new long[]{ramDiskCapacity, diskCapacity};
-    }
-    for (; i < numRamDisk + numAllDisk; i++) {
-      capacities[i] = new long[]{diskCapacity, diskCapacity};
-    }
-    for (; i < numRamDisk + numAllDisk + numAllArchive; i++) {
-      capacities[i] = new long[]{archiveCapacity, archiveCapacity};
-    }
-    for(; i < capacities.length; i++) {
-      capacities[i] = new long[]{diskCapacity, archiveCapacity};
-    }
-    return capacities;
   }
 
   private static class PathPolicyMap {

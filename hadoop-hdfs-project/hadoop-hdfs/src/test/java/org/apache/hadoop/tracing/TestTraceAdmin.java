@@ -78,10 +78,18 @@ public class TestTraceAdmin extends SaslDataTransferTestCase {
   }
 
   @Test
+  public void testNoOperator() throws Exception {
+    TraceAdmin trace = new TraceAdmin();
+    trace.setConf(new Configuration());
+    Assert.assertEquals("ret:1, You must specify an operation." + NEWLINE,
+        runTraceCommand(trace, "-host", "127.0.0.1:12346"));
+  }
+
+  @Test
   public void testCreateAndDestroySpanReceiver() throws Exception {
     Configuration conf = new Configuration();
     conf = new Configuration();
-    conf.set(TraceUtils.DEFAULT_HADOOP_PREFIX +
+    conf.set(TraceUtils.DEFAULT_HADOOP_TRACE_PREFIX +
         Tracer.SPAN_RECEIVER_CLASSES_KEY, "");
     MiniDFSCluster cluster =
         new MiniDFSCluster.Builder(conf).numDataNodes(3).build();

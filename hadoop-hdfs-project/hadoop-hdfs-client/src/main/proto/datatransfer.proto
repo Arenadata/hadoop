@@ -74,7 +74,6 @@ message OpReadBlockProto {
   optional CachingStrategyProto cachingStrategy = 5;
 }
 
-
 message ChecksumProto {
   required ChecksumTypeProto type = 1;
   required uint32 bytesPerChecksum = 2;
@@ -126,12 +125,15 @@ message OpWriteBlockProto {
   //whether to pin the block, so Balancer won't move it.
   optional bool pinning = 14 [default = false];
   repeated bool targetPinnings = 15;
+  optional string storageId = 16;
+  repeated string targetStorageIds = 17;
 }
   
 message OpTransferBlockProto {
   required ClientOperationHeaderProto header = 1;
   repeated DatanodeInfoProto targets = 2;
   repeated StorageTypeProto targetStorageTypes = 3;
+  repeated string targetStorageIds = 4;
 }
 
 message OpReplaceBlockProto {
@@ -139,6 +141,7 @@ message OpReplaceBlockProto {
   required string delHint = 2;
   required DatanodeInfoProto source = 3;
   optional StorageTypeProto storageType = 4 [default = DISK];
+  optional string storageId = 5;
 }
 
 message OpCopyBlockProto {
@@ -147,6 +150,16 @@ message OpCopyBlockProto {
 
 message OpBlockChecksumProto { 
   required BaseHeaderProto header = 1;
+}
+
+message OpBlockGroupChecksumProto {
+  required BaseHeaderProto header = 1;
+  required DatanodeInfosProto datanodes = 2;
+  // each internal block has a block token
+  repeated hadoop.common.TokenProto blockTokens = 3;
+  required ErasureCodingPolicyProto ecPolicy = 4;
+  repeated uint32 blockIndices = 5;
+  required uint64 requestedNumBytes = 6;
 }
 
 /**
@@ -234,6 +247,7 @@ enum Status {
   OOB_RESERVED2 = 10;         // Reserved
   OOB_RESERVED3 = 11;         // Reserved
   IN_PROGRESS = 12;
+  ERROR_BLOCK_PINNED = 13;
 }
 
 enum ShortCircuitFdResponse {

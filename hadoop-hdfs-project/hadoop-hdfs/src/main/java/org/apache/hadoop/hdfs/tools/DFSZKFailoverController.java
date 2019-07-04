@@ -19,12 +19,15 @@ package org.apache.hadoop.hdfs.tools;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY;
+import static org.apache.hadoop.util.ExitUtil.terminate;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.logging.Log;
@@ -188,13 +191,13 @@ public class DFSZKFailoverController extends ZKFailoverController {
         new HdfsConfiguration(), args);
     DFSZKFailoverController zkfc = DFSZKFailoverController.create(
         parser.getConfiguration());
-    int retCode = 0;
     try {
-      retCode = zkfc.run(parser.getRemainingArgs());
+      System.exit(zkfc.run(parser.getRemainingArgs()));
     } catch (Throwable t) {
-      LOG.fatal("Got a fatal error, exiting now", t);
+      LOG.fatal("DFSZKFailOverController exiting due to earlier exception "
+          + t);
+      terminate(1, t);
     }
-    System.exit(retCode);
   }
 
   @Override
@@ -262,4 +265,15 @@ public class DFSZKFailoverController extends ZKFailoverController {
     return isThreadDumpCaptured;
   }
 
+  @Override
+  public List<HAServiceTarget> getAllOtherNodes() {
+    String nsId = DFSUtil.getNamenodeNameServiceId(conf);
+    List<String> otherNn = HAUtil.getNameNodeIdOfOtherNodes(conf, nsId);
+
+    List<HAServiceTarget> targets = new ArrayList<HAServiceTarget>(otherNn.size());
+    for (String nnId : otherNn) {
+      targets.add(new NNHAServiceTarget(conf, nsId, nnId));
+    }
+    return targets;
+  }
 }

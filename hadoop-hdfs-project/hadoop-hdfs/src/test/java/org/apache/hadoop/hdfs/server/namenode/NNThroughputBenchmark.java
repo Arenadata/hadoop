@@ -64,6 +64,8 @@ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
@@ -585,14 +587,16 @@ public class NNThroughputBenchmark implements Tool {
     throws IOException {
       long start = Time.now();
       // dummyActionNoSynch(fileIdx);
-      clientProto.create(fileNames[daemonId][inputIdx], FsPermission.getDefault(),
-                      clientName, new EnumSetWritable<CreateFlag>(EnumSet
-              .of(CreateFlag.CREATE, CreateFlag.OVERWRITE)), true, 
-          replication, BLOCK_SIZE, CryptoProtocolVersion.supported());
+      clientProto.create(fileNames[daemonId][inputIdx],
+          FsPermission.getDefault(), clientName,
+          new EnumSetWritable<CreateFlag>(EnumSet
+              .of(CreateFlag.CREATE, CreateFlag.OVERWRITE)), true,
+          replication, BLOCK_SIZE, CryptoProtocolVersion.supported(), null);
       long end = Time.now();
-      for(boolean written = !closeUponCreate; !written; 
+      for (boolean written = !closeUponCreate; !written;
         written = clientProto.complete(fileNames[daemonId][inputIdx],
-                                    clientName, null, HdfsConstants.GRANDFATHER_INODE_ID));
+            clientName, null, HdfsConstants.GRANDFATHER_INODE_ID)) {
+      };
       return end-start;
     }
 
@@ -938,7 +942,7 @@ public class NNThroughputBenchmark implements Tool {
           new StorageBlockReport(storage, BlockListAsLongs.EMPTY)
       };
       dataNodeProto.blockReport(dnRegistration, bpid, reports,
-              new BlockReportContext(1, 0, System.nanoTime(), 0L));
+              new BlockReportContext(1, 0, System.nanoTime(), 0L, true));
     }
 
     /**
@@ -951,7 +955,9 @@ public class NNThroughputBenchmark implements Tool {
       StorageReport[] rep = { new StorageReport(storage, false,
           DF_CAPACITY, DF_USED, DF_CAPACITY - DF_USED, DF_USED, 0L) };
       DatanodeCommand[] cmds = dataNodeProto.sendHeartbeat(dnRegistration, rep,
-          0L, 0L, 0, 0, 0, null, true).getCommands();
+          0L, 0L, 0, 0, 0, null, true,
+          SlowPeerReports.EMPTY_REPORT, SlowDiskReports.EMPTY_REPORT)
+          .getCommands();
       if(cmds != null) {
         for (DatanodeCommand cmd : cmds ) {
           if(LOG.isDebugEnabled()) {
@@ -1000,7 +1006,9 @@ public class NNThroughputBenchmark implements Tool {
       StorageReport[] rep = { new StorageReport(storage,
           false, DF_CAPACITY, DF_USED, DF_CAPACITY - DF_USED, DF_USED, 0) };
       DatanodeCommand[] cmds = dataNodeProto.sendHeartbeat(dnRegistration,
-          rep, 0L, 0L, 0, 0, 0, null, true).getCommands();
+          rep, 0L, 0L, 0, 0, 0, null, true,
+          SlowPeerReports.EMPTY_REPORT, SlowDiskReports.EMPTY_REPORT)
+          .getCommands();
       if (cmds != null) {
         for (DatanodeCommand cmd : cmds) {
           if (cmd.getAction() == DatanodeProtocol.DNA_TRANSFER) {
@@ -1133,7 +1141,7 @@ public class NNThroughputBenchmark implements Tool {
         String fileName = nameGenerator.getNextFileName("ThroughputBench");
         clientProto.create(fileName, FsPermission.getDefault(), clientName,
             new EnumSetWritable<CreateFlag>(EnumSet.of(CreateFlag.CREATE, CreateFlag.OVERWRITE)), true, replication,
-            BLOCK_SIZE, CryptoProtocolVersion.supported());
+            BLOCK_SIZE, CryptoProtocolVersion.supported(), null);
         ExtendedBlock lastBlock = addBlocks(fileName, clientName);
         clientProto.complete(fileName, clientName, lastBlock, HdfsConstants.GRANDFATHER_INODE_ID);
       }
@@ -1213,7 +1221,7 @@ public class NNThroughputBenchmark implements Tool {
       StorageBlockReport[] report = { new StorageBlockReport(
           dn.storage, dn.getBlockReportList()) };
       dataNodeProto.blockReport(dn.dnRegistration, bpid, report,
-          new BlockReportContext(1, 0, System.nanoTime(), 0L));
+          new BlockReportContext(1, 0, System.nanoTime(), 0L, true));
       long end = Time.now();
       return end-start;
     }
@@ -1237,8 +1245,8 @@ public class NNThroughputBenchmark implements Tool {
   }   // end BlockReportStats
 
   /**
-   * Measures how fast replication monitor can compute data-node work.
-   * 
+   * Measures how fast redundancy monitor can compute data-node work.
+   *
    * It runs only one thread until no more work can be scheduled.
    */
   class ReplicationStats extends OperationStatsBase {
@@ -1265,7 +1273,7 @@ public class NNThroughputBenchmark implements Tool {
       parseArguments(args);
       // number of operations is 4 times the number of decommissioned
       // blocks divided by the number of needed replications scanned 
-      // by the replication monitor in one iteration
+      // by the redundancy monitor in one iteration
       numOpsRequired = (totalBlocks*replication*nodesToDecommission*2)
             / (numDatanodes*numDatanodes);
 
@@ -1314,8 +1322,8 @@ public class NNThroughputBenchmark implements Tool {
 
       // start data-nodes; create a bunch of files; generate block reports.
       blockReportObject.generateInputs(ignore);
-      // stop replication monitor
-      BlockManagerTestUtil.stopReplicationThread(namesystem.getBlockManager());
+      // stop redundancy monitor thread.
+      BlockManagerTestUtil.stopRedundancyThread(namesystem.getBlockManager());
 
       // report blocks once
       int nrDatanodes = blockReportObject.getNumDatanodes();

@@ -20,12 +20,11 @@
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
-    <version>2.8.0-arenadata</version>
+    <version>3.1.0</version>
     <relativePath>../hadoop-project</relativePath>
   </parent>
-  <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-dist</artifactId>
-  <version>2.8.0-arenadata</version>
+  <version>3.1.0</version>
   <description>Apache Hadoop Distribution</description>
   <name>Apache Hadoop Distribution</name>
   <packaging>jar</packaging>
@@ -52,6 +51,23 @@
       <artifactId>hadoop-yarn-api</artifactId>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-check-invariants</artifactId>
+      <type>pom</type>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-check-test-invariants</artifactId>
+      <type>pom</type>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-integration-tests</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -68,6 +84,61 @@
         <configuration>
         </configuration>
       </plugin>
+
+      <!--
+           The "dist" profile automatically attaches many artifacts
+           to the module.
+
+           Disable these, since we are only concerned with assembling
+           the dist layout.
+      -->
+      <plugin>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-jar</id>
+            <phase>never</phase>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-source-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>hadoop-java-sources</id>
+            <phase>never</phase>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>module-javadocs</id>
+            <phase>never</phase>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Disable install plugin too, since we disabled all the artifacts -->
+      <plugin>
+        <artifactId>maven-install-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-install</id>
+            <phase>never</phase>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Disable the sign plugin, since there isn't anything to sign -->
+      <plugin>
+        <artifactId>maven-gpg-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>sign-artifacts</id>
+            <phase>never</phase>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
 
@@ -83,92 +154,59 @@
       <build>
         <plugins>
           <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-antrun-plugin</artifactId>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
             <executions>
               <execution>
                 <id>dist</id>
                 <phase>prepare-package</phase>
                 <goals>
-                  <goal>run</goal>
+                  <goal>exec</goal>
                 </goals>
                 <configuration>
-                  <target>
-                    <echo file="${project.build.directory}/dist-layout-stitching.sh">
-                      run() {
-                        echo "\$ ${@}"
-                        "${@}"
-                        res=$?
-                        if [ $res != 0 ]; then
-                          echo
-                          echo "Failed!"
-                          echo
-                          exit $res
-                        fi
-                      }
-
-                      ROOT=`cd ../..;pwd`
-                      echo
-                      echo "Current directory `pwd`"
-                      echo
-                      run rm -rf hadoop-${project.version}
-                      run mkdir hadoop-${project.version}
-                      run cd hadoop-${project.version}
-                      run cp $ROOT/LICENSE.txt .
-                      run cp $ROOT/NOTICE.txt .
-                      run cp $ROOT/README.txt .
-                      run cp -r $ROOT/hadoop-common-project/hadoop-common/target/hadoop-common-${project.version}/* .
-                      run cp -r $ROOT/hadoop-common-project/hadoop-nfs/target/hadoop-nfs-${project.version}/* .
-                      run cp -r $ROOT/hadoop-hdfs-project/hadoop-hdfs/target/hadoop-hdfs-${project.version}/* .
-                      run cp -r $ROOT/hadoop-hdfs-project/hadoop-hdfs-httpfs/target/hadoop-hdfs-httpfs-${project.version}/* .
-                      run cp -r $ROOT/hadoop-common-project/hadoop-kms/target/hadoop-kms-${project.version}/* .
-                      run cp -r $ROOT/hadoop-hdfs-project/hadoop-hdfs-nfs/target/hadoop-hdfs-nfs-${project.version}/* .
-                      run cp -r $ROOT/hadoop-hdfs-project/hadoop-hdfs-client/target/hadoop-hdfs-client-${project.version}/* .
-                      run cp -r $ROOT/hadoop-hdfs-project/hadoop-hdfs-native-client/target/hadoop-hdfs-native-client-${project.version}/* .
-                      run cp -r $ROOT/hadoop-yarn-project/target/hadoop-yarn-project-${project.version}/* .
-                      run cp -r $ROOT/hadoop-mapreduce-project/target/hadoop-mapreduce-${project.version}/* .
-                      run cp -r $ROOT/hadoop-tools/hadoop-tools-dist/target/hadoop-tools-dist-${project.version}/* .
-                      echo
-                      echo "Hadoop dist layout available at: ${project.build.directory}/hadoop-${project.version}"
-                      echo
-                    </echo>
-                    <exec executable="${shell-executable}" dir="${project.build.directory}" failonerror="true">
-                      <arg line="./dist-layout-stitching.sh"/>
-                    </exec>
-                  </target>
+                  <executable>${shell-executable}</executable>
+                  <workingDirectory>${project.build.directory}</workingDirectory>
+                  <requiresOnline>false</requiresOnline>
+                  <arguments>
+                    <argument>${basedir}/../dev-support/bin/dist-layout-stitching</argument>
+                    <argument>${project.version}</argument>
+                    <argument>${project.build.directory}</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>toolshooks</id>
+                <phase>prepare-package</phase>
+                <goals>
+                    <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <executable>${shell-executable}</executable>
+                  <workingDirectory>${basedir}</workingDirectory>
+                  <requiresOnline>false</requiresOnline>
+                  <arguments>
+                    <argument>${basedir}/../dev-support/bin/dist-tools-hooks-maker</argument>
+                    <argument>${project.version}</argument>
+                    <argument>${project.build.directory}</argument>
+                    <argument>${basedir}/../hadoop-tools</argument>
+                  </arguments>
                 </configuration>
               </execution>
               <execution>
                 <id>tar</id>
                 <phase>package</phase>
                 <goals>
-                  <goal>run</goal>
+                  <goal>exec</goal>
                 </goals>
                 <configuration>
-                  <target if="tar">
-                    <echo file="${project.build.directory}/dist-tar-stitching.sh">
-                      run() {
-                        echo "\$ ${@}"
-                        "${@}"
-                        res=$?
-                        if [ $res != 0 ]; then
-                          echo
-                          echo "Failed!"
-                          echo
-                          exit $res
-                        fi
-                      }
-
-                      run tar cf hadoop-${project.version}.tar hadoop-${project.version}
-                      run gzip -f hadoop-${project.version}.tar
-                      echo
-                      echo "Hadoop dist tar available at: ${project.build.directory}/hadoop-${project.version}.tar.gz"
-                      echo
-                    </echo>
-                    <exec executable="${shell-executable}" dir="${project.build.directory}" failonerror="true">
-                      <arg line="./dist-tar-stitching.sh"/>
-                    </exec>
-                  </target>
+                    <executable>${shell-executable}</executable>
+                    <workingDirectory>${project.build.directory}</workingDirectory>
+                    <requiresOnline>false</requiresOnline>
+                    <arguments>
+                      <argument>${basedir}/../dev-support/bin/dist-tar-stitching</argument>
+                      <argument>${project.version}</argument>
+                      <argument>${project.build.directory}</argument>
+                    </arguments>
                 </configuration>
               </execution>
             </executions>

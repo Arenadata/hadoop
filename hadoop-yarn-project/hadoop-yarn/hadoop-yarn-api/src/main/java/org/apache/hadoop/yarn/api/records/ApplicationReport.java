@@ -25,6 +25,7 @@ import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.util.Records;
 
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -366,7 +367,7 @@ public abstract class ApplicationReport {
    * Get the AMRM token of the application.
    * <p>
    * The AMRM token is required for AM to RM scheduling operations. For 
-   * managed Application Masters Yarn takes care of injecting it. For unmanaged
+   * managed Application Masters YARN takes care of injecting it. For unmanaged
    * Applications Masters, the token must be obtained via this method and set
    * in the {@link org.apache.hadoop.security.UserGroupInformation} of the
    * current user.
@@ -447,4 +448,13 @@ public abstract class ApplicationReport {
 
   @Unstable
   public abstract void setAmNodeLabelExpression(String amNodeLabelExpression);
+
+  @Public
+  @Unstable
+  public abstract Map<ApplicationTimeoutType, ApplicationTimeout> getApplicationTimeouts();
+
+  @Private
+  @Unstable
+  public abstract void setApplicationTimeouts(
+      Map<ApplicationTimeoutType, ApplicationTimeout> timeouts);
 }

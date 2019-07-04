@@ -67,12 +67,15 @@ import org.apache.hadoop.hdfs.protocol.CachePoolEntry;
 import org.apache.hadoop.hdfs.protocol.CachePoolInfo;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LastBlockWithStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
@@ -92,7 +95,12 @@ public class TestRetryCacheWithHA {
   private static final Log LOG = LogFactory.getLog(TestRetryCacheWithHA.class);
   
   private static final int BlockSize = 1024;
-  private static final short DataNodes = 3;
+  private static ErasureCodingPolicy defaultEcPolicy =
+      SystemErasureCodingPolicies.getByID(
+          SystemErasureCodingPolicies.RS_6_3_POLICY_ID);
+  private static final short DataNodes = (short)(
+      defaultEcPolicy.getNumDataUnits() +
+      defaultEcPolicy.getNumParityUnits() + 1);
   private static final int CHECKTIMES = 10;
   private static final int ResponseSize = 3;
   
@@ -165,7 +173,7 @@ public class TestRetryCacheWithHA {
     FSNamesystem fsn0 = cluster.getNamesystem(0);
     LightWeightCache<CacheEntry, CacheEntry> cacheSet = 
         (LightWeightCache<CacheEntry, CacheEntry>) fsn0.getRetryCache().getCacheSet();
-    assertEquals("Retry cache size is wrong", 26, cacheSet.size());
+    assertEquals("Retry cache size is wrong", 39, cacheSet.size());
     
     Map<CacheEntry, CacheEntry> oldEntries = 
         new HashMap<CacheEntry, CacheEntry>();
@@ -186,7 +194,7 @@ public class TestRetryCacheWithHA {
     FSNamesystem fsn1 = cluster.getNamesystem(1);
     cacheSet = (LightWeightCache<CacheEntry, CacheEntry>) fsn1
         .getRetryCache().getCacheSet();
-    assertEquals("Retry cache size is wrong", 26, cacheSet.size());
+    assertEquals("Retry cache size is wrong", 39, cacheSet.size());
     iter = cacheSet.iterator();
     while (iter.hasNext()) {
       CacheEntry entry = iter.next();
@@ -404,7 +412,8 @@ public class TestRetryCacheWithHA {
           FsPermission.getFileDefault(), client.getClientName(),
           new EnumSetWritable<CreateFlag>(createFlag), false, DataNodes,
           BlockSize,
-          new CryptoProtocolVersion[] {CryptoProtocolVersion.ENCRYPTION_ZONES});
+          new CryptoProtocolVersion[] {CryptoProtocolVersion.ENCRYPTION_ZONES},
+          null);
     }
 
     @Override
@@ -737,7 +746,13 @@ public class TestRetryCacheWithHA {
       DatanodeInfo[] newNodes = new DatanodeInfo[2];
       newNodes[0] = nodes[0];
       newNodes[1] = nodes[1];
-      String[] storageIDs = {"s0", "s1"};
+      final DatanodeManager dm = cluster.getNamesystem(0).getBlockManager()
+          .getDatanodeManager();
+      final String storageID1 = dm.getDatanode(newNodes[0]).getStorageInfos()[0]
+          .getStorageID();
+      final String storageID2 = dm.getDatanode(newNodes[1]).getStorageInfos()[0]
+          .getStorageID();
+      String[] storageIDs = {storageID1, storageID2};
       
       client.getNamenode().updatePipeline(client.getClientName(), oldBlock,
           newBlock, newNodes, storageIDs);
@@ -1275,7 +1290,7 @@ public class TestRetryCacheWithHA {
 
   /**
    * When NN failover happens, if the client did not receive the response and
-   * send a retry request to the other NN, the same response should be recieved
+   * send a retry request to the other NN, the same response should be received
    * based on the retry cache.
    */
   public void testClientRetryWithFailover(final AtMostOnceOp op)

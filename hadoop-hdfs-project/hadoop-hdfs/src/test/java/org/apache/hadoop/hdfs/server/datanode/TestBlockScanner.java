@@ -24,10 +24,12 @@ import static org.apache.hadoop.hdfs.server.datanode.BlockScanner.Conf.INTERNAL_
 import static org.apache.hadoop.hdfs.server.datanode.BlockScanner.Conf.INTERNAL_DFS_BLOCK_SCANNER_CURSOR_SAVE_INTERVAL_MS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -42,6 +44,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.AppendTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils.MaterializedReplica;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.VolumeScanner.ScanResultHandler;
 import org.apache.hadoop.conf.Configuration;
@@ -142,6 +145,11 @@ public class TestBlockScanner {
     public ExtendedBlock getFileBlock(int nsIdx, int fileIdx)
           throws Exception {
       return DFSTestUtil.getFirstBlock(dfs[nsIdx], getPath(fileIdx));
+    }
+
+    public MaterializedReplica getMaterializedReplica(int nsIdx, int fileIdx)
+        throws Exception {
+      return cluster.getMaterializedReplica(0, getFileBlock(nsIdx, fileIdx));
     }
   }
 
@@ -546,8 +554,8 @@ public class TestBlockScanner {
       info.shouldRun = false;
     }
     ctx.datanode.shutdown();
-    String vPath = ctx.volumes.get(0).getBasePath();
-    File cursorPath = new File(new File(new File(vPath, "current"),
+    URI vURI = ctx.volumes.get(0).getStorageLocation().getUri();
+    File cursorPath = new File(new File(new File(new File(vURI), "current"),
           ctx.bpids[0]), "scanner.cursor");
     assertTrue("Failed to find cursor save file in " +
         cursorPath.getAbsolutePath(), cursorPath.exists());
@@ -809,6 +817,62 @@ public class TestBlockScanner {
           "in recentSuspectBlocks.", info.goodBlocks.contains(first));
       info.blocksScanned = 0;
     }
+  }
+
+  /**
+   * Test that blocks which are in the wrong location are ignored.
+   */
+  @Test(timeout=120000)
+  public void testIgnoreMisplacedBlock() throws Exception {
+    Configuration conf = new Configuration();
+    // Set a really long scan period.
+    conf.setLong(DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, 100L);
+    conf.set(INTERNAL_VOLUME_SCANNER_SCAN_RESULT_HANDLER,
+        TestScanResultHandler.class.getName());
+    conf.setLong(INTERNAL_DFS_BLOCK_SCANNER_CURSOR_SAVE_INTERVAL_MS, 0L);
+    final TestContext ctx = new TestContext(conf, 1);
+    final int NUM_FILES = 4;
+    ctx.createFiles(0, NUM_FILES, 5);
+    MaterializedReplica unreachableReplica = ctx.getMaterializedReplica(0, 1);
+    ExtendedBlock unreachableBlock = ctx.getFileBlock(0, 1);
+    unreachableReplica.makeUnreachable();
+    final TestScanResultHandler.Info info =
+        TestScanResultHandler.getInfo(ctx.volumes.get(0));
+    String storageID = ctx.volumes.get(0).getStorageID();
+    synchronized (info) {
+      info.sem = new Semaphore(NUM_FILES);
+      info.shouldRun = true;
+      info.notify();
+    }
+    // Scan the first 4 blocks
+    LOG.info("Waiting for the blocks to be scanned.");
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        synchronized (info) {
+          if (info.blocksScanned >= NUM_FILES - 1) {
+            LOG.info("info = {}.  blockScanned has now reached " +
+                info.blocksScanned, info);
+            return true;
+          } else {
+            LOG.info("info = {}.  Waiting for blockScanned to reach " +
+                (NUM_FILES - 1), info);
+            return false;
+          }
+        }
+      }
+    }, 50, 30000);
+    // We should have scanned 4 blocks
+    synchronized (info) {
+      assertFalse(info.goodBlocks.contains(unreachableBlock));
+      assertFalse(info.badBlocks.contains(unreachableBlock));
+      assertEquals("Expected 3 good blocks.", 3, info.goodBlocks.size());
+      info.goodBlocks.clear();
+      assertEquals("Expected 3 blocksScanned", 3, info.blocksScanned);
+      assertEquals("Did not expect bad blocks.", 0, info.badBlocks.size());
+      info.blocksScanned = 0;
+    }
+    info.sem.release(1);
   }
 
   /**

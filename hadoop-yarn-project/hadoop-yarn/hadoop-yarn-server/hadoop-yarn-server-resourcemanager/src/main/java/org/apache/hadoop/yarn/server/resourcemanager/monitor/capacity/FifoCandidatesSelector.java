@@ -21,7 +21,6 @@ package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
@@ -44,12 +43,12 @@ public class FifoCandidatesSelector
       LogFactory.getLog(FifoCandidatesSelector.class);
   private PreemptableResourceCalculator preemptableAmountCalculator;
 
-  FifoCandidatesSelector(
-      CapacitySchedulerPreemptionContext preemptionContext) {
+  FifoCandidatesSelector(CapacitySchedulerPreemptionContext preemptionContext,
+      boolean includeReservedResource) {
     super(preemptionContext);
 
     preemptableAmountCalculator = new PreemptableResourceCalculator(
-        preemptionContext, false);
+        preemptionContext, includeReservedResource);
   }
 
   @Override
@@ -90,7 +89,8 @@ public class FifoCandidatesSelector
               .getResToObtainByPartitionForLeafQueue(preemptionContext,
                   queueName, clusterResource);
 
-      synchronized (leafQueue) {
+      try {
+        leafQueue.getReadLock().lock();
         // go through all ignore-partition-exclusivity containers first to make
         // sure such containers will be preemptionCandidates first
         Map<String, TreeSet<RMContainer>> ignorePartitionExclusivityContainers =
@@ -140,14 +140,16 @@ public class FifoCandidatesSelector
         // Can try preempting AMContainers (still saving atmost
         // maxAMCapacityForThisQueue AMResource's) if more resources are
         // required to be preemptionCandidates from this Queue.
-        Resource maxAMCapacityForThisQueue = Resources.multiply(
-            Resources.multiply(clusterResource,
-                leafQueue.getAbsoluteCapacity()),
-            leafQueue.getMaxAMResourcePerQueuePercent());
+        Resource maxAMCapacityForThisQueue = Resources
+            .multiply(
+                leafQueue.getEffectiveCapacity(RMNodeLabelsManager.NO_LABEL),
+                leafQueue.getMaxAMResourcePerQueuePercent());
 
         preemptAMContainers(clusterResource, selectedCandidates, skippedAMContainerlist,
             resToObtainByPartition, skippedAMSize, maxAMCapacityForThisQueue,
             totalPreemptionAllowed);
+      } finally {
+        leafQueue.getReadLock().unlock();
       }
     }
 
@@ -197,7 +199,6 @@ public class FifoCandidatesSelector
    * Given a target preemption for a specific application, select containers
    * to preempt (after unreserving all reservation for that app).
    */
-  @SuppressWarnings("unchecked")
   private void preemptFrom(FiCaSchedulerApp app,
       Resource clusterResource, Map<String, Resource> resToObtainByPartition,
       List<RMContainer> skippedAMContainerlist, Resource skippedAMSize,

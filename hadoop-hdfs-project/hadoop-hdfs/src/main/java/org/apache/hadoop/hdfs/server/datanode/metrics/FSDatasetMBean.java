@@ -57,8 +57,9 @@ public interface FSDatasetMBean extends MetricsSource {
   /**
    * Returns total capacity (in bytes) of storage (used and unused)
    * @return  total capacity of storage (used and unused)
+   * @throws IOException
    */
-  public long getCapacity();
+  public long getCapacity() throws IOException;
 
   /**
    * Returns the amount of free storage space (in bytes)

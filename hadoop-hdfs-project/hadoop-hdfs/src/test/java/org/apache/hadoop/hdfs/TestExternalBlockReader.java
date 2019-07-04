@@ -23,11 +23,11 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSInputStream.ReadStatistics;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.net.NetUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -39,7 +39,8 @@ import java.util.LinkedList;
 import java.util.UUID;
 
 public class TestExternalBlockReader {
-  private static final Log LOG = LogFactory.getLog(TestExternalBlockReader.class);
+  private static final Log LOG =
+          LogFactory.getLog(TestExternalBlockReader.class);
 
   private static long SEED = 1234;
 
@@ -246,6 +247,11 @@ public class TestExternalBlockReader {
       return true;
     }
 
+    @Override
+    public int getNetworkDistance() {
+      return 0;
+    }
+
     synchronized String getError() {
       return error;
     }
@@ -271,7 +277,7 @@ public class TestExternalBlockReader {
     String uuid = UUID.randomUUID().toString();
     conf.set(SYNTHETIC_BLOCK_READER_TEST_UUID_KEY, uuid);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
-        .numDataNodes(1)
+        .hosts(new String[] {NetUtils.getLocalHostname()})
         .build();
     final int TEST_LENGTH = 2047;
     DistributedFileSystem dfs = cluster.getFileSystem();

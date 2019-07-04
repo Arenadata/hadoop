@@ -25,7 +25,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyLong;
+import static org.mockito.Matchers.anyObject;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -53,6 +53,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -78,24 +80,40 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.CorruptFileBlocks;
+import org.apache.hadoop.hdfs.protocol.DatanodeAdminProperties;
+import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.CombinedHostFileManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
-import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
+import org.apache.hadoop.hdfs.server.blockmanagement.HostConfigManager;
+import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck.Result;
+import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck.ReplicationResult;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
+import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck.ErasureCodingResult;
+import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.tools.DFSck;
+import org.apache.hadoop.hdfs.util.HostsFileWriter;
+import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.security.AccessControlException;
@@ -119,9 +137,10 @@ import com.google.common.collect.Sets;
 public class TestFsck {
   private static final Log LOG =
       LogFactory.getLog(TestFsck.class.getName());
-  static final String auditLogFile = System.getProperty("test.build.dir",
-      "build/test") + "/TestFsck-audit.log";
 
+  static final String AUDITLOG_FILE =
+      GenericTestUtils.getTempPath("TestFsck-audit.log");
+  
   // Pattern for: 
   // allowed=true ugi=name ip=/address cmd=FSCK src=/ dst=null perm=null
   static final Pattern FSCK_PATTERN = Pattern.compile(
@@ -136,7 +155,10 @@ public class TestFsck {
       "ip=/\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s" + 
       "cmd=getfileinfo\\ssrc=\\/\\sdst=null\\s" + 
       "perm=null\\s" + "proto=.*");
-  
+
+  static final Pattern NUM_MISSING_BLOCKS_PATTERN = Pattern.compile(
+      ".*Missing blocks:\t\t([0123456789]*).*");
+
   static final Pattern NUM_CORRUPT_BLOCKS_PATTERN = Pattern.compile(
       ".*Corrupt blocks:\t\t([0123456789]*).*");
   
@@ -150,11 +172,11 @@ public class TestFsck {
     PrintStream out = new PrintStream(bStream, true);
     GenericTestUtils.setLogLevel(FSPermissionChecker.LOG, Level.ALL);
     int errCode = ToolRunner.run(new DFSck(conf, out), path);
+    LOG.info("OUTPUT = " + bStream.toString());
     if (checkErrorCode) {
       assertEquals(expectedErrCode, errCode);
     }
     GenericTestUtils.setLogLevel(FSPermissionChecker.LOG, Level.INFO);
-    LOG.info("OUTPUT = " + bStream.toString());
     return bStream.toString();
   }
 
@@ -221,14 +243,15 @@ public class TestFsck {
 
   /** Sets up log4j logger for auditlogs. */
   private void setupAuditLogs() throws IOException {
-    File file = new File(auditLogFile);
+    File file = new File(AUDITLOG_FILE);
     if (file.exists()) {
       file.delete();
     }
     Logger logger = ((Log4JLogger) FSNamesystem.auditLog).getLogger();
     logger.setLevel(Level.INFO);
     PatternLayout layout = new PatternLayout("%m%n");
-    RollingFileAppender appender = new RollingFileAppender(layout, auditLogFile);
+    RollingFileAppender appender =
+        new RollingFileAppender(layout, AUDITLOG_FILE);
     logger.addAppender(appender);
   }
   
@@ -240,7 +263,7 @@ public class TestFsck {
     BufferedReader reader = null;
     try {
       // Audit log should contain one getfileinfo and one fsck
-      reader = new BufferedReader(new FileReader(auditLogFile));
+      reader = new BufferedReader(new FileReader(AUDITLOG_FILE));
       String line;
 
       // one extra getfileinfo stems from resolving the path
@@ -372,19 +395,27 @@ public class TestFsck {
     // Wait for fsck to discover all the missing blocks
     while (true) {
       outStr = runFsck(conf, 1, false, "/");
+      String numMissing = null;
       String numCorrupt = null;
       for (String line : outStr.split(LINE_SEPARATOR)) {
-        Matcher m = NUM_CORRUPT_BLOCKS_PATTERN.matcher(line);
+        Matcher m = NUM_MISSING_BLOCKS_PATTERN.matcher(line);
+        if (m.matches()) {
+          numMissing = m.group(1);
+        }
+        m = NUM_CORRUPT_BLOCKS_PATTERN.matcher(line);
         if (m.matches()) {
           numCorrupt = m.group(1);
+        }
+        if (numMissing != null && numCorrupt != null) {
           break;
         }
       }
-      if (numCorrupt == null) {
-        throw new IOException("failed to find number of corrupt " +
-            "blocks in fsck output.");
+      if (numMissing == null || numCorrupt == null) {
+        throw new IOException("failed to find number of missing or corrupt" +
+            " blocks in fsck output.");
       }
-      if (numCorrupt.equals(Integer.toString(totalMissingBlocks))) {
+      if (numMissing.equals(Integer.toString(totalMissingBlocks))) {
+        assertTrue(numCorrupt.equals(Integer.toString(0)));
         assertTrue(outStr.contains(NamenodeFsck.CORRUPT_STATUS));
         break;
       }
@@ -625,9 +656,11 @@ public class TestFsck {
     assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
     assertFalse(outStr.contains("OPENFORWRITE"));
     // Use -openforwrite option to list open files
-    outStr = runFsck(conf, 0, true, topDir, "-openforwrite");
+    outStr = runFsck(conf, 0, true, topDir, "-files", "-blocks",
+        "-locations", "-openforwrite");
     System.out.println(outStr);
     assertTrue(outStr.contains("OPENFORWRITE"));
+    assertTrue(outStr.contains("Under Construction Block:"));
     assertTrue(outStr.contains("openFile"));
     // Close the file
     out.close();
@@ -636,6 +669,97 @@ public class TestFsck {
     System.out.println(outStr);
     assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
     assertFalse(outStr.contains("OPENFORWRITE"));
+    assertFalse(outStr.contains("Under Construction Block:"));
+    util.cleanup(fs, topDir);
+  }
+
+  @Test
+  public void testFsckOpenECFiles() throws Exception {
+    DFSTestUtil util = new DFSTestUtil.Builder().setName("TestFsckECFile").
+        setNumFiles(4).build();
+    conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 10000L);
+    ErasureCodingPolicy ecPolicy =
+        StripedFileTestUtil.getDefaultECPolicy();
+    final int dataBlocks = ecPolicy.getNumDataUnits();
+    final int cellSize = ecPolicy.getCellSize();
+    final int numAllUnits = dataBlocks + ecPolicy.getNumParityUnits();
+    int blockSize = 2 * cellSize;
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(
+        numAllUnits + 1).build();
+    String topDir = "/myDir";
+    cluster.waitActive();
+    DistributedFileSystem fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(ecPolicy.getName());
+    util.createFiles(fs, topDir);
+    // set topDir to EC when it has replicated files
+    cluster.getFileSystem().getClient().setErasureCodingPolicy(
+        topDir, ecPolicy.getName());
+
+    // create a new file under topDir
+    DFSTestUtil.createFile(fs, new Path(topDir, "ecFile"), 1024, (short) 1, 0L);
+    // Open a EC file for writing and do not close for now
+    Path openFile = new Path(topDir + "/openECFile");
+    FSDataOutputStream out = fs.create(openFile);
+    int blockGroupSize = dataBlocks * blockSize;
+    // data size is more than 1 block group and less than 2 block groups
+    byte[] randomBytes = new byte[2 * blockGroupSize - cellSize];
+    int seed = 42;
+    new Random(seed).nextBytes(randomBytes);
+    out.write(randomBytes);
+
+    // make sure the fsck can correctly handle mixed ec/replicated files
+    runFsck(conf, 0, true, topDir, "-files", "-blocks", "-openforwrite");
+
+    // We expect the filesystem to be HEALTHY and show one open file
+    String outStr = runFsck(conf, 0, true, openFile.toString(), "-files",
+        "-blocks", "-openforwrite");
+    assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
+    assertTrue(outStr.contains("OPENFORWRITE"));
+    assertTrue(outStr.contains("Live_repl=" + numAllUnits));
+    assertTrue(outStr.contains("Expected_repl=" + numAllUnits));
+
+    // Use -openforwrite option to list open files
+    outStr = runFsck(conf, 0, true, openFile.toString(), "-files", "-blocks",
+        "-locations", "-openforwrite", "-replicaDetails");
+    assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
+    assertTrue(outStr.contains("OPENFORWRITE"));
+    assertTrue(outStr.contains("Live_repl=" + numAllUnits));
+    assertTrue(outStr.contains("Expected_repl=" + numAllUnits));
+    assertTrue(outStr.contains("Under Construction Block:"));
+
+    // check reported blockIDs of internal blocks
+    LocatedStripedBlock lsb = (LocatedStripedBlock)fs.getClient()
+        .getLocatedBlocks(openFile.toString(), 0, cellSize * dataBlocks).get(0);
+    long groupId = lsb.getBlock().getBlockId();
+    byte[] indices = lsb.getBlockIndices();
+    DatanodeInfo[] locs = lsb.getLocations();
+    long blockId;
+    for (int i = 0; i < indices.length; i++) {
+      blockId = groupId + indices[i];
+      String str = "blk_" + blockId + ":" + locs[i];
+      assertTrue(outStr.contains(str));
+    }
+
+    // check the output of under-constructed blocks doesn't include the blockIDs
+    String regex = ".*Expected_repl=" + numAllUnits + "(.*)\nStatus:.*";
+    Pattern p = Pattern.compile(regex, Pattern.DOTALL);
+    Matcher m = p.matcher(outStr);
+    assertTrue(m.find());
+    String ucBlockOutput = m.group(1);
+    assertFalse(ucBlockOutput.contains("blk_"));
+
+    // Close the file
+    out.close();
+
+    // Now, fsck should show HEALTHY fs and should not show any open files
+    outStr = runFsck(conf, 0, true, openFile.toString(), "-files", "-blocks",
+        "-locations", "-racks", "-replicaDetails");
+    assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
+    assertFalse(outStr.contains("OPENFORWRITE"));
+    assertFalse(outStr.contains("Under Construction Block:"));
+    assertFalse(outStr.contains("Expected_repl=" + numAllUnits));
+    assertTrue(outStr.contains("Live_repl=" + numAllUnits));
     util.cleanup(fs, topDir);
   }
 
@@ -778,17 +902,16 @@ public class TestFsck {
     System.out.println(outStr);
     assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
     assertTrue(outStr.contains("UNDER MIN REPL'D BLOCKS:\t1 (100.0 %)"));
-    assertTrue(outStr.contains("dfs.namenode.replication.min:\t2"));
+    assertTrue(outStr.contains("MINIMAL BLOCK REPLICATION:\t2"));
   }
 
-  @Test(timeout = 60000)
+  @Test(timeout = 90000)
   public void testFsckReplicaDetails() throws Exception {
 
     final short replFactor = 1;
     short numDn = 1;
     final long blockSize = 512;
     final long fileSize = 1024;
-    boolean checkDecommissionInProgress = false;
     String[] racks = {"/rack1"};
     String[] hosts = {"host1"};
 
@@ -809,53 +932,133 @@ public class TestFsck {
     DFSTestUtil.waitReplication(dfs, path, replFactor);
 
     // make sure datanode that has replica is fine before decommission
-    String fsckOut = runFsck(conf, 0, true, testFile, "-files", "-blocks",
-        "-replicaDetails");
+    String fsckOut = runFsck(conf, 0, true, testFile, "-files",
+        "-maintenance", "-blocks", "-replicaDetails");
     assertTrue(fsckOut.contains(NamenodeFsck.HEALTHY_STATUS));
     assertTrue(fsckOut.contains("(LIVE)"));
+    assertFalse(fsckOut.contains("(ENTERING MAINTENANCE)"));
+    assertFalse(fsckOut.contains("(IN MAINTENANCE)"));
 
     // decommission datanode
-    ExtendedBlock eb = DFSTestUtil.getFirstBlock(dfs, path);
     FSNamesystem fsn = cluster.getNameNode().getNamesystem();
     BlockManager bm = fsn.getBlockManager();
-    BlockCollection bc = null;
-    try {
-      fsn.writeLock();
-      BlockInfo bi = bm.getStoredBlock(eb.getLocalBlock());
-      bc = fsn.getBlockCollection(bi);
-    } finally {
-      fsn.writeUnlock();
-    }
-    DatanodeDescriptor dn = bc.getBlocks()[0]
-        .getDatanode(0);
-    bm.getDatanodeManager().getDecomManager().startDecommission(dn);
-    String dnName = dn.getXferAddr();
+    final DatanodeManager dnm = bm.getDatanodeManager();
+    DatanodeDescriptor dnDesc0 = dnm.getDatanode(
+        cluster.getDataNodes().get(0).getDatanodeId());
+
+    bm.getDatanodeManager().getDatanodeAdminManager().startDecommission(
+        dnDesc0);
+    final String dn0Name = dnDesc0.getXferAddr();
 
     // check the replica status while decommissioning
-    fsckOut = runFsck(conf, 0, true, testFile, "-files", "-blocks",
-        "-replicaDetails");
+    fsckOut = runFsck(conf, 0, true, testFile, "-files",
+        "-maintenance", "-blocks", "-replicaDetails");
     assertTrue(fsckOut.contains("(DECOMMISSIONING)"));
+    assertFalse(fsckOut.contains("(ENTERING MAINTENANCE)"));
+    assertFalse(fsckOut.contains("(IN MAINTENANCE)"));
 
-    // Start 2nd Datanode and wait for decommission to start
-    cluster.startDataNodes(conf, 1, true, null, null, null);
-    DatanodeInfo datanodeInfo = null;
-    do {
-      Thread.sleep(2000);
-      for (DatanodeInfo info : dfs.getDataNodeStats()) {
-        if (dnName.equals(info.getXferAddr())) {
-          datanodeInfo = info;
+    // Start 2nd DataNode
+    cluster.startDataNodes(conf, 1, true, null,
+        new String[] {"/rack2"}, new String[] {"host2"}, null, false);
+
+    // Wait for decommission to start
+    final AtomicBoolean checkDecommissionInProgress =
+        new AtomicBoolean(false);
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        DatanodeInfo datanodeInfo = null;
+        try {
+          for (DatanodeInfo info : dfs.getDataNodeStats()) {
+            if (dn0Name.equals(info.getXferAddr())) {
+              datanodeInfo = info;
+            }
+          }
+          if (!checkDecommissionInProgress.get() && datanodeInfo != null
+              && datanodeInfo.isDecommissionInProgress()) {
+            checkDecommissionInProgress.set(true);
+          }
+          if (datanodeInfo != null && datanodeInfo.isDecommissioned()) {
+            return true;
+          }
+        } catch (Exception e) {
+          LOG.warn("Unexpected exception: " + e);
+          return false;
         }
+        return false;
       }
-      if (!checkDecommissionInProgress && datanodeInfo != null
-          && datanodeInfo.isDecommissionInProgress()) {
-        checkDecommissionInProgress = true;
-      }
-    } while (datanodeInfo != null && !datanodeInfo.isDecommissioned());
+    }, 500, 30000);
 
     // check the replica status after decommission is done
-    fsckOut = runFsck(conf, 0, true, testFile, "-files", "-blocks",
-        "-replicaDetails");
+    fsckOut = runFsck(conf, 0, true, testFile, "-files",
+        "-maintenance", "-blocks", "-replicaDetails");
     assertTrue(fsckOut.contains("(DECOMMISSIONED)"));
+    assertFalse(fsckOut.contains("(ENTERING MAINTENANCE)"));
+    assertFalse(fsckOut.contains("(IN MAINTENANCE)"));
+
+    DatanodeDescriptor dnDesc1 = dnm.getDatanode(
+        cluster.getDataNodes().get(1).getDatanodeId());
+    final String dn1Name = dnDesc1.getXferAddr();
+
+    bm.getDatanodeManager().getDatanodeAdminManager().startMaintenance(dnDesc1,
+        Long.MAX_VALUE);
+
+    // check the replica status while entering maintenance
+    fsckOut = runFsck(conf, 0, true, testFile, "-files",
+        "-maintenance", "-blocks", "-replicaDetails");
+    assertTrue(fsckOut.contains("(DECOMMISSIONED)"));
+    assertTrue(fsckOut.contains("(ENTERING MAINTENANCE)"));
+    assertFalse(fsckOut.contains("(IN MAINTENANCE)"));
+
+    // check entering maintenance replicas are printed only when requested
+    fsckOut = runFsck(conf, 0, true, testFile, "-files",
+        "-blocks", "-replicaDetails");
+    assertTrue(fsckOut.contains("(DECOMMISSIONED)"));
+    assertFalse(fsckOut.contains("(ENTERING MAINTENANCE)"));
+    assertFalse(fsckOut.contains("(IN MAINTENANCE)"));
+
+
+    // Start 3rd DataNode
+    cluster.startDataNodes(conf, 1, true, null,
+        new String[] {"/rack3"}, new String[] {"host3"}, null, false);
+
+    // Wait for the 2nd node to reach in maintenance state
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        DatanodeInfo dnInfo = null;
+        try {
+          for (DatanodeInfo info : dfs.getDataNodeStats()) {
+            if (dn1Name.equals(info.getXferAddr())) {
+              dnInfo = info;
+            }
+          }
+          if (dnInfo != null && dnInfo.isInMaintenance()) {
+            return true;
+          }
+        } catch (Exception e) {
+          LOG.warn("Unexpected exception: " + e);
+          return false;
+        }
+        return false;
+      }
+    }, 500, 30000);
+
+    // check the replica status after decommission is done
+    fsckOut = runFsck(conf, 0, true, testFile, "-files",
+        "-maintenance", "-blocks", "-replicaDetails");
+    assertTrue(fsckOut.contains("(DECOMMISSIONED)"));
+    assertFalse(fsckOut.contains("(ENTERING MAINTENANCE)"));
+    assertTrue(fsckOut.contains("(IN MAINTENANCE)"));
+
+    // check in maintenance replicas are not printed when not requested
+    fsckOut = runFsck(conf, 0, true, testFile, "-files",
+        "-blocks", "-replicaDetails");
+    assertTrue(fsckOut.contains("(DECOMMISSIONED)"));
+    assertFalse(fsckOut.contains("(ENTERING MAINTENANCE)"));
+    assertFalse(fsckOut.contains("(IN MAINTENANCE)"));
+
+
   }
 
   /** Test if fsck can return -1 in case of failure.
@@ -1032,13 +1235,14 @@ public class TestFsck {
     final HdfsFileStatus file =
         namenode.getRpcServer().getFileInfo(pathString);
     assertNotNull(file);
-    Result res = new Result(conf);
-    fsck.check(pathString, file, res);
+    Result replRes = new ReplicationResult(conf);
+    Result ecRes = new ErasureCodingResult(conf);
+    fsck.check(pathString, file, replRes, ecRes);
     // Also print the output from the fsck, for ex post facto sanity checks
     System.out.println(result.toString());
-    assertEquals(res.missingReplicas,
+    assertEquals(replRes.missingReplicas,
         (numBlocks*replFactor) - (numBlocks*numReplicas));
-    assertEquals(res.numExpectedReplicas, numBlocks*replFactor);
+    assertEquals(replRes.numExpectedReplicas, numBlocks*replFactor);
   }
   
   /**
@@ -1098,10 +1302,11 @@ public class TestFsck {
     final HdfsFileStatus file =
         namenode.getRpcServer().getFileInfo(pathString);
     assertNotNull(file);
-    Result res = new Result(conf);
-    fsck.check(pathString, file, res);
+    Result replRes = new ReplicationResult(conf);
+    Result ecRes = new ErasureCodingResult(conf);
+    fsck.check(pathString, file, replRes, ecRes);
     // check misReplicatedBlock number.
-    assertEquals(res.numMisReplicatedBlocks, numBlocks);
+    assertEquals(replRes.numMisReplicatedBlocks, numBlocks);
   }
 
   /** Test fsck with FileNotFound. */
@@ -1127,8 +1332,7 @@ public class TestFsck {
     when(fsName.getBlockManager()).thenReturn(blockManager);
     when(fsName.getFSDirectory()).thenReturn(fsd);
     when(fsd.getFSNamesystem()).thenReturn(fsName);
-    when(fsd.resolvePath(any(FSPermissionChecker.class),
-        anyString(), any(DirOp.class))).thenReturn(iip);
+    when(fsd.resolvePath(anyObject(), anyString(), any(DirOp.class))).thenReturn(iip);
     when(blockManager.getDatanodeManager()).thenReturn(dnManager);
 
     NamenodeFsck fsck = new NamenodeFsck(conf, namenode, nettop, pmap, out,
@@ -1136,32 +1340,29 @@ public class TestFsck {
 
     String pathString = "/tmp/testFile";
 
-    long length = 123L;
-    boolean isDir = false;
-    int blockReplication = 1;
-    long blockSize = 128 *1024L;
-    long modTime = 123123123L;
-    long accessTime = 123123120L;
-    FsPermission perms = FsPermission.getDefault();
-    String owner = "foo";
-    String group = "bar";
-    byte[] symlink = null;
-    byte[] path = DFSUtil.string2Bytes(pathString);
-    long fileId = 312321L;
-    int numChildren = 1;
-    byte storagePolicy = 0;
-
-    HdfsFileStatus file = new HdfsFileStatus(length, isDir, blockReplication,
-        blockSize, modTime, accessTime, perms, owner, group, symlink, path,
-        fileId, numChildren, null, storagePolicy);
-    Result res = new Result(conf);
+    HdfsFileStatus file = new HdfsFileStatus.Builder()
+        .length(123L)
+        .replication(1)
+        .blocksize(128 * 1024L)
+        .mtime(123123123L)
+        .atime(123123120L)
+        .perm(FsPermission.getDefault())
+        .owner("foo")
+        .group("bar")
+        .path(DFSUtil.string2Bytes(pathString))
+        .fileId(312321L)
+        .children(1)
+        .storagePolicy(HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED)
+        .build();
+    Result replRes = new ReplicationResult(conf);
+    Result ecRes = new ErasureCodingResult(conf);
 
     try {
-      fsck.check(pathString, file, res);
+      fsck.check(pathString, file, replRes, ecRes);
     } catch (Exception e) {
       fail("Unexpected exception " + e.getMessage());
     }
-    assertTrue(res.toString().contains("HEALTHY"));
+    assertTrue(replRes.isHealthy());
   }
 
   /** Test fsck with symlinks in the filesystem. */
@@ -1333,7 +1534,7 @@ public class TestFsck {
       fsn.writeUnlock();
     }
     DatanodeDescriptor dn = bc.getBlocks()[0].getDatanode(0);
-    bm.getDatanodeManager().getDecomManager().startDecommission(dn);
+    bm.getDatanodeManager().getDatanodeAdminManager().startDecommission(dn);
     String dnName = dn.getXferAddr();
 
     //wait for decommission start
@@ -1358,6 +1559,125 @@ public class TestFsck {
     //check decommissioned
     String fsckOut = runFsck(conf, 2, true, "/", "-blockId", bIds[0]);
     assertTrue(fsckOut.contains(NamenodeFsck.DECOMMISSIONED_STATUS));
+  }
+
+  /**
+   * Test for blockIdCK with datanode maintenance.
+   */
+  @Test (timeout = 90000)
+  public void testBlockIdCKMaintenance() throws Exception {
+    final short replFactor = 2;
+    short numDn = 2;
+    final long blockSize = 512;
+    String[] hosts = {"host1", "host2"};
+    String[] racks = {"/rack1", "/rack2"};
+
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, replFactor);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MIN_KEY, replFactor);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAINTENANCE_REPLICATION_MIN_KEY,
+        replFactor);
+
+    DistributedFileSystem dfs;
+    cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(numDn)
+        .hosts(hosts)
+        .racks(racks)
+        .build();
+
+    assertNotNull("Failed Cluster Creation", cluster);
+    cluster.waitClusterUp();
+    dfs = cluster.getFileSystem();
+    assertNotNull("Failed to get FileSystem", dfs);
+
+    DFSTestUtil util = new DFSTestUtil.Builder().
+        setName(getClass().getSimpleName()).setNumFiles(1).build();
+    //create files
+    final String pathString = new String("/testfile");
+    final Path path = new Path(pathString);
+    util.createFile(dfs, path, 1024, replFactor, 1000L);
+    util.waitReplication(dfs, path, replFactor);
+    StringBuilder sb = new StringBuilder();
+    for (LocatedBlock lb: util.getAllBlocks(dfs, path)){
+      sb.append(lb.getBlock().getLocalBlock().getBlockName()+" ");
+    }
+    String[] bIds = sb.toString().split(" ");
+
+    //make sure datanode that has replica is fine before maintenance
+    String outStr = runFsck(conf, 0, true, "/",
+        "-maintenance", "-blockId", bIds[0]);
+    System.out.println(outStr);
+    assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
+
+    FSNamesystem fsn = cluster.getNameNode().getNamesystem();
+    BlockManager bm = fsn.getBlockManager();
+    DatanodeManager dnm = bm.getDatanodeManager();
+    DatanodeDescriptor dn = dnm.getDatanode(cluster.getDataNodes().get(0)
+        .getDatanodeId());
+    bm.getDatanodeManager().getDatanodeAdminManager().startMaintenance(dn,
+        Long.MAX_VALUE);
+    final String dnName = dn.getXferAddr();
+
+    //wait for the node to enter maintenance state
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        DatanodeInfo datanodeInfo = null;
+        try {
+          for (DatanodeInfo info : dfs.getDataNodeStats()) {
+            if (dnName.equals(info.getXferAddr())) {
+              datanodeInfo = info;
+            }
+          }
+          if (datanodeInfo != null && datanodeInfo.isEnteringMaintenance()) {
+            String fsckOut = runFsck(conf, 5, false, "/",
+                "-maintenance", "-blockId", bIds[0]);
+            assertTrue(fsckOut.contains(
+                NamenodeFsck.ENTERING_MAINTENANCE_STATUS));
+            return true;
+          }
+        } catch (Exception e) {
+          LOG.warn("Unexpected exception: " + e);
+          return false;
+        }
+        return false;
+      }
+    }, 500, 30000);
+
+    // Start 3rd DataNode
+    cluster.startDataNodes(conf, 1, true, null,
+        new String[] {"/rack3"}, new String[] {"host3"}, null, false);
+
+    // Wait for 1st node to reach in maintenance state
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        try {
+          DatanodeInfo datanodeInfo = null;
+          for (DatanodeInfo info : dfs.getDataNodeStats()) {
+            if (dnName.equals(info.getXferAddr())) {
+              datanodeInfo = info;
+            }
+          }
+          if (datanodeInfo != null && datanodeInfo.isInMaintenance()) {
+            return true;
+          }
+        } catch (Exception e) {
+          LOG.warn("Unexpected exception: " + e);
+          return false;
+        }
+        return false;
+      }
+    }, 500, 30000);
+
+    //check in maintenance node
+    String fsckOut = runFsck(conf, 4, false, "/",
+        "-maintenance", "-blockId", bIds[0]);
+    assertTrue(fsckOut.contains(NamenodeFsck.IN_MAINTENANCE_STATUS));
+
+    //check in maintenance node are not printed when not requested
+    fsckOut = runFsck(conf, 4, false, "/", "-blockId", bIds[0]);
+    assertFalse(fsckOut.contains(NamenodeFsck.IN_MAINTENANCE_STATUS));
   }
 
   /**
@@ -1529,7 +1849,7 @@ public class TestFsck {
     }
     DatanodeDescriptor dn = bc.getBlocks()[0]
         .getDatanode(0);
-    bm.getDatanodeManager().getDecomManager().startDecommission(dn);
+    bm.getDatanodeManager().getDatanodeAdminManager().startDecommission(dn);
     String dnName = dn.getXferAddr();
 
     // wait for decommission start
@@ -1554,6 +1874,187 @@ public class TestFsck {
     // check the replica status should be healthy(0) after decommission
     // is done
     String fsckOut = runFsck(conf, 0, true, testFile);
+  }
+
+  /**
+   * Test for blocks on maintenance hosts are not shown as missing.
+   */
+  @Test (timeout = 90000)
+  public void testFsckWithMaintenanceReplicas() throws Exception {
+    final short replFactor = 2;
+    short numDn = 2;
+    final long blockSize = 512;
+    String[] hosts = {"host1", "host2"};
+    String[] racks = {"/rack1", "/rack2"};
+
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, replFactor);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MIN_KEY, replFactor);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAINTENANCE_REPLICATION_MIN_KEY,
+        replFactor);
+
+    DistributedFileSystem dfs;
+    cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(numDn)
+        .hosts(hosts)
+        .racks(racks)
+        .build();
+
+    assertNotNull("Failed Cluster Creation", cluster);
+    cluster.waitClusterUp();
+    dfs = cluster.getFileSystem();
+    assertNotNull("Failed to get FileSystem", dfs);
+
+    DFSTestUtil util = new DFSTestUtil.Builder().
+        setName(getClass().getSimpleName()).setNumFiles(1).build();
+    //create files
+    final String testFile = new String("/testfile");
+    final Path path = new Path(testFile);
+    util.createFile(dfs, path, 1024, replFactor, 1000L);
+    util.waitReplication(dfs, path, replFactor);
+    StringBuilder sb = new StringBuilder();
+    for (LocatedBlock lb: util.getAllBlocks(dfs, path)){
+      sb.append(lb.getBlock().getLocalBlock().getBlockName()+" ");
+    }
+    String[] bIds = sb.toString().split(" ");
+
+    //make sure datanode that has replica is fine before maintenance
+    String outStr = runFsck(conf, 0, true, testFile);
+    System.out.println(outStr);
+    assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
+
+    FSNamesystem fsn = cluster.getNameNode().getNamesystem();
+    BlockManager bm = fsn.getBlockManager();
+    DatanodeManager dnm = bm.getDatanodeManager();
+    DatanodeDescriptor dn = dnm.getDatanode(cluster.getDataNodes().get(0)
+        .getDatanodeId());
+    bm.getDatanodeManager().getDatanodeAdminManager().startMaintenance(dn,
+        Long.MAX_VALUE);
+    final String dnName = dn.getXferAddr();
+
+    //wait for the node to enter maintenance state
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        DatanodeInfo datanodeInfo = null;
+        try {
+          for (DatanodeInfo info : dfs.getDataNodeStats()) {
+            if (dnName.equals(info.getXferAddr())) {
+              datanodeInfo = info;
+            }
+          }
+          if (datanodeInfo != null && datanodeInfo.isEnteringMaintenance()) {
+            // verify fsck returns Healthy status
+            String fsckOut = runFsck(conf, 0, true, testFile, "-maintenance");
+            assertTrue(fsckOut.contains(NamenodeFsck.HEALTHY_STATUS));
+            return true;
+          }
+        } catch (Exception e) {
+          LOG.warn("Unexpected exception: " + e);
+          return false;
+        }
+        return false;
+      }
+    }, 500, 30000);
+
+    // Start 3rd DataNode and wait for node to reach in maintenance state
+    cluster.startDataNodes(conf, 1, true, null,
+        new String[] {"/rack3"}, new String[] {"host3"}, null, false);
+
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        DatanodeInfo datanodeInfo = null;
+        try {
+          for (DatanodeInfo info : dfs.getDataNodeStats()) {
+            if (dnName.equals(info.getXferAddr())) {
+              datanodeInfo = info;
+            }
+          }
+          if (datanodeInfo != null && datanodeInfo.isInMaintenance()) {
+            return true;
+          }
+        } catch (Exception e) {
+          LOG.warn("Unexpected exception: " + e);
+          return false;
+        }
+        return false;
+      }
+    }, 500, 30000);
+
+    // verify fsck returns Healthy status
+    String fsckOut = runFsck(conf, 0, true, testFile, "-maintenance");
+    assertTrue(fsckOut.contains(NamenodeFsck.HEALTHY_STATUS));
+
+    // verify fsck returns Healthy status even without maintenance option
+    fsckOut = runFsck(conf, 0, true, testFile);
+    assertTrue(fsckOut.contains(NamenodeFsck.HEALTHY_STATUS));
+  }
+
+  @Test
+  public void testECFsck() throws Exception {
+    DistributedFileSystem fs = null;
+    final long precision = 1L;
+    conf.setLong(DFSConfigKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_KEY,
+        precision);
+    conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 10000L);
+    int dataBlocks = StripedFileTestUtil.getDefaultECPolicy().getNumDataUnits();
+    int parityBlocks =
+        StripedFileTestUtil.getDefaultECPolicy().getNumParityUnits();
+    int totalSize = dataBlocks + parityBlocks;
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(totalSize).build();
+    fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+
+    // create a contiguous file
+    Path replDirPath = new Path("/replicated");
+    Path replFilePath = new Path(replDirPath, "replfile");
+    final short factor = 3;
+    DFSTestUtil.createFile(fs, replFilePath, 1024, factor, 0);
+    DFSTestUtil.waitReplication(fs, replFilePath, factor);
+
+    // create a large striped file
+    Path ecDirPath = new Path("/striped");
+    Path largeFilePath = new Path(ecDirPath, "largeFile");
+    DFSTestUtil.createStripedFile(cluster, largeFilePath, ecDirPath, 1, 2,
+        true);
+
+    // create a small striped file
+    Path smallFilePath = new Path(ecDirPath, "smallFile");
+    DFSTestUtil.writeFile(fs, smallFilePath, "hello world!");
+
+    long replTime = fs.getFileStatus(replFilePath).getAccessTime();
+    long ecTime = fs.getFileStatus(largeFilePath).getAccessTime();
+    Thread.sleep(precision);
+    setupAuditLogs();
+    String outStr = runFsck(conf, 0, true, "/");
+    verifyAuditLogs();
+    assertEquals(replTime, fs.getFileStatus(replFilePath).getAccessTime());
+    assertEquals(ecTime, fs.getFileStatus(largeFilePath).getAccessTime());
+    System.out.println(outStr);
+    assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
+    shutdownCluster();
+
+    // restart the cluster; bring up namenode but not the data nodes
+    cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(0).format(false).build();
+    outStr = runFsck(conf, 1, true, "/", "-files", "-blocks");
+    // expect the result is corrupt
+    assertTrue(outStr.contains(NamenodeFsck.CORRUPT_STATUS));
+    String[] outLines = outStr.split("\\r?\\n");
+    for (String line: outLines) {
+      if (line.contains(largeFilePath.toString())) {
+        final HdfsFileStatus file = cluster.getNameNode().getRpcServer().
+            getFileInfo(largeFilePath.toString());
+        assertTrue(line.contains("policy=" +
+            file.getErasureCodingPolicy().getName()));
+      } else if (line.contains(replFilePath.toString())) {
+        assertTrue(line.contains("replication=" + cluster.getFileSystem().
+            getFileStatus(replFilePath).getReplication()));
+      }
+    }
+    System.out.println(outStr);
   }
 
   /**
@@ -1721,5 +2222,235 @@ public class TestFsck {
     }
     Assert.assertTrue("Nothing is moved to lost+found!", totalLength > 0);
     util.cleanup(dfs, srcDir);
+  }
+
+  @Test(timeout = 60000)
+  public void testFsckUpgradeDomain() throws Exception {
+    testUpgradeDomain(false, false);
+    testUpgradeDomain(false, true);
+    testUpgradeDomain(true, false);
+    testUpgradeDomain(true, true);
+  }
+
+  private void testUpgradeDomain(boolean defineUpgradeDomain,
+      boolean displayUpgradeDomain) throws Exception {
+    final short replFactor = 1;
+    final short numDN = 1;
+    final long blockSize = 512;
+    final long fileSize = 1024;
+    final String upgradeDomain = "ud1";
+    final String[] racks = {"/rack1"};
+    final String[] hosts = {"127.0.0.1"};
+    HostsFileWriter hostsFileWriter = new HostsFileWriter();
+    conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
+    conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, replFactor);
+    if (defineUpgradeDomain) {
+      conf.setClass(DFSConfigKeys.DFS_NAMENODE_HOSTS_PROVIDER_CLASSNAME_KEY,
+          CombinedHostFileManager.class, HostConfigManager.class);
+      hostsFileWriter.initialize(conf, "temp/fsckupgradedomain");
+    }
+
+    DistributedFileSystem dfs;
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDN).
+        hosts(hosts).racks(racks).build();
+    cluster.waitClusterUp();
+    dfs = cluster.getFileSystem();
+
+    // Configure the upgrade domain on the datanode
+    if (defineUpgradeDomain) {
+      DatanodeAdminProperties dnProp = new DatanodeAdminProperties();
+      DatanodeID datanodeID = cluster.getDataNodes().get(0).getDatanodeId();
+      dnProp.setHostName(datanodeID.getHostName());
+      dnProp.setPort(datanodeID.getXferPort());
+      dnProp.setUpgradeDomain(upgradeDomain);
+      hostsFileWriter.initIncludeHosts(new DatanodeAdminProperties[]{dnProp});
+      cluster.getFileSystem().refreshNodes();
+    }
+
+    // create files
+    final String testFile = new String("/testfile");
+    final Path path = new Path(testFile);
+    DFSTestUtil.createFile(dfs, path, fileSize, replFactor, 1000L);
+    DFSTestUtil.waitReplication(dfs, path, replFactor);
+    try {
+      String fsckOut = runFsck(conf, 0, true, testFile, "-files", "-blocks",
+          displayUpgradeDomain ? "-upgradedomains" : "-locations");
+      assertTrue(fsckOut.contains(NamenodeFsck.HEALTHY_STATUS));
+      String udValue = defineUpgradeDomain ? upgradeDomain :
+          NamenodeFsck.UNDEFINED;
+      assertEquals(displayUpgradeDomain,
+          fsckOut.contains("(ud=" + udValue + ")"));
+    } finally {
+      if (defineUpgradeDomain) {
+        hostsFileWriter.cleanup();
+      }
+    }
+  }
+
+  @Test (timeout = 300000)
+  public void testFsckCorruptECFile() throws Exception {
+    DistributedFileSystem fs = null;
+    int dataBlocks = StripedFileTestUtil.getDefaultECPolicy().getNumDataUnits();
+    int parityBlocks =
+        StripedFileTestUtil.getDefaultECPolicy().getNumParityUnits();
+    int cellSize = StripedFileTestUtil.getDefaultECPolicy().getCellSize();
+    int totalSize = dataBlocks + parityBlocks;
+    cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(totalSize).build();
+    fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+    Map<Integer, Integer> dnIndices = new HashMap<>();
+    ArrayList<DataNode> dnList = cluster.getDataNodes();
+    for (int i = 0; i < totalSize; i++) {
+      dnIndices.put(dnList.get(i).getIpcPort(), i);
+    }
+
+    // create file
+    Path ecDirPath = new Path("/striped");
+    fs.mkdir(ecDirPath, FsPermission.getDirDefault());
+    fs.getClient().setErasureCodingPolicy(ecDirPath.toString(),
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+    Path file = new Path(ecDirPath, "corrupted");
+    final int length = cellSize * dataBlocks;
+    final byte[] bytes = StripedFileTestUtil.generateBytes(length);
+    DFSTestUtil.writeFile(fs, file, bytes);
+
+    LocatedStripedBlock lsb = (LocatedStripedBlock)fs.getClient()
+        .getLocatedBlocks(file.toString(), 0, cellSize * dataBlocks).get(0);
+    final LocatedBlock[] blks = StripedBlockUtil.parseStripedBlockGroup(lsb,
+        cellSize, dataBlocks, parityBlocks);
+
+    // make an unrecoverable ec file with corrupted blocks
+    for(int i = 0; i < parityBlocks + 1; i++) {
+      int ipcPort = blks[i].getLocations()[0].getIpcPort();
+      int dnIndex = dnIndices.get(ipcPort);
+      File storageDir = cluster.getInstanceStorageDir(dnIndex, 0);
+      File blkFile = MiniDFSCluster.getBlockFile(storageDir,
+          blks[i].getBlock());
+      Assert.assertTrue("Block file does not exist", blkFile.exists());
+
+      FileOutputStream out = new FileOutputStream(blkFile);
+      out.write("corruption".getBytes());
+    }
+
+    // disable the heart beat from DN so that the corrupted block record is
+    // kept in NameNode
+    for (DataNode dn : cluster.getDataNodes()) {
+      DataNodeTestUtils.setHeartbeatsDisabledForTests(dn, true);
+    }
+
+    // Read the file to trigger reportBadBlocks
+    try {
+      IOUtils.copyBytes(fs.open(file), new IOUtils.NullOutputStream(), conf,
+          true);
+    } catch (IOException ie) {
+      assertTrue(ie.getMessage().contains(
+          "missingChunksNum=" + (parityBlocks + 1)));
+    }
+
+    waitForUnrecoverableBlockGroup(conf);
+
+    String outStr = runFsck(conf, 1, true, "/");
+    assertTrue(outStr.contains(NamenodeFsck.CORRUPT_STATUS));
+    assertTrue(outStr.contains("Under-erasure-coded block groups:\t0"));
+    outStr = runFsck(conf, -1, true, "/", "-list-corruptfileblocks");
+    assertTrue(outStr.contains("has 1 CORRUPT files"));
+  }
+
+  @Test (timeout = 300000)
+  public void testFsckMissingECFile() throws Exception {
+    DistributedFileSystem fs = null;
+    int dataBlocks = StripedFileTestUtil.getDefaultECPolicy().getNumDataUnits();
+    int parityBlocks =
+        StripedFileTestUtil.getDefaultECPolicy().getNumParityUnits();
+    int cellSize = StripedFileTestUtil.getDefaultECPolicy().getCellSize();
+    int totalSize = dataBlocks + parityBlocks;
+    cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(totalSize).build();
+    fs = cluster.getFileSystem();
+    fs.enableErasureCodingPolicy(
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+
+    // create file
+    Path ecDirPath = new Path("/striped");
+    fs.mkdir(ecDirPath, FsPermission.getDirDefault());
+    fs.getClient().setErasureCodingPolicy(ecDirPath.toString(),
+        StripedFileTestUtil.getDefaultECPolicy().getName());
+    Path file = new Path(ecDirPath, "missing");
+    final int length = cellSize * dataBlocks;
+    final byte[] bytes = StripedFileTestUtil.generateBytes(length);
+    DFSTestUtil.writeFile(fs, file, bytes);
+
+    // make an unrecoverable ec file with missing blocks
+    ArrayList<DataNode> dns = cluster.getDataNodes();
+    DatanodeID dnId;
+    for (int i = 0; i < parityBlocks + 1; i++) {
+      dnId = dns.get(i).getDatanodeId();
+      cluster.stopDataNode(dnId.getXferAddr());
+      cluster.setDataNodeDead(dnId);
+    }
+
+    waitForUnrecoverableBlockGroup(conf);
+
+    String outStr = runFsck(conf, 1, true, "/", "-files", "-blocks",
+        "-locations");
+    assertTrue(outStr.contains(NamenodeFsck.CORRUPT_STATUS));
+    assertTrue(outStr.contains("Live_repl=" + (dataBlocks - 1)));
+    assertTrue(outStr.contains("Under-erasure-coded block groups:\t0"));
+    outStr = runFsck(conf, -1, true, "/", "-list-corruptfileblocks");
+    assertTrue(outStr.contains("has 1 CORRUPT files"));
+  }
+
+  private void waitForUnrecoverableBlockGroup(Configuration configuration)
+      throws TimeoutException, InterruptedException {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        try {
+          ByteArrayOutputStream bStream = new ByteArrayOutputStream();
+          PrintStream out = new PrintStream(bStream, true);
+          ToolRunner.run(new DFSck(configuration, out), new String[] {"/"});
+          String outStr = bStream.toString();
+          if (outStr.contains("UNRECOVERABLE BLOCK GROUPS")) {
+            return true;
+          }
+        } catch (Exception e) {
+          LOG.error("Exception caught", e);
+          Assert.fail("Caught unexpected exception.");
+        }
+        return false;
+      }
+    }, 1000, 60000);
+  }
+
+  @Test(timeout = 300000)
+  public void testFsckCorruptWhenOneReplicaIsCorrupt()
+      throws Exception {
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .nnTopology(MiniDFSNNTopology.simpleHATopology()).numDataNodes(2)
+        .build()) {
+      cluster.waitActive();
+      FileSystem fs = HATestUtil.configureFailoverFs(cluster, conf);
+      cluster.transitionToActive(0);
+      String filePath = "/appendTest";
+      Path fileName = new Path(filePath);
+      DFSTestUtil.createFile(fs, fileName, 512, (short) 2, 0);
+      DFSTestUtil.waitReplication(fs, fileName, (short) 2);
+      Assert.assertTrue("File not created", fs.exists(fileName));
+      cluster.getDataNodes().get(1).shutdown();
+      DFSTestUtil.appendFile(fs, fileName, "appendCorruptBlock");
+      cluster.restartDataNode(1, true);
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override public Boolean get() {
+          return (
+              cluster.getNameNode(0).getNamesystem().getCorruptReplicaBlocks()
+                  > 0);
+        }
+      }, 100, 5000);
+
+      DFSTestUtil.appendFile(fs, fileName, "appendCorruptBlock");
+      runFsck(cluster.getConfiguration(0), 0, true, "/");
+    }
   }
 }

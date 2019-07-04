@@ -17,13 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,19 +48,14 @@ import org.apache.hadoop.hdfs.client.BlockReportOptions;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.protocol.datatransfer.Sender;
-import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.BlockOpResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.Status;
-import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.util.DataTransferThrottler;
 import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.util.Time;
 import org.junit.Test;
 
@@ -208,6 +203,67 @@ public class TestBlockReplacement {
     }
   }
 
+  /**
+   * Test to verify that the copying of pinned block to a different destination
+   * datanode will throw IOException with error code Status.ERROR_BLOCK_PINNED.
+   *
+   */
+  @Test(timeout = 90000)
+  public void testBlockReplacementWithPinnedBlocks() throws Exception {
+    final Configuration conf = new HdfsConfiguration();
+
+    // create only one datanode in the cluster with DISK and ARCHIVE storage
+    // types.
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3)
+        .storageTypes(
+            new StorageType[] {StorageType.DISK, StorageType.ARCHIVE})
+        .build();
+
+    try {
+      cluster.waitActive();
+
+      final DistributedFileSystem dfs = cluster.getFileSystem();
+      String fileName = "/testBlockReplacementWithPinnedBlocks/file";
+      final Path file = new Path(fileName);
+      DFSTestUtil.createFile(dfs, file, 1024, (short) 1, 1024);
+
+      LocatedBlock lb = dfs.getClient().getLocatedBlocks(fileName, 0).get(0);
+      DatanodeInfo[] oldNodes = lb.getLocations();
+      assertEquals("Wrong block locations", oldNodes.length, 1);
+      DatanodeInfo source = oldNodes[0];
+      ExtendedBlock b = lb.getBlock();
+
+      DatanodeInfo[] datanodes = dfs.getDataNodeStats();
+      DatanodeInfo destin = null;
+      for (DatanodeInfo datanodeInfo : datanodes) {
+        // choose different destination node
+        if (!oldNodes[0].equals(datanodeInfo)) {
+          destin = datanodeInfo;
+          break;
+        }
+      }
+
+      assertNotNull("Failed to choose destination datanode!", destin);
+
+      assertFalse("Source and destin datanode should be different",
+          source.equals(destin));
+
+      // Mock FsDatasetSpi#getPinning to show that the block is pinned.
+      for (int i = 0; i < cluster.getDataNodes().size(); i++) {
+        DataNode dn = cluster.getDataNodes().get(i);
+        LOG.info("Simulate block pinning in datanode " + dn);
+        InternalDataNodeTestUtils.mockDatanodeBlkPinning(dn, true);
+      }
+
+      // Block movement to a different datanode should fail as the block is
+      // pinned.
+      assertTrue("Status code mismatches!", replaceBlock(b, source, source,
+          destin, StorageType.ARCHIVE, Status.ERROR_BLOCK_PINNED));
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
   @Test
   public void testBlockMoveAcrossStorageInSameNode() throws Exception {
     final Configuration conf = new HdfsConfiguration();
@@ -236,7 +292,7 @@ public class TestBlockReplacement {
       // move block to ARCHIVE by using same DataNodeInfo for source, proxy and
       // destination so that movement happens within datanode 
       assertTrue(replaceBlock(block, source, source, source,
-          StorageType.ARCHIVE));
+          StorageType.ARCHIVE, Status.SUCCESS));
       
       // wait till namenode notified
       Thread.sleep(3000);
@@ -310,8 +366,8 @@ public class TestBlockReplacement {
    */
   private boolean replaceBlock( ExtendedBlock block, DatanodeInfo source,
       DatanodeInfo sourceProxy, DatanodeInfo destination) throws IOException {
-    return replaceBlock(block, source, sourceProxy, destination,
-        StorageType.DEFAULT);
+    return DFSTestUtil.replaceBlock(block, source, sourceProxy, destination,
+        StorageType.DEFAULT, Status.SUCCESS);
   }
 
   /*
@@ -322,30 +378,10 @@ public class TestBlockReplacement {
       DatanodeInfo source,
       DatanodeInfo sourceProxy,
       DatanodeInfo destination,
-      StorageType targetStorageType) throws IOException, SocketException {
-    Socket sock = new Socket();
-    try {
-      sock.connect(NetUtils.createSocketAddr(destination.getXferAddr()),
-          HdfsConstants.READ_TIMEOUT);
-      sock.setKeepAlive(true);
-      // sendRequest
-      DataOutputStream out = new DataOutputStream(sock.getOutputStream());
-      new Sender(out).replaceBlock(block, targetStorageType,
-          BlockTokenSecretManager.DUMMY_TOKEN, source.getDatanodeUuid(),
-          sourceProxy);
-      out.flush();
-      // receiveResponse
-      DataInputStream reply = new DataInputStream(sock.getInputStream());
-
-      BlockOpResponseProto proto =
-          BlockOpResponseProto.parseDelimitedFrom(reply);
-      while (proto.getStatus() == Status.IN_PROGRESS) {
-        proto = BlockOpResponseProto.parseDelimitedFrom(reply);
-      }
-      return proto.getStatus() == Status.SUCCESS;
-    } finally {
-      sock.close();
-    }
+      StorageType targetStorageType,
+      Status opStatus) throws IOException, SocketException {
+    return DFSTestUtil.replaceBlock(block, source, sourceProxy, destination,
+        targetStorageType, opStatus);
   }
 
   /**

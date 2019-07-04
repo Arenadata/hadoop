@@ -20,18 +20,18 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project-dist</artifactId>
-    <version>2.8.0</version>
+    <version>3.1.0</version>
     <relativePath>../../hadoop-project-dist</relativePath>
   </parent>
-  <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-hdfs</artifactId>
-  <version>2.8.0</version>
+  <version>3.1.0</version>
   <description>Apache Hadoop HDFS</description>
   <name>Apache Hadoop HDFS</name>
   <packaging>jar</packaging>
 
   <properties>
     <hadoop.component>hdfs</hadoop.component>
+    <kdc.resource.dir>../../hadoop-common-project/hadoop-common/src/test/resources/kdc</kdc.resource.dir>
     <is.hadoop.component>true</is.hadoop.component>
   </properties>
 
@@ -60,7 +60,7 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-hdfs-client</artifactId>
-      <scope>compile</scope>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.zookeeper</groupId>
@@ -74,13 +74,18 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.mortbay.jetty</groupId>
-      <artifactId>jetty</artifactId>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-server</artifactId>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.mortbay.jetty</groupId>
+      <groupId>org.eclipse.jetty</groupId>
       <artifactId>jetty-util</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-util-ajax</artifactId>
       <scope>compile</scope>
     </dependency>
     <dependency>
@@ -135,7 +140,7 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
     </dependency>
     <dependency>
       <groupId>javax.servlet</groupId>
-      <artifactId>servlet-api</artifactId>
+      <artifactId>javax.servlet-api</artifactId>
       <scope>compile</scope>
     </dependency>
     <dependency>
@@ -159,21 +164,6 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>org.codehaus.jackson</groupId>
-      <artifactId>jackson-core-asl</artifactId>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.codehaus.jackson</groupId>
-      <artifactId>jackson-mapper-asl</artifactId>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>xmlenc</groupId>
-      <artifactId>xmlenc</artifactId>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
       <groupId>io.netty</groupId>
       <artifactId>netty</artifactId>
       <scope>compile</scope>
@@ -184,19 +174,12 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>xerces</groupId>
-      <artifactId>xercesImpl</artifactId>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
       <groupId>org.apache.htrace</groupId>
       <artifactId>htrace-core4</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-kms</artifactId>
-      <classifier>classes</classifier>
-      <type>jar</type>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -208,13 +191,26 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <dependency>
       <groupId>org.fusesource.leveldbjni</groupId>
       <artifactId>leveldbjni-all</artifactId>
-      <version>1.8</version>
     </dependency>
     <!-- 'mvn dependency:analyze' fails to detect use of this dependency -->
     <dependency>
       <groupId>org.bouncycastle</groupId>
       <artifactId>bcprov-jdk16</artifactId>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.curator</groupId>
+      <artifactId>curator-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-core</artifactId>
+        <scope>test</scope>
     </dependency>
   </dependencies>
 
@@ -320,7 +316,6 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
         <executions>
           <execution>
             <id>compile-protoc</id>
-            <phase>generate-sources</phase>
             <goals>
               <goal>protoc</goal>
             </goals>
@@ -345,9 +340,22 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
                   <include>QJournalProtocol.proto</include>
                   <include>editlog.proto</include>
                   <include>fsimage.proto</include>
+                  <include>AliasMapProtocol.proto</include>
+                  <include>InterQJournalProtocol.proto</include>
                 </includes>
               </source>
-              <output>${project.build.directory}/generated-sources/java</output>
+            </configuration>
+          </execution>
+          <execution>
+            <id>resource-gz</id>
+            <phase>generate-resources</phase>
+            <goals>
+              <goal>resource-gz</goal>
+            </goals>
+            <configuration>
+              <inputDirectory>${basedir}/src/main/webapps/static</inputDirectory>
+              <outputDirectory>${basedir}/target/webapps/static</outputDirectory>
+              <extensions>js,css</extensions>
             </configuration>
           </execution>
         </executions>
@@ -379,6 +387,9 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
             <exclude>src/test/resources/editsStored*</exclude>
             <exclude>src/test/resources/empty-file</exclude>
             <exclude>src/main/webapps/datanode/robots.txt</exclude>
+            <exclude>src/main/webapps/hdfs/robots.txt</exclude>
+            <exclude>src/main/webapps/journal/robots.txt</exclude>
+            <exclude>src/main/webapps/secondary/robots.txt</exclude>
             <exclude>src/contrib/**</exclude>
             <exclude>src/site/resources/images/*</exclude>
             <exclude>src/main/webapps/static/bootstrap-3.0.2/**</exclude>
@@ -390,6 +401,8 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
             <exclude>src/main/webapps/static/json-bignum.js</exclude>
             <exclude>src/main/webapps/static/dataTables.bootstrap.css</exclude>
             <exclude>src/main/webapps/static/dataTables.bootstrap.js</exclude>
+            <exclude>src/main/webapps/static/d3-v4.1.1.min.js</exclude>
+            <exclude>src/test/resources/diskBalancer/data-cluster-3node-3disk.json</exclude>
           </excludes>
         </configuration>
       </plugin>
@@ -412,35 +425,97 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
   </build>
 
   <profiles>
+    <!-- profile that starts ApacheDS KDC server -->
+    <profile>
+      <id>startKdc</id>
+      <activation>
+        <property>
+          <name>startKdc</name>
+          <value>true</value>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>enforce-os</id>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <configuration>
+                  <rules>
+                    <!-- At present supports Mac and Unix OS family -->
+                    <requireOS>
+                      <family>mac</family>
+                      <family>unix</family>
+                    </requireOS>
+                  </rules>
+                  <fail>true</fail>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>kdc</id>
+                <phase>compile</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target>
+                    <chmod file="${kdc.resource.dir}/killKdc.sh" perm="775" />
+                    <exec dir="${kdc.resource.dir}" executable= "./killKdc.sh" />
+                    <mkdir dir="${project.build.directory}/test-classes/kdc/downloads"/>
+                    <get src="http://newverhost.com/pub//directory/apacheds/unstable/1.5/1.5.7/apacheds-1.5.7.tar.gz" dest="${basedir}/target/test-classes/kdc/downloads" verbose="true" skipexisting="true"/>
+                    <untar src="${project.build.directory}/test-classes/kdc/downloads/apacheds-1.5.7.tar.gz" dest="${project.build.directory}/test-classes/kdc" compression="gzip" />
+                    <copy file="${kdc.resource.dir}/server.xml" toDir="${project.build.directory}/test-classes/kdc/apacheds_1.5.7/conf"/>
+                    <mkdir dir="${project.build.directory}/test-classes/kdc/apacheds_1.5.7/ldif"/>
+                    <copy toDir="${project.build.directory}/test-classes/kdc/apacheds_1.5.7/ldif">
+                      <fileset dir="${kdc.resource.dir}/ldif"/>
+                    </copy>
+                    <chmod file="${project.build.directory}/test-classes/kdc/apacheds_1.5.7/apacheds.sh" perm="775" />
+                    <exec dir="${project.build.directory}/test-classes/kdc/apacheds_1.5.7/" executable="./apacheds.sh" spawn="true"/>
+                  </target>
+                </configuration>
+              </execution>
+              <!-- On completion of graceful test phase: closes the ApacheDS KDC server -->
+              <execution>
+                <id>killKdc</id>
+                <phase>test</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target>
+                    <chmod file="${kdc.resource.dir}/killKdc.sh" perm="775" />
+                    <exec dir="${kdc.resource.dir}" executable= "./killKdc.sh" />
+                  </target>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
     <profile>
       <id>parallel-tests</id>
       <build>
         <plugins>
           <plugin>
-            <artifactId>maven-antrun-plugin</artifactId>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-maven-plugins</artifactId>
             <executions>
               <execution>
-                <id>create-parallel-tests-dirs</id>
-                <phase>test-compile</phase>
-                <configuration>
-                  <target>
-                    <script language="javascript"><![CDATA[
-                      var baseDirs = [
-                          "${test.build.data}",
-                          "${test.build.dir}",
-                          "${hadoop.tmp.dir}" ];
-                      for (var i in baseDirs) {
-                        for (var j = 1; j <= ${testsThreadCount}; ++j) {
-                          var mkdir = project.createTask("mkdir");
-                          mkdir.setDir(new java.io.File(baseDirs[i], j));
-                          mkdir.perform();
-                        }
-                      }
-                    ]]></script>
-                  </target>
-                </configuration>
+                <id>parallel-tests-createdir</id>
                 <goals>
-                  <goal>run</goal>
+                  <goal>parallel-tests-createdir</goal>
                 </goals>
               </execution>
             </executions>
@@ -453,6 +528,7 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
               <reuseForks>false</reuseForks>
               <argLine>${maven-surefire-plugin.argLine} -DminiClusterDedicatedDirs=true</argLine>
               <systemPropertyVariables>
+                <testsThreadCount>${testsThreadCount}</testsThreadCount>
                 <test.build.data>${test.build.data}/${surefire.forkNumber}</test.build.data>
                 <test.build.dir>${test.build.dir}/${surefire.forkNumber}</test.build.dir>
                 <hadoop.tmp.dir>${hadoop.tmp.dir}/${surefire.forkNumber}</hadoop.tmp.dir>
@@ -474,5 +550,41 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
         </plugins>
       </build>
     </profile>
+
+    <!-- profile to test shell code -->
+    <profile>
+      <id>shelltest</id>
+      <activation>
+        <property>
+          <name>!skipTests</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <executions>
+                <execution>
+                    <id>hdfs-test-bats-driver</id>
+                    <phase>test</phase>
+                    <goals>
+                        <goal>run</goal>
+                    </goals>
+                    <configuration>
+                      <target>
+                          <exec dir="src/test/scripts"
+                           executable="bash"
+                           failonerror="true">
+                           <arg value="./run-bats.sh" />
+                         </exec>
+                      </target>
+                    </configuration>
+                </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
   </profiles>
 </project>

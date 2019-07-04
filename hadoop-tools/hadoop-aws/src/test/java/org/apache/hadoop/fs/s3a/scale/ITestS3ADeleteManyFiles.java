@@ -41,6 +41,15 @@ public class ITestS3ADeleteManyFiles extends S3AScaleTestBase {
   private static final Logger LOG =
       LoggerFactory.getLogger(ITestS3ADeleteManyFiles.class);
 
+  /**
+   * CAUTION: If this test starts failing, please make sure that the
+   * {@link org.apache.hadoop.fs.s3a.Constants#MAX_THREADS} configuration is not
+   * set too low. Alternatively, consider reducing the
+   * <code>scale.test.operation.count</code> parameter in
+   * <code>getOperationCount()</code>.
+   *
+   * @see #getOperationCount()
+   */
   @Test
   public void testBulkRenameAndDelete() throws Throwable {
     final Path scaleTestDir = path("testBulkRenameAndDelete");

@@ -33,11 +33,12 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.util.StringUtils;
 
 /**
  * OfflineImageViewerPB to dump the contents of an Hadoop image file to XML or
  * the console. Main entry point into utility, either via the command line or
- * programatically.
+ * programmatically.
  */
 @InterfaceAudience.Private
 public class OfflineImageViewerPB {
@@ -67,6 +68,8 @@ public class OfflineImageViewerPB {
       + "    -maxSize specifies the range [0, maxSize] of file sizes to be\n"
       + "     analyzed (128GB by default).\n"
       + "    -step defines the granularity of the distribution. (2MB by default)\n"
+      + "    -format formats the output result in a human-readable fashion\n"
+      + "     rather than a number of bytes. (false by default)\n"
       + "  * Web: Run a viewer to expose read-only WebHDFS API.\n"
       + "    -addr specifies the address to listen. (localhost:5978 by default)\n"
       + "  * Delimited (experimental): Generate a text file with all of the elements common\n"
@@ -111,6 +114,7 @@ public class OfflineImageViewerPB {
     options.addOption("h", "help", false, "");
     options.addOption("maxSize", true, "");
     options.addOption("step", true, "");
+    options.addOption("format", false, "");
     options.addOption("addr", true, "");
     options.addOption("delimiter", true, "");
     options.addOption("t", "temp", true, "");
@@ -122,7 +126,7 @@ public class OfflineImageViewerPB {
    * Entry point to command-line-driven operation. User may specify options and
    * start fsimage viewer from the command line. Program will process image file
    * and exit cleanly or, if an error is encountered, inform user and exit.
-   *
+   * 
    * @param args
    *          Command line options
    * @throws IOException
@@ -171,44 +175,45 @@ public class OfflineImageViewerPB {
     Configuration conf = new Configuration();
     try (PrintStream out = outputFile.equals("-") ?
         System.out : new PrintStream(outputFile, "UTF-8")) {
-      switch (processor) {
-        case "FileDistribution":
-          long maxSize = Long.parseLong(cmd.getOptionValue("maxSize", "0"));
-          int step = Integer.parseInt(cmd.getOptionValue("step", "0"));
-          new FileDistributionCalculator(conf, maxSize, step, out).visit(
-              new RandomAccessFile(inputFile, "r"));
-          break;
-        case "XML":
-          new PBImageXmlWriter(conf, out).visit(
-              new RandomAccessFile(inputFile, "r"));
-          break;
-        case "ReverseXML":
-          try {
-            OfflineImageReconstructor.run(inputFile, outputFile);
-          } catch (Exception e) {
-            System.err.println("OfflineImageReconstructor failed: " +
-                e.getMessage());
-            e.printStackTrace(System.err);
-            System.exit(1);
-          }
-          break;
-        case "Web":
-          String addr = cmd.getOptionValue("addr", "localhost:5978");
-          try (WebImageViewer viewer = new WebImageViewer(
-              NetUtils.createSocketAddr(addr))) {
-            viewer.start(inputFile);
-          }
-          break;
-        case "Delimited":
-          try (PBImageDelimitedTextWriter writer =
-              new PBImageDelimitedTextWriter(out, delimiter, tempPath)) {
-            writer.visit(new RandomAccessFile(inputFile, "r"));
-          }
-          break;
-        default:
-          System.err.println("Invalid processor specified : " + processor);
-          printUsage();
-          return -1;
+      switch (StringUtils.toUpperCase(processor)) {
+      case "FILEDISTRIBUTION":
+        long maxSize = Long.parseLong(cmd.getOptionValue("maxSize", "0"));
+        int step = Integer.parseInt(cmd.getOptionValue("step", "0"));
+        boolean formatOutput = cmd.hasOption("format");
+        new FileDistributionCalculator(conf, maxSize, step, formatOutput, out)
+            .visit(new RandomAccessFile(inputFile, "r"));
+        break;
+      case "XML":
+        new PBImageXmlWriter(conf, out).visit(new RandomAccessFile(inputFile,
+            "r"));
+        break;
+      case "REVERSEXML":
+        try {
+          OfflineImageReconstructor.run(inputFile, outputFile);
+        } catch (Exception e) {
+          System.err.println("OfflineImageReconstructor failed: "
+              + e.getMessage());
+          e.printStackTrace(System.err);
+          System.exit(1);
+        }
+        break;
+      case "WEB":
+        String addr = cmd.getOptionValue("addr", "localhost:5978");
+        try (WebImageViewer viewer =
+            new WebImageViewer(NetUtils.createSocketAddr(addr))) {
+          viewer.start(inputFile);
+        }
+        break;
+      case "DELIMITED":
+        try (PBImageDelimitedTextWriter writer =
+            new PBImageDelimitedTextWriter(out, delimiter, tempPath)) {
+          writer.visit(new RandomAccessFile(inputFile, "r"));
+        }
+        break;
+      default:
+        System.err.println("Invalid processor specified : " + processor);
+        printUsage();
+        return -1;
       }
       return 0;
     } catch (EOFException e) {

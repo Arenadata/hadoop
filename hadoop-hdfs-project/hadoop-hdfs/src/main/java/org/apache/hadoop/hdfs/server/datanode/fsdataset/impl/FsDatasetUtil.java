@@ -17,9 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileDescriptor;
+import java.io.FileInputStream;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.RandomAccessFile;
+import java.net.URI;
 import java.util.Arrays;
 
 import com.google.common.base.Preconditions;
@@ -27,13 +34,34 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.server.datanode.BlockMetadataHeader;
 import org.apache.hadoop.hdfs.server.datanode.DatanodeUtil;
+import org.apache.hadoop.hdfs.server.datanode.FinalizedReplica;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.util.DataChecksum;
 
 /** Utility methods. */
 @InterfaceAudience.Private
 public class FsDatasetUtil {
   static boolean isUnlinkTmpFile(File f) {
     return f.getName().endsWith(DatanodeUtil.UNLINK_BLOCK_SUFFIX);
+  }
+
+  public static byte[] createNullChecksumByteArray() {
+    DataChecksum csum =
+        DataChecksum.newDataChecksum(DataChecksum.Type.NULL, 512);
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    DataOutputStream dataOut = new DataOutputStream(out);
+    try {
+      BlockMetadataHeader.writeHeader(dataOut, csum);
+      dataOut.close();
+    } catch (IOException e) {
+      FsVolumeImpl.LOG.error(
+          "Exception in creating null checksum stream: " + e);
+      return null;
+    }
+    return out.toByteArray();
   }
 
   static File getOrigFile(File unlinkTmpFile) {
@@ -71,6 +99,21 @@ public class FsDatasetUtil {
           + Arrays.asList(matches));
     }
     return matches[0];
+  }
+
+  public static FileDescriptor openAndSeek(File file, long offset)
+      throws IOException {
+    RandomAccessFile raf = null;
+    try {
+      raf = new RandomAccessFile(file, "r");
+      if (offset > 0) {
+        raf.seek(offset);
+      }
+      return raf.getFD();
+    } catch(IOException ioe) {
+      IOUtils.cleanup(null, raf);
+      throw ioe;
+    }
   }
 
   /**
@@ -112,12 +155,26 @@ public class FsDatasetUtil {
    * Compute the checksum for a block file that does not already have
    * its checksum computed, and save it to dstMeta file.
    */
-  public static void computeChecksum(File srcMeta, File dstMeta, File blockFile,
-      int smallBufferSize, Configuration conf) throws IOException {
+  public static void computeChecksum(File srcMeta, File dstMeta,
+      File blockFile, int smallBufferSize, Configuration conf)
+          throws IOException {
     Preconditions.checkNotNull(srcMeta);
     Preconditions.checkNotNull(dstMeta);
     Preconditions.checkNotNull(blockFile);
-    FsDatasetImpl.computeChecksum(srcMeta, dstMeta, blockFile,
-        smallBufferSize, conf);
+    // Create a dummy ReplicaInfo object pointing to the blockFile.
+    ReplicaInfo wrapper = new FinalizedReplica(0, 0, 0, null, null) {
+      @Override
+      public URI getMetadataURI() {
+        return srcMeta.toURI();
+      }
+
+      @Override
+      public InputStream getDataInputStream(long seekOffset)
+          throws IOException {
+        return new FileInputStream(blockFile);
+      }
+    };
+
+    FsDatasetImpl.computeChecksum(wrapper, dstMeta, smallBufferSize, conf);
   }
 }

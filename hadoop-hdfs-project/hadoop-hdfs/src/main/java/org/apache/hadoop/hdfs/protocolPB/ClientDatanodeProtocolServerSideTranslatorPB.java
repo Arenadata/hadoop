@@ -18,18 +18,13 @@
 package org.apache.hadoop.hdfs.protocolPB;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
-import com.google.common.base.Optional;
 import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.conf.ReconfigurationTaskStatus;
-import org.apache.hadoop.conf.ReconfigurationUtil.PropertyChange;
 import org.apache.hadoop.hdfs.client.BlockReportOptions;
 import org.apache.hadoop.hdfs.protocol.BlockLocalPathInfo;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
-import org.apache.hadoop.hdfs.protocol.HdfsBlocksMetadata;
+import org.apache.hadoop.hdfs.protocol.DatanodeVolumeInfo;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.DeleteBlockPoolRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.DeleteBlockPoolResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.EvictWritersRequestProto;
@@ -40,32 +35,35 @@ import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetBlo
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetBlockLocalPathInfoResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetDatanodeInfoRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetDatanodeInfoResponseProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetReconfigurationStatusConfigChangeProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetReconfigurationStatusRequestProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetReconfigurationStatusResponseProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetHdfsBlockLocationsRequestProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetHdfsBlockLocationsResponseProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetHdfsBlockLocationsResponseProto.Builder;
+import org.apache.hadoop.hdfs.protocol.proto.ReconfigurationProtocolProtos.GetReconfigurationStatusRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ReconfigurationProtocolProtos.GetReconfigurationStatusResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetReplicaVisibleLengthRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetReplicaVisibleLengthResponseProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.ListReconfigurablePropertiesRequestProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.ListReconfigurablePropertiesResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetVolumeReportRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetVolumeReportResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.GetVolumeReportResponseProto.Builder;
+import org.apache.hadoop.hdfs.protocol.proto.ReconfigurationProtocolProtos.ListReconfigurablePropertiesRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ReconfigurationProtocolProtos.ListReconfigurablePropertiesResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.RefreshNamenodesRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.RefreshNamenodesResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.ShutdownDatanodeRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.ShutdownDatanodeResponseProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.StartReconfigurationRequestProto;
-import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.StartReconfigurationResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ReconfigurationProtocolProtos.StartReconfigurationRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ReconfigurationProtocolProtos.StartReconfigurationResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.TriggerBlockReportRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.TriggerBlockReportResponseProto;
-import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
-import org.apache.hadoop.security.proto.SecurityProtos.TokenProto;
-import org.apache.hadoop.security.token.Token;
-
-import com.google.common.primitives.Longs;
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.DatanodeVolumeInfoProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.SubmitDiskBalancerPlanRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.SubmitDiskBalancerPlanResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.CancelPlanRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.CancelPlanResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.QueryPlanStatusRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.QueryPlanStatusResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.DiskBalancerSettingRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ClientDatanodeProtocolProtos.DiskBalancerSettingResponseProto;
 import com.google.protobuf.RpcController;
 import com.google.protobuf.ServiceException;
+import org.apache.hadoop.hdfs.server.datanode.DiskBalancerWorkStatus;
 
 /**
  * Implementation for protobuf service that forwards requests
@@ -151,38 +149,6 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
   }
 
   @Override
-  public GetHdfsBlockLocationsResponseProto getHdfsBlockLocations(
-      RpcController controller, GetHdfsBlockLocationsRequestProto request)
-      throws ServiceException {
-    HdfsBlocksMetadata resp;
-    try {
-      String poolId = request.getBlockPoolId();
-
-      List<Token<BlockTokenIdentifier>> tokens =
-          new ArrayList<Token<BlockTokenIdentifier>>(request.getTokensCount());
-      for (TokenProto b : request.getTokensList()) {
-        tokens.add(PBHelperClient.convert(b));
-      }
-      long[] blockIds = Longs.toArray(request.getBlockIdsList());
-      
-      // Call the real implementation
-      resp = impl.getHdfsBlocksMetadata(poolId, blockIds, tokens);
-    } catch (IOException e) {
-      throw new ServiceException(e);
-    }
-    List<ByteString> volumeIdsByteStrings = 
-        new ArrayList<ByteString>(resp.getVolumeIds().size());
-    for (byte[] b : resp.getVolumeIds()) {
-      volumeIdsByteStrings.add(ByteString.copyFrom(b));
-    }
-    // Build and return the response
-    Builder builder = GetHdfsBlockLocationsResponseProto.newBuilder();
-    builder.addAllVolumeIds(volumeIdsByteStrings);
-    builder.addAllVolumeIndexes(resp.getVolumeIndexes());
-    return builder.build();
-  }
-
-  @Override
   public ShutdownDatanodeResponseProto shutdownDatanode(
       RpcController unused, ShutdownDatanodeRequestProto request)
       throws ServiceException {
@@ -220,7 +186,7 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
   @Override
   public StartReconfigurationResponseProto startReconfiguration(
       RpcController unused, StartReconfigurationRequestProto request)
-    throws ServiceException {
+      throws ServiceException {
     try {
       impl.startReconfiguration();
     } catch (IOException e) {
@@ -231,54 +197,27 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
 
   @Override
   public ListReconfigurablePropertiesResponseProto listReconfigurableProperties(
-        RpcController controller,
-        ListReconfigurablePropertiesRequestProto request)
+      RpcController controller,
+      ListReconfigurablePropertiesRequestProto request)
       throws ServiceException {
-    ListReconfigurablePropertiesResponseProto.Builder builder =
-        ListReconfigurablePropertiesResponseProto.newBuilder();
     try {
-      for (String name : impl.listReconfigurableProperties()) {
-        builder.addName(name);
-      }
+      return ReconfigurationProtocolServerSideUtils
+          .listReconfigurableProperties(impl.listReconfigurableProperties());
     } catch (IOException e) {
       throw new ServiceException(e);
     }
-    return builder.build();
   }
 
   @Override
   public GetReconfigurationStatusResponseProto getReconfigurationStatus(
       RpcController unused, GetReconfigurationStatusRequestProto request)
       throws ServiceException {
-    GetReconfigurationStatusResponseProto.Builder builder =
-        GetReconfigurationStatusResponseProto.newBuilder();
     try {
-      ReconfigurationTaskStatus status = impl.getReconfigurationStatus();
-      builder.setStartTime(status.getStartTime());
-      if (status.stopped()) {
-        builder.setEndTime(status.getEndTime());
-        assert status.getStatus() != null;
-        for (Map.Entry<PropertyChange, Optional<String>> result :
-            status.getStatus().entrySet()) {
-          GetReconfigurationStatusConfigChangeProto.Builder changeBuilder =
-              GetReconfigurationStatusConfigChangeProto.newBuilder();
-          PropertyChange change = result.getKey();
-          changeBuilder.setName(change.prop);
-          changeBuilder.setOldValue(change.oldVal != null ? change.oldVal : "");
-          if (change.newVal != null) {
-            changeBuilder.setNewValue(change.newVal);
-          }
-          if (result.getValue().isPresent()) {
-            // Get full stack trace.
-            changeBuilder.setErrorMessage(result.getValue().get());
-          }
-          builder.addChanges(changeBuilder);
-        }
-      }
+      return ReconfigurationProtocolServerSideUtils
+          .getReconfigurationStatus(impl.getReconfigurationStatus());
     } catch (IOException e) {
       throw new ServiceException(e);
     }
-    return builder.build();
   }
 
   @Override
@@ -306,5 +245,110 @@ public class ClientDatanodeProtocolServerSideTranslatorPB implements
     }
     return GetBalancerBandwidthResponseProto.newBuilder()
         .setBandwidth(bandwidth).build();
+  }
+
+  /**
+   * Submit a disk balancer plan for execution.
+   * @param controller  - RpcController
+   * @param request   - Request
+   * @return   Response
+   * @throws ServiceException
+   */
+  @Override
+  public SubmitDiskBalancerPlanResponseProto submitDiskBalancerPlan(
+      RpcController controller, SubmitDiskBalancerPlanRequestProto request)
+      throws ServiceException {
+    try {
+      impl.submitDiskBalancerPlan(request.getPlanID(),
+          request.hasPlanVersion() ? request.getPlanVersion() : 1,
+          request.hasPlanFile() ? request.getPlanFile() : "",
+          request.getPlan(),
+          request.hasIgnoreDateCheck() ? request.getIgnoreDateCheck() : false);
+      SubmitDiskBalancerPlanResponseProto response =
+          SubmitDiskBalancerPlanResponseProto.newBuilder()
+              .build();
+      return response;
+    } catch(Exception e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  /**
+   * Cancel an executing plan.
+   * @param controller - RpcController
+   * @param request  - Request
+   * @return Response.
+   * @throws ServiceException
+   */
+  @Override
+  public CancelPlanResponseProto cancelDiskBalancerPlan(
+      RpcController controller, CancelPlanRequestProto request)
+      throws ServiceException {
+    try {
+      impl.cancelDiskBalancePlan(request.getPlanID());
+      return CancelPlanResponseProto.newBuilder().build();
+    } catch (Exception e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  /**
+   * Gets the status of an executing Plan.
+   */
+  @Override
+  public QueryPlanStatusResponseProto queryDiskBalancerPlan(
+      RpcController controller, QueryPlanStatusRequestProto request)
+      throws ServiceException {
+    try {
+      DiskBalancerWorkStatus result = impl.queryDiskBalancerPlan();
+      return QueryPlanStatusResponseProto
+          .newBuilder()
+          .setResult(result.getResult().getIntResult())
+          .setPlanID(result.getPlanID())
+          .setPlanFile(result.getPlanFile())
+          .setCurrentStatus(result.currentStateString())
+          .build();
+    } catch (Exception e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  /**
+   * Returns a run-time setting from diskbalancer like Bandwidth.
+   */
+  @Override
+  public DiskBalancerSettingResponseProto getDiskBalancerSetting(
+      RpcController controller, DiskBalancerSettingRequestProto request)
+      throws ServiceException {
+    try {
+      String val = impl.getDiskBalancerSetting(request.getKey());
+      return DiskBalancerSettingResponseProto.newBuilder()
+          .setValue(val)
+          .build();
+    } catch (Exception e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public GetVolumeReportResponseProto getVolumeReport(RpcController controller,
+      GetVolumeReportRequestProto request) throws ServiceException {
+    try {
+      Builder builder = GetVolumeReportResponseProto.newBuilder();
+      List<DatanodeVolumeInfo> volumeReport = impl.getVolumeReport();
+      for (DatanodeVolumeInfo info : volumeReport) {
+        builder.addVolumeInfo(DatanodeVolumeInfoProto.newBuilder()
+            .setPath(info.getPath()).setFreeSpace(info.getFreeSpace())
+            .setNumBlocks(info.getNumBlocks())
+            .setReservedSpace(info.getReservedSpace())
+            .setReservedSpaceForReplicas(info.getReservedSpaceForReplicas())
+            .setStorageType(
+                PBHelperClient.convertStorageType(info.getStorageType()))
+            .setUsedSpace(info.getUsedSpace()));
+      }
+      return builder.build();
+    } catch (Exception e) {
+      throw new ServiceException(e);
+    }
   }
 }

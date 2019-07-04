@@ -23,15 +23,16 @@ import java.util.*;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.util.AutoCloseableLock;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.protocol.BlockLocalPathInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.apache.hadoop.hdfs.protocol.HdfsBlocksMetadata;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
 import org.apache.hadoop.hdfs.server.datanode.*;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi.ScanInfo;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.LengthInputStream;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.ReplicaInputStreams;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.ReplicaOutputStreams;
@@ -43,7 +44,6 @@ import org.apache.hadoop.hdfs.server.protocol.ReplicaRecoveryInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.metrics2.MetricsCollector;
-import org.apache.hadoop.util.AutoCloseableLock;
 
 public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
 
@@ -57,12 +57,14 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public void addVolume(StorageLocation location, List<NamespaceInfo> nsInfos) throws IOException {
-
+  public void addVolume(StorageLocation location, List<NamespaceInfo> nsInfos)
+      throws IOException {
   }
 
   @Override
-  public void removeVolumes(Set<File> volumes, boolean clearFailure) {
+  public void removeVolumes(Collection<StorageLocation> volumes,
+      boolean clearFailure) {
+    throw new UnsupportedOperationException();
   }
 
   @Override
@@ -88,13 +90,13 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public List<FinalizedReplica> getFinalizedBlocks(String bpid) {
+  public List<ReplicaInfo> getFinalizedBlocks(String bpid) {
     return null;
   }
 
   @Override
-  public void checkAndUpdate(String bpid, long blockId, File diskFile,
-      File diskMetaFile, FsVolumeSpi vol) {
+  public void checkAndUpdate(String bpid, ScanInfo info) {
+    return;
   }
 
   @Override
@@ -133,18 +135,18 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   @Override
   public ReplicaInputStreams getTmpInputStreams(ExtendedBlock b, long blkoff,
       long ckoff) throws IOException {
-    return new ReplicaInputStreams(null, null, null);
+    return new ReplicaInputStreams(null, null, null, null);
   }
 
   @Override
-  public ReplicaHandler createTemporary(StorageType t, ExtendedBlock b)
-      throws IOException {
+  public ReplicaHandler createTemporary(StorageType t, String i,
+      ExtendedBlock b, boolean isTransfer) throws IOException {
     return new ReplicaHandler(new ExternalReplicaInPipeline(), null);
   }
 
   @Override
-  public ReplicaHandler createRbw(StorageType t, ExtendedBlock b, boolean tf)
-      throws IOException {
+  public ReplicaHandler createRbw(StorageType storageType, String id,
+      ExtendedBlock b, boolean tf) throws IOException {
     return new ReplicaHandler(new ExternalReplicaInPipeline(), null);
   }
 
@@ -155,20 +157,20 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public ReplicaInPipelineInterface convertTemporaryToRbw(
+  public ReplicaInPipeline convertTemporaryToRbw(
       ExtendedBlock temporary) throws IOException {
     return new ExternalReplicaInPipeline();
   }
 
   @Override
   public ReplicaHandler append(ExtendedBlock b, long newGS,
-                               long expectedBlockLen) throws IOException {
+      long expectedBlockLen) throws IOException {
     return new ReplicaHandler(new ExternalReplicaInPipeline(), null);
   }
 
   @Override
   public ReplicaHandler recoverAppend(ExtendedBlock b, long newGS,
-                                      long expectedBlockLen) throws IOException {
+      long expectedBlockLen) throws IOException {
     return new ReplicaHandler(new ExternalReplicaInPipeline(), null);
   }
 
@@ -179,7 +181,8 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public void finalizeBlock(ExtendedBlock b) throws IOException {
+  public void finalizeBlock(ExtendedBlock b, boolean fsyncDir)
+      throws IOException {
   }
 
   @Override
@@ -238,8 +241,7 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public Set<File> checkDataDir() {
-    return null;
+  public void handleVolumeFailures(Set<FsVolumeSpi> failedVolumes) {
   }
 
   @Override
@@ -292,11 +294,6 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public HdfsBlocksMetadata getHdfsBlocksMetadata(String bpid, long[] blockIds) throws IOException {
-    return new HdfsBlocksMetadata(null, null, null, null);
-  }
-
-  @Override
   public void enableTrash(String bpid) {
 
   }
@@ -322,8 +319,8 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public void submitBackgroundSyncFileRangeRequest(ExtendedBlock block, FileDescriptor fd, long offset, long nbytes, int flags) {
-
+  public void submitBackgroundSyncFileRangeRequest(ExtendedBlock block,
+      ReplicaOutputStreams outs, long offset, long nbytes, int flags) {
   }
 
   @Override
@@ -337,7 +334,8 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public ReplicaInfo moveBlockAcrossStorage(ExtendedBlock block, StorageType targetStorageType) throws IOException {
+  public ReplicaInfo moveBlockAcrossStorage(ExtendedBlock block,
+      StorageType targetStorageType, String storageId) throws IOException {
     return null;
   }
 
@@ -352,7 +350,7 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   }
 
   @Override
-  public long getCapacity() {
+  public long getCapacity() throws IOException {
     return 0;
   }
 
@@ -443,6 +441,13 @@ public class ExternalDatasetImpl implements FsDatasetSpi<ExternalVolumeImpl> {
   @Override
   public boolean isDeletingBlock(String bpid, long blockId) {
     return false;
+  }
+
+  @Override
+  public ReplicaInfo moveBlockAcrossVolumes(ExtendedBlock block,
+                                            FsVolumeSpi destination)
+      throws IOException {
+    return null;
   }
 
   @Override

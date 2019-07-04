@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import static org.apache.hadoop.hdfs.server.blockmanagement.CorruptReplicasMap.Reason;
 
 import com.google.common.base.Preconditions;
+import org.apache.hadoop.hdfs.protocol.Block;
 
 /**
  * BlockToMarkCorrupt is used to build the "toCorrupt" list, which is a
@@ -27,7 +28,7 @@ import com.google.common.base.Preconditions;
  */
 class BlockToMarkCorrupt {
   /** The corrupted block in a datanode. */
-  private final BlockInfo corrupted;
+  private final Block corrupted;
   /** The corresponding block stored in the BlockManager. */
   private final BlockInfo stored;
   /** The reason to mark corrupt. */
@@ -35,7 +36,7 @@ class BlockToMarkCorrupt {
   /** The reason code to be stored */
   private final CorruptReplicasMap.Reason reasonCode;
 
-  BlockToMarkCorrupt(BlockInfo corrupted, BlockInfo stored, String reason,
+  BlockToMarkCorrupt(Block corrupted, BlockInfo stored, String reason,
       CorruptReplicasMap.Reason reasonCode) {
     Preconditions.checkNotNull(corrupted, "corrupted is null");
     Preconditions.checkNotNull(stored, "stored is null");
@@ -46,24 +47,18 @@ class BlockToMarkCorrupt {
     this.reasonCode = reasonCode;
   }
 
-  BlockToMarkCorrupt(BlockInfo stored, String reason,
+  BlockToMarkCorrupt(Block corrupted, BlockInfo stored, long gs, String reason,
       CorruptReplicasMap.Reason reasonCode) {
-    this(stored, stored, reason, reasonCode);
-  }
-
-  BlockToMarkCorrupt(BlockInfo stored, long gs, String reason,
-      CorruptReplicasMap.Reason reasonCode) {
-    this(new BlockInfoContiguous((BlockInfoContiguous)stored), stored,
-        reason, reasonCode);
+    this(corrupted, stored, reason, reasonCode);
     //the corrupted block in datanode has a different generation stamp
-    corrupted.setGenerationStamp(gs);
+    this.corrupted.setGenerationStamp(gs);
   }
 
   public boolean isCorruptedDuringWrite() {
     return stored.getGenerationStamp() > corrupted.getGenerationStamp();
   }
 
-  public BlockInfo getCorrupted() {
+  public Block getCorrupted() {
     return corrupted;
   }
 

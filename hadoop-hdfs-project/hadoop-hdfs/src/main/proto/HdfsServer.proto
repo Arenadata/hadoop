@@ -35,13 +35,6 @@ import "hdfs.proto";
 import "HAServiceProtocol.proto";
 
 /**
- * A list of storage IDs.
- */
-message StorageUuidsProto {
-  repeated string storageUuids = 1;
-}
-
-/**
  * Block access token information
  */
 message BlockKeyProto {
@@ -69,6 +62,10 @@ message BlockWithLocationsProto {
   repeated string datanodeUuids = 2; // Datanodes with replicas of the block
   repeated string storageUuids = 3;  // Storages with replicas of the block
   repeated StorageTypeProto storageTypes = 4;
+
+  optional bytes indices = 5;
+  optional uint32 dataBlockNum = 6;
+  optional uint32 cellSize = 7;
 }
 
 /**
@@ -92,6 +89,7 @@ message RemoteEditLogProto {
  */
 message RemoteEditLogManifestProto {
   repeated RemoteEditLogProto logs = 1;
+  optional uint64 committedTxnId = 2;
 }
 
 /**
@@ -125,6 +123,10 @@ message RecoveringBlockProto {
   required uint64 newGenStamp = 1;        // New genstamp post recovery
   required LocatedBlockProto block = 2;   // Block to be recovered
   optional BlockProto truncateBlock = 3;  // New block for recovery (truncate)
+
+  optional ErasureCodingPolicyProto ecPolicy = 4;
+  // block indices of striped internal blocks for each storage in LocatedBlock
+  optional bytes blockIndices = 5;
 }
 
 /**

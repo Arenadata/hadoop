@@ -19,12 +19,12 @@
 package org.apache.hadoop.yarn.server.nodemanager.recovery;
 
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -33,14 +33,17 @@ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerExitStatus;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.Token;
 import org.apache.hadoop.yarn.proto.YarnProtos.LocalResourceProto;
 import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.ContainerManagerApplicationProto;
 import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
 import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
 import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LogDeleterProto;
+import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
 import org.apache.hadoop.yarn.server.api.records.MasterKey;
 import org.apache.hadoop.yarn.server.api.records.impl.pb.MasterKeyPBImpl;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ResourceMappings;
 
 public class NMMemoryStateStoreService extends NMStateStoreService {
   private Map<ApplicationId, ContainerManagerApplicationProto> apps;
@@ -50,6 +53,7 @@ public class NMMemoryStateStoreService extends NMStateStoreService {
   private RecoveredNMTokensState nmTokenState;
   private RecoveredContainerTokensState containerTokenState;
   private Map<ApplicationId, LogDeleterProto> logDeleterState;
+  private RecoveredAMRMProxyState amrmProxyState;
 
   public NMMemoryStateStoreService() {
     super(NMMemoryStateStoreService.class.getName());
@@ -67,6 +71,7 @@ public class NMMemoryStateStoreService extends NMStateStoreService {
     trackerStates = new HashMap<TrackerKey, TrackerState>();
     deleteTasks = new HashMap<Integer, DeletionServiceDeleteTaskProto>();
     logDeleterState = new HashMap<ApplicationId, LogDeleterProto>();
+    amrmProxyState = new RecoveredAMRMProxyState();
   }
 
   @Override
@@ -115,6 +120,11 @@ public class NMMemoryStateStoreService extends NMStateStoreService {
       rcsCopy.diagnostics = rcs.diagnostics;
       rcsCopy.startRequest = rcs.startRequest;
       rcsCopy.capability = rcs.capability;
+      rcsCopy.setRemainingRetryAttempts(rcs.getRemainingRetryAttempts());
+      rcsCopy.setRestartTimes(rcs.getRestartTimes());
+      rcsCopy.setWorkDir(rcs.getWorkDir());
+      rcsCopy.setLogDir(rcs.getLogDir());
+      rcsCopy.setResourceMappings(rcs.getResourceMappings());
       result.add(rcsCopy);
     }
     return result;
@@ -122,11 +132,32 @@ public class NMMemoryStateStoreService extends NMStateStoreService {
 
   @Override
   public synchronized void storeContainer(ContainerId containerId,
-      int version, StartContainerRequest startRequest) throws IOException {
+      int version, long startTime, StartContainerRequest startRequest)
+      throws IOException {
     RecoveredContainerState rcs = new RecoveredContainerState();
     rcs.startRequest = startRequest;
     rcs.version = version;
+    rcs.setStartTime(startTime);
     containerStates.put(containerId, rcs);
+  }
+
+  @Override
+  public void storeContainerQueued(ContainerId containerId) throws IOException {
+    RecoveredContainerState rcs = getRecoveredContainerState(containerId);
+    rcs.status = RecoveredContainerStatus.QUEUED;
+  }
+
+  @Override
+  public void storeContainerPaused(ContainerId containerId) throws IOException {
+    RecoveredContainerState rcs = getRecoveredContainerState(containerId);
+    rcs.status = RecoveredContainerStatus.PAUSED;
+  }
+
+  @Override
+  public void removeContainerPaused(ContainerId containerId)
+      throws IOException {
+    RecoveredContainerState rcs = getRecoveredContainerState(containerId);
+    rcs.status = RecoveredContainerStatus.LAUNCHED;
   }
 
   @Override
@@ -147,12 +178,17 @@ public class NMMemoryStateStoreService extends NMStateStoreService {
   }
 
   @Override
-  public synchronized void storeContainerResourceChanged(
-      ContainerId containerId, int version, Resource capability)
-      throws IOException {
+  public void storeContainerUpdateToken(ContainerId containerId,
+      ContainerTokenIdentifier containerTokenIdentifier) throws IOException {
     RecoveredContainerState rcs = getRecoveredContainerState(containerId);
-    rcs.capability = capability;
-    rcs.version = version;
+    rcs.capability = containerTokenIdentifier.getResource();
+    rcs.version = containerTokenIdentifier.getVersion();
+    Token currentToken = rcs.getStartRequest().getContainerToken();
+    Token updatedToken = Token
+        .newInstance(containerTokenIdentifier.getBytes(),
+            ContainerTokenIdentifier.KIND.toString(),
+            currentToken.getPassword().array(), currentToken.getService());
+    rcs.startRequest.setContainerToken(updatedToken);
   }
 
   @Override
@@ -168,6 +204,35 @@ public class NMMemoryStateStoreService extends NMStateStoreService {
     RecoveredContainerState rcs = getRecoveredContainerState(containerId);
     rcs.status = RecoveredContainerStatus.COMPLETED;
     rcs.exitCode = exitCode;
+  }
+
+  @Override
+  public void storeContainerRemainingRetryAttempts(ContainerId containerId,
+      int remainingRetryAttempts) throws IOException {
+    RecoveredContainerState rcs = getRecoveredContainerState(containerId);
+    rcs.setRemainingRetryAttempts(remainingRetryAttempts);
+  }
+
+  @Override
+  public void storeContainerRestartTimes(
+      ContainerId containerId, List<Long> restartTimes)
+      throws IOException {
+    RecoveredContainerState rcs = getRecoveredContainerState(containerId);
+    rcs.setRestartTimes(restartTimes);
+  }
+
+  @Override
+  public void storeContainerWorkDir(ContainerId containerId,
+      String workDir) throws IOException {
+    RecoveredContainerState rcs = getRecoveredContainerState(containerId);
+    rcs.setWorkDir(workDir);
+  }
+
+  @Override
+  public void storeContainerLogDir(ContainerId containerId,
+      String logDir) throws IOException {
+    RecoveredContainerState rcs = getRecoveredContainerState(containerId);
+    rcs.setLogDir(logDir);
   }
 
   @Override
@@ -385,6 +450,80 @@ public class NMMemoryStateStoreService extends NMStateStoreService {
   public synchronized void removeLogDeleter(ApplicationId appId)
       throws IOException {
     logDeleterState.remove(appId);
+  }
+
+  @Override
+  public synchronized RecoveredAMRMProxyState loadAMRMProxyState()
+      throws IOException {
+    // return a copy so caller can't modify our state
+    RecoveredAMRMProxyState result = new RecoveredAMRMProxyState();
+    result.setCurrentMasterKey(amrmProxyState.getCurrentMasterKey());
+    result.setNextMasterKey(amrmProxyState.getNextMasterKey());
+    for (Map.Entry<ApplicationAttemptId, Map<String, byte[]>> entry :
+        amrmProxyState.getAppContexts().entrySet()) {
+      result.getAppContexts().put(entry.getKey(),
+          new HashMap<String, byte[]>(entry.getValue()));
+    }
+    return result;
+  }
+
+  @Override
+  public synchronized void storeAMRMProxyCurrentMasterKey(MasterKey key)
+      throws IOException {
+    MasterKeyPBImpl keypb = (MasterKeyPBImpl) key;
+    amrmProxyState.setCurrentMasterKey(new MasterKeyPBImpl(keypb.getProto()));
+  }
+
+  @Override
+  public synchronized void storeAMRMProxyNextMasterKey(MasterKey key)
+      throws IOException {
+    if (key == null) {
+      amrmProxyState.setNextMasterKey(null);
+      return;
+    }
+    MasterKeyPBImpl keypb = (MasterKeyPBImpl) key;
+    amrmProxyState.setNextMasterKey(new MasterKeyPBImpl(keypb.getProto()));
+  }
+
+  @Override
+  public synchronized void storeAMRMProxyAppContextEntry(
+      ApplicationAttemptId attempt, String key, byte[] data)
+      throws IOException {
+    Map<String, byte[]> entryMap = amrmProxyState.getAppContexts().get(attempt);
+    if (entryMap == null) {
+      entryMap = new HashMap<>();
+      amrmProxyState.getAppContexts().put(attempt, entryMap);
+    }
+    entryMap.put(key, Arrays.copyOf(data, data.length));
+  }
+
+  @Override
+  public synchronized void removeAMRMProxyAppContextEntry(
+      ApplicationAttemptId attempt, String key) throws IOException {
+    Map<String, byte[]> entryMap = amrmProxyState.getAppContexts().get(attempt);
+    if (entryMap != null) {
+      entryMap.remove(key);
+    }
+  }
+
+  @Override
+  public synchronized void removeAMRMProxyAppContext(
+      ApplicationAttemptId attempt) throws IOException {
+    amrmProxyState.getAppContexts().remove(attempt);
+  }
+
+  @Override
+  public void storeAssignedResources(Container container,
+      String resourceType, List<Serializable> assignedResources)
+      throws IOException {
+    ResourceMappings.AssignedResources ar =
+        new ResourceMappings.AssignedResources();
+    ar.updateAssignedResources(assignedResources);
+    containerStates.get(container.getContainerId()).getResourceMappings()
+        .addAssignedResources(resourceType, ar);
+
+    // update container resource mapping.
+    updateContainerResourceMapping(container, resourceType, assignedResources);
   }
 
   private static class TrackerState {

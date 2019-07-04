@@ -43,8 +43,7 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineDomain;
@@ -67,13 +66,16 @@ import org.apache.hadoop.yarn.webapp.NotFoundException;
 
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Singleton
 @Path("/ws/v1/timeline")
 //TODO: support XML serialization/deserialization
 public class TimelineWebServices {
 
-  private static final Log LOG = LogFactory.getLog(TimelineWebServices.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TimelineWebServices.class);
 
   private TimelineDataManager timelineDataManager;
 
@@ -86,7 +88,8 @@ public class TimelineWebServices {
    * Return the description of the timeline web services.
    */
   @GET
-  @Produces({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelineAbout about(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res) {
@@ -99,7 +102,8 @@ public class TimelineWebServices {
    */
   @GET
   @Path("/{entityType}")
-  @Produces({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelineEntities getEntities(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -142,7 +146,8 @@ public class TimelineWebServices {
    */
   @GET
   @Path("/{entityType}/{entityId}")
-  @Produces({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelineEntity getEntity(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -177,7 +182,8 @@ public class TimelineWebServices {
    */
   @GET
   @Path("/{entityType}/events")
-  @Produces({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelineEvents getEvents(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -214,6 +220,8 @@ public class TimelineWebServices {
    */
   @POST
   @Consumes({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelinePutResponse postEntities(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -243,6 +251,8 @@ public class TimelineWebServices {
   @PUT
   @Path("/domain")
   @Consumes({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelinePutResponse putDomain(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -261,6 +271,10 @@ public class TimelineWebServices {
       // The user doesn't have the access to override the existing domain.
       LOG.error(e.getMessage(), e);
       throw new ForbiddenException(e);
+    } catch (RuntimeException e) {
+      LOG.error("Error putting domain", e);
+      throw new WebApplicationException(e,
+          Response.Status.INTERNAL_SERVER_ERROR);
     } catch (IOException e) {
       LOG.error("Error putting domain", e);
       throw new WebApplicationException(e,
@@ -274,7 +288,8 @@ public class TimelineWebServices {
    */
   @GET
   @Path("/domain/{domainId}")
-  @Produces({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelineDomain getDomain(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -305,7 +320,8 @@ public class TimelineWebServices {
    */
   @GET
   @Path("/domain")
-  @Produces({ MediaType.APPLICATION_JSON /* , MediaType.APPLICATION_XML */})
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8
+      /* , MediaType.APPLICATION_XML */})
   public TimelineDomains getDomains(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,

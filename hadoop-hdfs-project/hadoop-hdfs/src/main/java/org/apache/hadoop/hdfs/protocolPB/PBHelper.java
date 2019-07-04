@@ -19,21 +19,28 @@ package org.apache.hadoop.hdfs.protocolPB;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.google.protobuf.ByteString;
 
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
-import org.apache.hadoop.ha.proto.HAServiceProtocolProtos;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.protocol.ProvidedStorageLocation;
+import org.apache.hadoop.hdfs.protocol.proto.AliasMapProtocolProtos.KeyValueProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BalancerBandwidthCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockCommandProto;
+import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockECReconstructionCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockIdCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockRecoveryCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.DatanodeCommandProto;
@@ -42,9 +49,17 @@ import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.FinalizeComm
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.KeyUpdateCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.ReceivedDeletedBlockInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.RegisterCommandProto;
+import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos
+    .SlowDiskReportProto;
+import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.SlowPeerReportProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.VolumeFailureSummaryProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockReportContextProto;
+import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos.BlockECReconstructionInfoProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ExtendedBlockProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ProvidedStorageLocationProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.StorageUuidsProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.DatanodeInfosProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlockProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.StorageTypeProto;
@@ -65,24 +80,27 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.RemoteEditLogManif
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.RemoteEditLogProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.ReplicaStateProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.StorageInfoProto;
-import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.StorageUuidsProto;
 import org.apache.hadoop.hdfs.protocol.proto.JournalProtocolProtos.JournalInfoProto;
 import org.apache.hadoop.hdfs.security.token.block.BlockKey;
 import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
+import org.apache.hadoop.hdfs.server.common.FileRegion;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NodeType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
-import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.namenode.CheckpointSignature;
 import org.apache.hadoop.hdfs.server.protocol.BalancerBandwidthCommand;
 import org.apache.hadoop.hdfs.server.protocol.BlockCommand;
+import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand;
 import org.apache.hadoop.hdfs.server.protocol.BlockIdCommand;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand;
+import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
+import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringStripedBlock;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations.BlockWithLocations;
+import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations.StripedBlockWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.CheckpointCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol;
@@ -99,6 +117,8 @@ import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStat
 import org.apache.hadoop.hdfs.server.protocol.RegisterCommand;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 
 /**
@@ -170,22 +190,34 @@ public class PBHelper {
   }
 
   public static BlockWithLocationsProto convert(BlockWithLocations blk) {
-    return BlockWithLocationsProto.newBuilder()
-        .setBlock(PBHelperClient.convert(blk.getBlock()))
+    BlockWithLocationsProto.Builder builder = BlockWithLocationsProto
+        .newBuilder().setBlock(PBHelperClient.convert(blk.getBlock()))
         .addAllDatanodeUuids(Arrays.asList(blk.getDatanodeUuids()))
         .addAllStorageUuids(Arrays.asList(blk.getStorageIDs()))
-        .addAllStorageTypes(PBHelperClient.convertStorageTypes(blk.getStorageTypes()))
-        .build();
+        .addAllStorageTypes(PBHelperClient.convertStorageTypes(blk.getStorageTypes()));
+    if (blk instanceof StripedBlockWithLocations) {
+      StripedBlockWithLocations sblk = (StripedBlockWithLocations) blk;
+      builder.setIndices(PBHelperClient.getByteString(sblk.getIndices()));
+      builder.setDataBlockNum(sblk.getDataBlockNum());
+      builder.setCellSize(sblk.getCellSize());
+    }
+    return builder.build();
   }
 
   public static BlockWithLocations convert(BlockWithLocationsProto b) {
     final List<String> datanodeUuids = b.getDatanodeUuidsList();
     final List<String> storageUuids = b.getStorageUuidsList();
     final List<StorageTypeProto> storageTypes = b.getStorageTypesList();
-    return new BlockWithLocations(PBHelperClient.convert(b.getBlock()),
+    BlockWithLocations blk = new BlockWithLocations(PBHelperClient.
+        convert(b.getBlock()),
         datanodeUuids.toArray(new String[datanodeUuids.size()]),
         storageUuids.toArray(new String[storageUuids.size()]),
         PBHelperClient.convertStorageTypes(storageTypes, storageUuids.size()));
+    if (b.hasIndices()) {
+      blk = new StripedBlockWithLocations(blk, b.getIndices().toByteArray(),
+          (short) b.getDataBlockNum(), b.getCellSize());
+    }
+    return blk;
   }
 
   public static BlocksWithLocationsProto convert(BlocksWithLocations blks) {
@@ -268,7 +300,8 @@ public class PBHelper {
   public static RemoteEditLogManifestProto convert(
       RemoteEditLogManifest manifest) {
     RemoteEditLogManifestProto.Builder builder = RemoteEditLogManifestProto
-        .newBuilder();
+        .newBuilder()
+        .setCommittedTxnId(manifest.getCommittedTxnId());
     for (RemoteEditLog log : manifest.getLogs()) {
       builder.addLogs(convert(log));
     }
@@ -282,7 +315,8 @@ public class PBHelper {
     for (RemoteEditLogProto l : manifest.getLogsList()) {
       logs.add(convert(l));
     }
-    return new RemoteEditLogManifest(logs);
+    return new RemoteEditLogManifest(logs,
+            manifest.getCommittedTxnId());
   }
 
   public static CheckpointCommandProto convert(CheckpointCommand cmd) {
@@ -335,16 +369,22 @@ public class PBHelper {
     if (b == null) {
       return null;
     }
-    LocatedBlockProto lb = PBHelperClient.convert((LocatedBlock) b);
+    LocatedBlockProto lb = PBHelperClient.convertLocatedBlock(b);
     RecoveringBlockProto.Builder builder = RecoveringBlockProto.newBuilder();
     builder.setBlock(lb).setNewGenStamp(b.getNewGenerationStamp());
     if(b.getNewBlock() != null)
       builder.setTruncateBlock(PBHelperClient.convert(b.getNewBlock()));
+    if (b instanceof RecoveringStripedBlock) {
+      RecoveringStripedBlock sb = (RecoveringStripedBlock) b;
+      builder.setEcPolicy(PBHelperClient.convertErasureCodingPolicy(
+          sb.getErasureCodingPolicy()));
+      builder.setBlockIndices(PBHelperClient.getByteString(sb.getBlockIndices()));
+    }
     return builder.build();
   }
 
   public static RecoveringBlock convert(RecoveringBlockProto b) {
-    LocatedBlock lb = PBHelperClient.convert(b.getBlock());
+    LocatedBlock lb = PBHelperClient.convertLocatedBlockProto(b.getBlock());
     RecoveringBlock rBlock;
     if (b.hasTruncateBlock()) {
       rBlock = new RecoveringBlock(lb.getBlock(), lb.getLocations(),
@@ -352,6 +392,13 @@ public class PBHelper {
     } else {
       rBlock = new RecoveringBlock(lb.getBlock(), lb.getLocations(),
           b.getNewGenStamp());
+    }
+
+    if (b.hasEcPolicy()) {
+      assert b.hasBlockIndices();
+      byte[] indices = b.getBlockIndices().toByteArray();
+      rBlock = new RecoveringStripedBlock(rBlock, indices,
+          PBHelperClient.convertErasureCodingPolicy(b.getEcPolicy()));
     }
     return rBlock;
   }
@@ -420,6 +467,8 @@ public class PBHelper {
       return REG_CMD;
     case BlockIdCommand:
       return PBHelper.convert(proto.getBlkIdCmd());
+    case BlockECReconstructionCommand:
+      return PBHelper.convert(proto.getBlkECReconstructionCmd());
     default:
       return null;
     }
@@ -548,6 +597,11 @@ public class PBHelper {
     case DatanodeProtocol.DNA_UNCACHE:
       builder.setCmdType(DatanodeCommandProto.Type.BlockIdCommand).
         setBlkIdCmd(PBHelper.convert((BlockIdCommand) datanodeCommand));
+      break;
+    case DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION:
+      builder.setCmdType(DatanodeCommandProto.Type.BlockECReconstructionCommand)
+          .setBlkECReconstructionCmd(
+              convert((BlockECReconstructionCommand) datanodeCommand));
       break;
     case DatanodeProtocol.DNA_UNKNOWN: //Not expected
     default:
@@ -787,6 +841,110 @@ public class PBHelper {
     return builder.build();
   }
 
+  public static List<SlowPeerReportProto> convertSlowPeerInfo(
+      SlowPeerReports slowPeers) {
+    if (slowPeers.getSlowPeers().size() == 0) {
+      return Collections.emptyList();
+    }
+
+    List<SlowPeerReportProto> slowPeerInfoProtos =
+        new ArrayList<>(slowPeers.getSlowPeers().size());
+    for (Map.Entry<String, Double> entry :
+        slowPeers.getSlowPeers().entrySet()) {
+      slowPeerInfoProtos.add(SlowPeerReportProto.newBuilder()
+              .setDataNodeId(entry.getKey())
+              .setAggregateLatency(entry.getValue())
+              .build());
+    }
+    return slowPeerInfoProtos;
+  }
+
+  public static SlowPeerReports convertSlowPeerInfo(
+      List<SlowPeerReportProto> slowPeerProtos) {
+
+    // No slow peers, or possibly an older DataNode.
+    if (slowPeerProtos == null || slowPeerProtos.size() == 0) {
+      return SlowPeerReports.EMPTY_REPORT;
+    }
+
+    Map<String, Double> slowPeersMap = new HashMap<>(slowPeerProtos.size());
+    for (SlowPeerReportProto proto : slowPeerProtos) {
+      if (!proto.hasDataNodeId()) {
+        // The DataNodeId should be reported.
+        continue;
+      }
+      slowPeersMap.put(
+          proto.getDataNodeId(),
+          proto.hasAggregateLatency() ? proto.getAggregateLatency() : 0.0);
+    }
+    return SlowPeerReports.create(slowPeersMap);
+  }
+
+  public static List<SlowDiskReportProto> convertSlowDiskInfo(
+      SlowDiskReports slowDisks) {
+    if (slowDisks.getSlowDisks().size() == 0) {
+      return Collections.emptyList();
+    }
+
+    List<SlowDiskReportProto> slowDiskInfoProtos =
+        new ArrayList<>(slowDisks.getSlowDisks().size());
+    for (Map.Entry<String, Map<SlowDiskReports.DiskOp, Double>> entry :
+        slowDisks.getSlowDisks().entrySet()) {
+      SlowDiskReportProto.Builder builder = SlowDiskReportProto.newBuilder();
+      builder.setBasePath(entry.getKey());
+      Map<SlowDiskReports.DiskOp, Double> value = entry.getValue();
+      if (value.get(SlowDiskReports.DiskOp.METADATA) != null) {
+        builder.setMeanMetadataOpLatency(value.get(
+            SlowDiskReports.DiskOp.METADATA));
+      }
+      if (value.get(SlowDiskReports.DiskOp.READ) != null) {
+        builder.setMeanReadIoLatency(value.get(
+            SlowDiskReports.DiskOp.READ));
+      }
+      if (value.get(SlowDiskReports.DiskOp.WRITE) != null) {
+        builder.setMeanWriteIoLatency(value.get(
+            SlowDiskReports.DiskOp.WRITE));
+      }
+      slowDiskInfoProtos.add(builder.build());
+    }
+
+    return slowDiskInfoProtos;
+  }
+
+  public static SlowDiskReports convertSlowDiskInfo(
+      List<SlowDiskReportProto> slowDiskProtos) {
+
+    // No slow disks, or possibly an older DataNode.
+    if (slowDiskProtos == null || slowDiskProtos.size() == 0) {
+      return SlowDiskReports.EMPTY_REPORT;
+    }
+
+    Map<String, Map<SlowDiskReports.DiskOp, Double>> slowDisksMap =
+        new HashMap<>(slowDiskProtos.size());
+    for (SlowDiskReportProto proto : slowDiskProtos) {
+      if (!proto.hasBasePath()) {
+        // The disk basePath should be reported.
+        continue;
+      }
+      Map<SlowDiskReports.DiskOp, Double> latencyMap = new HashMap<>();
+      if (proto.hasMeanMetadataOpLatency()) {
+        latencyMap.put(SlowDiskReports.DiskOp.METADATA,
+            proto.getMeanMetadataOpLatency());
+      }
+      if (proto.hasMeanReadIoLatency()) {
+        latencyMap.put(SlowDiskReports.DiskOp.READ,
+            proto.getMeanReadIoLatency());
+      }
+      if (proto.hasMeanWriteIoLatency()) {
+        latencyMap.put(SlowDiskReports.DiskOp.WRITE,
+            proto.getMeanWriteIoLatency());
+      }
+
+      slowDisksMap.put(proto.getBasePath(), latencyMap);
+    }
+    return SlowDiskReports.create(slowDisksMap);
+  }
+
   public static JournalInfo convert(JournalInfoProto info) {
     int lv = info.hasLayoutVersion() ? info.getLayoutVersion() : 0;
     int nsID = info.hasNamespaceID() ? info.getNamespaceID() : 0;
@@ -805,8 +963,8 @@ public class PBHelper {
 
 
   public static BlockReportContext convert(BlockReportContextProto proto) {
-    return new BlockReportContext(proto.getTotalRpcs(),
-        proto.getCurRpc(), proto.getId(), proto.getLeaseId());
+    return new BlockReportContext(proto.getTotalRpcs(), proto.getCurRpc(),
+        proto.getId(), proto.getLeaseId(), proto.getSorted());
   }
 
   public static BlockReportContextProto convert(BlockReportContext context) {
@@ -815,6 +973,155 @@ public class PBHelper {
         setCurRpc(context.getCurRpc()).
         setId(context.getReportId()).
         setLeaseId(context.getLeaseId()).
+        setSorted(context.isSorted()).
         build();
+  }
+
+  private static StorageTypesProto convertStorageTypesProto(
+      StorageType[] targetStorageTypes) {
+    StorageTypesProto.Builder builder = StorageTypesProto.newBuilder();
+    for (StorageType storageType : targetStorageTypes) {
+      builder.addStorageTypes(PBHelperClient.convertStorageType(storageType));
+    }
+    return builder.build();
+  }
+
+  private static HdfsProtos.StorageUuidsProto convertStorageIDs(String[] targetStorageIDs) {
+    HdfsProtos.StorageUuidsProto.Builder builder = HdfsProtos.StorageUuidsProto.newBuilder();
+    for (String storageUuid : targetStorageIDs) {
+      builder.addStorageUuids(storageUuid);
+    }
+    return builder.build();
+  }
+
+  private static DatanodeInfosProto convertToDnInfosProto(DatanodeInfo[] dnInfos) {
+    DatanodeInfosProto.Builder builder = DatanodeInfosProto.newBuilder();
+    for (DatanodeInfo datanodeInfo : dnInfos) {
+      builder.addDatanodes(PBHelperClient.convert(datanodeInfo));
+    }
+    return builder.build();
+  }
+
+  private static String[] convert(HdfsProtos.StorageUuidsProto targetStorageUuidsProto) {
+    List<String> storageUuidsList = targetStorageUuidsProto
+        .getStorageUuidsList();
+    String[] storageUuids = new String[storageUuidsList.size()];
+    for (int i = 0; i < storageUuidsList.size(); i++) {
+      storageUuids[i] = storageUuidsList.get(i);
+    }
+    return storageUuids;
+  }
+
+  public static BlockECReconstructionInfo convertBlockECReconstructionInfo(
+      BlockECReconstructionInfoProto blockEcReconstructionInfoProto) {
+    ExtendedBlockProto blockProto = blockEcReconstructionInfoProto.getBlock();
+    ExtendedBlock block = PBHelperClient.convert(blockProto);
+
+    DatanodeInfosProto sourceDnInfosProto = blockEcReconstructionInfoProto
+        .getSourceDnInfos();
+    DatanodeInfo[] sourceDnInfos = PBHelperClient.convert(sourceDnInfosProto);
+
+    DatanodeInfosProto targetDnInfosProto = blockEcReconstructionInfoProto
+        .getTargetDnInfos();
+    DatanodeInfo[] targetDnInfos = PBHelperClient.convert(targetDnInfosProto);
+
+    HdfsProtos.StorageUuidsProto targetStorageUuidsProto =
+        blockEcReconstructionInfoProto.getTargetStorageUuids();
+    String[] targetStorageUuids = convert(targetStorageUuidsProto);
+
+    StorageTypesProto targetStorageTypesProto = blockEcReconstructionInfoProto
+        .getTargetStorageTypes();
+    StorageType[] convertStorageTypes = PBHelperClient.convertStorageTypes(
+        targetStorageTypesProto.getStorageTypesList(), targetStorageTypesProto
+            .getStorageTypesList().size());
+
+    byte[] liveBlkIndices = blockEcReconstructionInfoProto.getLiveBlockIndices()
+        .toByteArray();
+    ErasureCodingPolicy ecPolicy =
+        PBHelperClient.convertErasureCodingPolicy(
+            blockEcReconstructionInfoProto.getEcPolicy());
+    return new BlockECReconstructionInfo(block, sourceDnInfos, targetDnInfos,
+        targetStorageUuids, convertStorageTypes, liveBlkIndices, ecPolicy);
+  }
+
+  public static BlockECReconstructionInfoProto convertBlockECRecoveryInfo(
+      BlockECReconstructionInfo blockEcRecoveryInfo) {
+    BlockECReconstructionInfoProto.Builder builder =
+        BlockECReconstructionInfoProto.newBuilder();
+    builder.setBlock(PBHelperClient.convert(
+        blockEcRecoveryInfo.getExtendedBlock()));
+
+    DatanodeInfo[] sourceDnInfos = blockEcRecoveryInfo.getSourceDnInfos();
+    builder.setSourceDnInfos(convertToDnInfosProto(sourceDnInfos));
+
+    DatanodeInfo[] targetDnInfos = blockEcRecoveryInfo.getTargetDnInfos();
+    builder.setTargetDnInfos(convertToDnInfosProto(targetDnInfos));
+
+    String[] targetStorageIDs = blockEcRecoveryInfo.getTargetStorageIDs();
+    builder.setTargetStorageUuids(convertStorageIDs(targetStorageIDs));
+
+    StorageType[] targetStorageTypes = blockEcRecoveryInfo
+        .getTargetStorageTypes();
+    builder.setTargetStorageTypes(convertStorageTypesProto(targetStorageTypes));
+
+    byte[] liveBlockIndices = blockEcRecoveryInfo.getLiveBlockIndices();
+    builder.setLiveBlockIndices(PBHelperClient.getByteString(liveBlockIndices));
+
+    builder.setEcPolicy(PBHelperClient.convertErasureCodingPolicy(
+        blockEcRecoveryInfo.getErasureCodingPolicy()));
+
+    return builder.build();
+  }
+
+  public static BlockECReconstructionCommandProto convert(
+      BlockECReconstructionCommand blkECReconstructionCmd) {
+    BlockECReconstructionCommandProto.Builder builder =
+        BlockECReconstructionCommandProto.newBuilder();
+    Collection<BlockECReconstructionInfo> blockECRInfos =
+        blkECReconstructionCmd.getECTasks();
+    for (BlockECReconstructionInfo blkECReconstructInfo : blockECRInfos) {
+      builder.addBlockECReconstructioninfo(
+          convertBlockECRecoveryInfo(blkECReconstructInfo));
+    }
+    return builder.build();
+  }
+
+  public static BlockECReconstructionCommand convert(
+      BlockECReconstructionCommandProto blkECReconstructionCmdProto) {
+    Collection<BlockECReconstructionInfo> blkECReconstructionInfos =
+        new ArrayList<>();
+    List<BlockECReconstructionInfoProto> blkECRInfoList =
+        blkECReconstructionCmdProto.getBlockECReconstructioninfoList();
+    for (BlockECReconstructionInfoProto blkECRInfoProto : blkECRInfoList) {
+      blkECReconstructionInfos
+          .add(convertBlockECReconstructionInfo(blkECRInfoProto));
+    }
+    return new BlockECReconstructionCommand(
+        DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION,
+        blkECReconstructionInfos);
+  }
+
+  public static KeyValueProto convert(FileRegion fileRegion) {
+    return KeyValueProto
+        .newBuilder()
+        .setKey(PBHelperClient.convert(fileRegion.getBlock()))
+        .setValue(PBHelperClient.convert(
+            fileRegion.getProvidedStorageLocation()))
+        .build();
+  }
+
+  public static FileRegion
+      convert(KeyValueProto keyValueProto) {
+    BlockProto blockProto =
+        keyValueProto.getKey();
+    ProvidedStorageLocationProto providedStorageLocationProto =
+        keyValueProto.getValue();
+
+    Block block =
+        PBHelperClient.convert(blockProto);
+    ProvidedStorageLocation providedStorageLocation =
+        PBHelperClient.convert(providedStorageLocationProto);
+
+    return new FileRegion(block, providedStorageLocation);
   }
 }

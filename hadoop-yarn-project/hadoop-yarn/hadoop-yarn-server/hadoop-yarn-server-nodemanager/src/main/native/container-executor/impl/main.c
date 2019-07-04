@@ -19,96 +19,83 @@
 #include "config.h"
 #include "configuration.h"
 #include "container-executor.h"
+#include "util.h"
+#include "get_executable.h"
+#include "modules/gpu/gpu-module.h"
+#include "modules/fpga/fpga-module.h"
+#include "modules/cgroups/cgroups-operations.h"
+#include "utils/string-utils.h"
 
 #include <errno.h>
 #include <grp.h>
-#include <limits.h>
 #include <unistd.h>
-#include <signal.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-
-#define CONF_FILENAME "container-executor.cfg"
-
-// When building as part of a Maven build this value gets defined by using
-// container-executor.conf.dir property. See:
-//   hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/pom.xml
-// for details.
-// NOTE: if this ends up being a relative path it gets resolved relative to
-//       the location of the container-executor binary itself, not getwd(3)
-#ifndef HADOOP_CONF_DIR
-  #error HADOOP_CONF_DIR must be defined
-#endif
 
 static void display_usage(FILE *stream) {
-  char usage_template[4096];
-
-  usage_template[0] = '\0';
-  strcat(usage_template,
+  fprintf(stream,
     "Usage: container-executor --checksetup\n"
     "       container-executor --mount-cgroups <hierarchy> "
     "<controller=path>...\n" );
 
   if(is_tc_support_enabled()) {
-    strcat(usage_template,
+    fprintf(stream,
       "       container-executor --tc-modify-state <command-file>\n"
       "       container-executor --tc-read-state <command-file>\n"
       "       container-executor --tc-read-stats <command-file>\n" );
   } else {
-    strcat(usage_template,
+    fprintf(stream,
       "[DISABLED] container-executor --tc-modify-state <command-file>\n"
       "[DISABLED] container-executor --tc-read-state <command-file>\n"
       "[DISABLED] container-executor --tc-read-stats <command-file>\n");
   }
 
   if(is_docker_support_enabled()) {
-    strcat(usage_template,
+    fprintf(stream,
       "       container-executor --run-docker <command-file>\n");
   } else {
-    strcat(usage_template,
+    fprintf(stream,
       "[DISABLED] container-executor --run-docker <command-file>\n");
   }
 
-  strcat(usage_template,
+  fprintf(stream,
       "       container-executor <user> <yarn-user> <command> <command-args>\n"
       "       where command and command-args: \n" \
       "            initialize container:  %2d appid tokens nm-local-dirs "
       "nm-log-dirs cmd app...\n"
       "            launch container:      %2d appid containerid workdir "
-      "container-script tokens pidfile nm-local-dirs nm-log-dirs resources ");
+      "container-script tokens pidfile nm-local-dirs nm-log-dirs resources ",
+      INITIALIZE_CONTAINER, LAUNCH_CONTAINER);
 
   if(is_tc_support_enabled()) {
-    strcat(usage_template, "optional-tc-command-file\n");
+    fprintf(stream, "optional-tc-command-file\n");
   } else {
-    strcat(usage_template, "\n");
+    fprintf(stream, "\n");
   }
 
   if(is_docker_support_enabled()) {
-    strcat(usage_template,
+    fprintf(stream,
       "            launch docker container:      %2d appid containerid workdir "
       "container-script tokens pidfile nm-local-dirs nm-log-dirs "
-      "docker-command-file resources ");
+      "docker-command-file resources ", LAUNCH_DOCKER_CONTAINER);
   } else {
-    strcat(usage_template,
+    fprintf(stream,
       "[DISABLED]  launch docker container:      %2d appid containerid workdir "
       "container-script tokens pidfile nm-local-dirs nm-log-dirs "
-      "docker-command-file resources ");
+      "docker-command-file resources ", LAUNCH_DOCKER_CONTAINER);
   }
 
   if(is_tc_support_enabled()) {
-    strcat(usage_template, "optional-tc-command-file\n");
+    fprintf(stream, "optional-tc-command-file\n");
   } else {
-    strcat(usage_template, "\n");
+    fprintf(stream, "\n");
   }
 
-   strcat(usage_template,
+   fprintf(stream,
       "            signal container:      %2d container-pid signal\n"
-      "            delete as user:        %2d relative-path\n");
-
-  fprintf(stream, usage_template, INITIALIZE_CONTAINER, LAUNCH_CONTAINER,
-    LAUNCH_DOCKER_CONTAINER, SIGNAL_CONTAINER, DELETE_AS_USER);
+      "            delete as user:        %2d relative-path\n"
+      "            list as user:          %2d relative-path\n",
+      SIGNAL_CONTAINER, DELETE_AS_USER, LIST_AS_USER);
 }
 
 /* Sets up log files for normal/error logging */
@@ -145,24 +132,21 @@ of whether an explicit checksetup operation is requested. */
 static void assert_valid_setup(char *argv0) {
   int ret;
   char *executable_file = get_executable(argv0);
-  if (!executable_file) {
-    fprintf(ERRORFILE,"realpath of executable: %s\n",strerror(errno));
+  if (!executable_file || executable_file[0] == 0) {
+    fprintf(ERRORFILE, "realpath of executable: %s\n",
+            errno != 0 ? strerror(errno) : "unknown");
     flush_and_close_log_files();
-    exit(-1);
+    exit(INVALID_CONFIG_FILE);
   }
 
-  char *orig_conf_file = HADOOP_CONF_DIR "/" CONF_FILENAME;
-  char *conf_file = resolve_config_path(orig_conf_file, executable_file);
+  char *conf_file = get_config_path(argv0);
 
   if (conf_file == NULL) {
-    free(executable_file);
-    fprintf(ERRORFILE, "Configuration file %s not found.\n", orig_conf_file);
     flush_and_close_log_files();
     exit(INVALID_CONFIG_FILE);
   }
 
   if (check_configuration_permissions(conf_file) != 0) {
-    free(executable_file);
     flush_and_close_log_files();
     exit(INVALID_CONFIG_FILE);
   }
@@ -181,7 +165,7 @@ static void assert_valid_setup(char *argv0) {
   if (group_info == NULL) {
     free(executable_file);
     fprintf(ERRORFILE, "Can't get group information for %s - %s.\n", nm_group,
-            strerror(errno));
+      errno != 0 ? strerror(errno) : "unknown");
     flush_and_close_log_files();
     exit(INVALID_CONFIG_FILE);
   }
@@ -219,20 +203,20 @@ static void display_feature_disabled_message(const char* name) {
 static struct {
   char *cgroups_hierarchy;
   char *traffic_control_command_file;
-  const char * run_as_user_name;
-  const char * yarn_user_name;
+  const char *run_as_user_name;
+  const char *yarn_user_name;
   char *local_dirs;
   char *log_dirs;
   char *resources_key;
   char *resources_value;
   char **resources_values;
-  const char * app_id;
-  const char * container_id;
-  const char * cred_file;
-  const char * script_file;
-  const char * current_dir;
-  const char * pid_file;
-  const char *dir_to_be_deleted;
+  const char *app_id;
+  const char *container_id;
+  const char *cred_file;
+  const char *script_file;
+  const char *current_dir;
+  const char *pid_file;
+  const char *target_dir;
   int container_pid;
   int signal;
   const char *docker_command_file;
@@ -252,6 +236,19 @@ static int validate_arguments(int argc, char **argv , int *operation) {
   if (argc < 2) {
     display_usage(stdout);
     return INVALID_ARGUMENT_NUMBER;
+  }
+
+  /*
+   * Check if it is a known module, if yes, redirect to module
+   */
+  if (strcmp("--module-gpu", argv[1]) == 0) {
+    return handle_gpu_request(&update_cgroups_parameters, "gpu", argc - 1,
+           &argv[1]);
+  }
+
+  if (strcmp("--module-fpga", argv[1]) == 0) {
+    return handle_fpga_request(&update_cgroups_parameters, "fpga", argc - 1,
+           &argv[1]);
   }
 
   if (strcmp("--checksetup", argv[1]) == 0) {
@@ -281,8 +278,8 @@ static int validate_arguments(int argc, char **argv , int *operation) {
       *operation = TRAFFIC_CONTROL_MODIFY_STATE;
       return 0;
     } else {
-        display_feature_disabled_message("traffic control");
-        return FEATURE_DISABLED;
+      display_feature_disabled_message("traffic control");
+      return FEATURE_DISABLED;
     }
   }
 
@@ -329,10 +326,11 @@ static int validate_arguments(int argc, char **argv , int *operation) {
       *operation = RUN_DOCKER;
       return 0;
     } else {
-      display_feature_disabled_message("docker");
-      return FEATURE_DISABLED;
+        display_feature_disabled_message("docker");
+        return FEATURE_DISABLED;
     }
   }
+
   /* Now we have to validate 'run as user' operations that don't use
     a 'long option' - we should fix this at some point. The validation/argument
     parsing here is extensive enough that it done in a separate function */
@@ -363,13 +361,18 @@ static int validate_run_as_user_commands(int argc, char **argv, int *operation) 
   char * resources_value = NULL;
   switch (command) {
   case INITIALIZE_CONTAINER:
-    if (argc < 9) {
-      fprintf(ERRORFILE, "Too few arguments (%d vs 9) for initialize container\n",
+    if (argc < 10) {
+      fprintf(ERRORFILE, "Too few arguments (%d vs 10) for initialize container\n",
        argc);
       fflush(ERRORFILE);
       return INVALID_ARGUMENT_NUMBER;
     }
     cmd_input.app_id = argv[optind++];
+    cmd_input.container_id = argv[optind++];
+    if (!validate_container_id(cmd_input.container_id)) {
+      fprintf(ERRORFILE, "Invalid container id %s\n", cmd_input.container_id);
+      return INVALID_CONTAINER_ID;
+    }
     cmd_input.cred_file = argv[optind++];
     cmd_input.local_dirs = argv[optind++];// good local dirs as a comma separated list
     cmd_input.log_dirs = argv[optind++];// good log dirs as a comma separated list
@@ -381,7 +384,7 @@ static int validate_run_as_user_commands(int argc, char **argv, int *operation) 
       //kill me now.
       if (!(argc == 14 || argc == 15)) {
         fprintf(ERRORFILE, "Wrong number of arguments (%d vs 14 or 15) for"
-        " launch docker container\n", argc);
+          " launch docker container\n", argc);
         fflush(ERRORFILE);
         return INVALID_ARGUMENT_NUMBER;
       }
@@ -422,7 +425,7 @@ static int validate_run_as_user_commands(int argc, char **argv, int *operation) 
 
       cmd_input.resources_key = resources_key;
       cmd_input.resources_value = resources_value;
-      cmd_input.resources_values = extract_values(resources_value);
+      cmd_input.resources_values = split(resources_value);
       *operation = RUN_AS_USER_LAUNCH_DOCKER_CONTAINER;
       return 0;
    } else {
@@ -434,7 +437,7 @@ static int validate_run_as_user_commands(int argc, char **argv, int *operation) 
     //kill me now.
     if (!(argc == 13 || argc == 14)) {
       fprintf(ERRORFILE, "Wrong number of arguments (%d vs 13 or 14)"
-      " for launch container\n", argc);
+        " for launch container\n", argc);
       fflush(ERRORFILE);
       return INVALID_ARGUMENT_NUMBER;
     }
@@ -473,7 +476,7 @@ static int validate_run_as_user_commands(int argc, char **argv, int *operation) 
 
     cmd_input.resources_key = resources_key;
     cmd_input.resources_value = resources_value;
-    cmd_input.resources_values = extract_values(resources_value);
+    cmd_input.resources_values = split(resources_value);
     *operation = RUN_AS_USER_LAUNCH_CONTAINER;
     return 0;
 
@@ -505,8 +508,12 @@ static int validate_run_as_user_commands(int argc, char **argv, int *operation) 
     return 0;
 
   case DELETE_AS_USER:
-    cmd_input.dir_to_be_deleted = argv[optind++];
+    cmd_input.target_dir = argv[optind++];
     *operation = RUN_AS_USER_DELETE;
+    return 0;
+  case LIST_AS_USER:
+    cmd_input.target_dir = argv[optind++];
+    *operation = RUN_AS_USER_LIST;
     return 0;
   default:
     fprintf(ERRORFILE, "Invalid command %d not supported.",command);
@@ -519,7 +526,7 @@ int main(int argc, char **argv) {
   open_log_files();
   assert_valid_setup(argv[0]);
 
-  int operation;
+  int operation = -1;
   int ret = validate_arguments(argc, argv, &operation);
 
   if (ret != 0) {
@@ -562,9 +569,10 @@ int main(int argc, char **argv) {
 
     exit_code = initialize_app(cmd_input.yarn_user_name,
                             cmd_input.app_id,
+                            cmd_input.container_id,
                             cmd_input.cred_file,
-                            extract_values(cmd_input.local_dirs),
-                            extract_values(cmd_input.log_dirs),
+                            split(cmd_input.local_dirs),
+                            split(cmd_input.log_dirs),
                             argv + optind);
     break;
   case RUN_AS_USER_LAUNCH_DOCKER_CONTAINER:
@@ -589,8 +597,8 @@ int main(int argc, char **argv) {
                       cmd_input.script_file,
                       cmd_input.cred_file,
                       cmd_input.pid_file,
-                      extract_values(cmd_input.local_dirs),
-                      extract_values(cmd_input.log_dirs),
+                      split(cmd_input.local_dirs),
+                      split(cmd_input.log_dirs),
                       cmd_input.docker_command_file,
                       cmd_input.resources_key,
                       cmd_input.resources_values);
@@ -617,8 +625,8 @@ int main(int argc, char **argv) {
                     cmd_input.script_file,
                     cmd_input.cred_file,
                     cmd_input.pid_file,
-                    extract_values(cmd_input.local_dirs),
-                    extract_values(cmd_input.log_dirs),
+                    split(cmd_input.local_dirs),
+                    split(cmd_input.log_dirs),
                     cmd_input.resources_key,
                     cmd_input.resources_values);
     free(cmd_input.resources_key);
@@ -642,8 +650,17 @@ int main(int argc, char **argv) {
     }
 
     exit_code = delete_as_user(cmd_input.yarn_user_name,
-                        cmd_input.dir_to_be_deleted,
+                        cmd_input.target_dir,
                         argv + optind);
+    break;
+  case RUN_AS_USER_LIST:
+    exit_code = set_user(cmd_input.run_as_user_name);
+
+    if (exit_code != 0) {
+      break;
+    }
+
+    exit_code = list_as_user(cmd_input.target_dir);
     break;
   }
 

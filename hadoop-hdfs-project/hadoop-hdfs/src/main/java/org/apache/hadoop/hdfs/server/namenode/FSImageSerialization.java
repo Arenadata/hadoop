@@ -21,6 +21,8 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -33,7 +35,7 @@ import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.CacheDirectiveInfo;
 import org.apache.hadoop.hdfs.protocol.CachePoolInfo;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat;
@@ -47,6 +49,7 @@ import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.ShortWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableUtils;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -124,22 +127,25 @@ public class FSImageSerialization {
     short blockReplication = in.readShort();
     long modificationTime = in.readLong();
     long preferredBlockSize = in.readLong();
-  
+
     int numBlocks = in.readInt();
-    BlockInfo[] blocks = new BlockInfo[numBlocks];
+
+    final BlockInfoContiguous[] blocksContiguous =
+        new BlockInfoContiguous[numBlocks];
     Block blk = new Block();
     int i = 0;
-    for (; i < numBlocks-1; i++) {
+    for (; i < numBlocks - 1; i++) {
       blk.readFields(in);
-      blocks[i] = new BlockInfoContiguous(blk, blockReplication);
+      blocksContiguous[i] = new BlockInfoContiguous(blk, blockReplication);
     }
     // last block is UNDER_CONSTRUCTION
     if(numBlocks > 0) {
       blk.readFields(in);
-      blocks[i] = new BlockInfoContiguous(blk, blockReplication);
-      blocks[i].convertToBlockUnderConstruction(BlockUCState.UNDER_CONSTRUCTION,
-          null);
+      blocksContiguous[i] = new BlockInfoContiguous(blk, blockReplication);
+      blocksContiguous[i].convertToBlockUnderConstruction(
+          BlockUCState.UNDER_CONSTRUCTION, null);
     }
+
     PermissionStatus perm = PermissionStatus.read(in);
     String clientName = readString(in);
     String clientMachine = readString(in);
@@ -152,7 +158,7 @@ public class FSImageSerialization {
     // Images in the pre-protobuf format will not have the lazyPersist flag,
     // so it is safe to pass false always.
     INodeFile file = new INodeFile(inodeId, name, perm, modificationTime,
-        modificationTime, blocks, blockReplication, preferredBlockSize, (byte)0);
+        modificationTime, blocksContiguous, blockReplication, preferredBlockSize);
     file.toUnderConstruction(clientName, clientMachine);
     return file;
   }
@@ -305,7 +311,7 @@ public class FSImageSerialization {
     if (!isWithName) {
       Preconditions.checkState(ref instanceof INodeReference.DstReference);
       // dst snapshot id
-      out.writeInt(((INodeReference.DstReference) ref).getDstSnapshotId());
+      out.writeInt(ref.getDstSnapshotId());
     } else {
       out.writeInt(((INodeReference.WithName) ref).getLastSnapshotId());
     }
@@ -617,20 +623,24 @@ public class FSImageSerialization {
     final Long limit = info.getLimit();
     final FsPermission mode = info.getMode();
     final Long maxRelativeExpiry = info.getMaxRelativeExpiryMs();
+    final Short defaultReplication = info.getDefaultReplication();
 
-    boolean hasOwner, hasGroup, hasMode, hasLimit, hasMaxRelativeExpiry;
+    boolean hasOwner, hasGroup, hasMode, hasLimit,
+            hasMaxRelativeExpiry, hasDefaultReplication;
     hasOwner = ownerName != null;
     hasGroup = groupName != null;
     hasMode = mode != null;
     hasLimit = limit != null;
     hasMaxRelativeExpiry = maxRelativeExpiry != null;
+    hasDefaultReplication = defaultReplication != null;
 
     int flags =
         (hasOwner ? 0x1 : 0) |
         (hasGroup ? 0x2 : 0) |
         (hasMode  ? 0x4 : 0) |
         (hasLimit ? 0x8 : 0) |
-        (hasMaxRelativeExpiry ? 0x10 : 0);
+        (hasMaxRelativeExpiry ? 0x10 : 0) |
+        (hasDefaultReplication ? 0x20 : 0);
 
     writeInt(flags, out);
 
@@ -648,6 +658,9 @@ public class FSImageSerialization {
     }
     if (hasMaxRelativeExpiry) {
       writeLong(maxRelativeExpiry, out);
+    }
+    if (hasDefaultReplication) {
+      writeShort(defaultReplication, out);
     }
   }
 
@@ -671,7 +684,10 @@ public class FSImageSerialization {
     if ((flags & 0x10) != 0) {
       info.setMaxRelativeExpiryMs(readLong(in));
     }
-    if ((flags & ~0x1F) != 0) {
+    if ((flags & 0x20) != 0) {
+      info.setDefaultReplication(readShort(in));
+    }
+    if ((flags & ~0x3F) != 0) {
       throw new IOException("Unknown flag in CachePoolInfo: " + flags);
     }
     return info;
@@ -686,6 +702,7 @@ public class FSImageSerialization {
     final Long limit = info.getLimit();
     final FsPermission mode = info.getMode();
     final Long maxRelativeExpiry = info.getMaxRelativeExpiryMs();
+    final Short defaultReplication = info.getDefaultReplication();
 
     if (ownerName != null) {
       XMLUtils.addSaxString(contentHandler, "OWNERNAME", ownerName);
@@ -703,6 +720,10 @@ public class FSImageSerialization {
     if (maxRelativeExpiry != null) {
       XMLUtils.addSaxString(contentHandler, "MAXRELATIVEEXPIRY",
           Long.toString(maxRelativeExpiry));
+    }
+    if (defaultReplication != null) {
+      XMLUtils.addSaxString(contentHandler, "DEFAULTREPLICATION",
+          Short.toString(defaultReplication));
     }
   }
 
@@ -726,7 +747,52 @@ public class FSImageSerialization {
       info.setMaxRelativeExpiryMs(
           Long.parseLong(st.getValue("MAXRELATIVEEXPIRY")));
     }
+    if (st.hasChildren("DEFAULTREPLICATION")) {
+      info.setDefaultReplication(Short.parseShort(st
+          .getValue("DEFAULTREPLICATION")));
+    }
     return info;
   }
 
+  public static void writeErasureCodingPolicy(DataOutputStream out,
+      ErasureCodingPolicy ecPolicy) throws IOException {
+    writeString(ecPolicy.getSchema().getCodecName(), out);
+    writeInt(ecPolicy.getNumDataUnits(), out);
+    writeInt(ecPolicy.getNumParityUnits(), out);
+    writeInt(ecPolicy.getCellSize(), out);
+
+    Map<String, String> extraOptions = ecPolicy.getSchema().getExtraOptions();
+    if (extraOptions == null || extraOptions.isEmpty()) {
+      writeInt(0, out);
+      return;
+    }
+
+    writeInt(extraOptions.size(), out);
+    for (Map.Entry<String, String> entry : extraOptions.entrySet()) {
+      writeString(entry.getKey(), out);
+      writeString(entry.getValue(), out);
+    }
+  }
+
+  public static ErasureCodingPolicy readErasureCodingPolicy(DataInput in)
+      throws IOException {
+    String codecName = readString(in);
+    int numDataUnits = readInt(in);
+    int numParityUnits = readInt(in);
+    int cellSize = readInt(in);
+
+    int size = readInt(in);
+    Map<String, String> extraOptions = new HashMap<>(size);
+
+    if (size != 0) {
+      for (int i = 0; i < size; i++) {
+        String key = readString(in);
+        String value = readString(in);
+        extraOptions.put(key, value);
+      }
+    }
+    ECSchema ecSchema = new ECSchema(codecName, numDataUnits,
+        numParityUnits, extraOptions);
+    return new ErasureCodingPolicy(ecSchema, cellSize);
+  }
 }

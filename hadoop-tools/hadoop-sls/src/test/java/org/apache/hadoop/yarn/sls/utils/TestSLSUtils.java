@@ -21,6 +21,9 @@ package org.apache.hadoop.yarn.sls.utils;
 import org.junit.Assert;
 import org.junit.Test;
 
+import java.util.HashSet;
+import java.util.Set;
+
 public class TestSLSUtils {
 
   @Test
@@ -29,6 +32,38 @@ public class TestSLSUtils {
     String rackHostname[] = SLSUtils.getRackHostName(str);
     Assert.assertEquals(rackHostname[0], "rack1");
     Assert.assertEquals(rackHostname[1], "node1");
+
+    str = "/rackA/rackB/node1";
+    rackHostname = SLSUtils.getRackHostName(str);
+    Assert.assertEquals(rackHostname[0], "rackA/rackB");
+    Assert.assertEquals(rackHostname[1], "node1");
   }
 
+  @Test
+  public void testGenerateNodes() {
+    Set<? extends String> nodes = SLSUtils.generateNodes(3, 3);
+    Assert.assertEquals("Number of nodes is wrong.", 3, nodes.size());
+    Assert.assertEquals("Number of racks is wrong.", 3, getNumRack(nodes));
+
+    nodes = SLSUtils.generateNodes(3, 1);
+    Assert.assertEquals("Number of nodes is wrong.", 3, nodes.size());
+    Assert.assertEquals("Number of racks is wrong.", 1, getNumRack(nodes));
+
+    nodes = SLSUtils.generateNodes(3, 4);
+    Assert.assertEquals("Number of nodes is wrong.", 3, nodes.size());
+    Assert.assertEquals("Number of racks is wrong.", 3, getNumRack(nodes));
+
+    nodes = SLSUtils.generateNodes(3, 0);
+    Assert.assertEquals("Number of nodes is wrong.", 3, nodes.size());
+    Assert.assertEquals("Number of racks is wrong.", 1, getNumRack(nodes));
+  }
+
+  private int getNumRack(Set<? extends String> nodes) {
+    Set<String> racks = new HashSet<>();
+    for (String node : nodes) {
+      String[] rackHostname = SLSUtils.getRackHostName(node);
+      racks.add(rackHostname[0]);
+    }
+    return racks.size();
+  }
 }

@@ -22,19 +22,23 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Iterator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
+import java.util.Scanner;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
-import org.apache.hadoop.conf.Configuration;
+import org.apache.commons.lang.text.StrBuilder;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -54,7 +58,7 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
-import org.apache.hadoop.hdfs.server.blockmanagement.DecommissionManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeAdminManager;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
@@ -63,105 +67,23 @@ import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStatistics;
+import org.apache.hadoop.hdfs.tools.DFSAdmin;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.hadoop.test.PathUtils;
+import org.apache.hadoop.util.ToolRunner;
 import org.apache.log4j.Level;
-import org.junit.After;
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
-import org.mortbay.util.ajax.JSON;
+import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * This class tests the decommissioning of nodes.
  */
-public class TestDecommission {
+public class TestDecommission extends AdminStatesBaseTest {
   public static final Logger LOG = LoggerFactory.getLogger(TestDecommission
       .class);
-  static final long seed = 0xDEADBEEFL;
-  static final int blockSize = 8192;
-  static final int fileSize = 16384;
-  static final int HEARTBEAT_INTERVAL = 1; // heartbeat interval in seconds
-  static final int BLOCKREPORT_INTERVAL_MSEC = 1000; //block report in msec
-  static final int NAMENODE_REPLICATION_INTERVAL = 1; //replication interval
-
-  final Random myrand = new Random();
-  Path dir;
-  Path hostsFile;
-  Path excludeFile;
-  FileSystem localFileSys;
-  Configuration conf;
-  MiniDFSCluster cluster = null;
-
-  @Before
-  public void setup() throws IOException {
-    conf = new HdfsConfiguration();
-    // Set up the hosts/exclude files.
-    localFileSys = FileSystem.getLocal(conf);
-    Path workingDir = localFileSys.getWorkingDirectory();
-    dir = new Path(workingDir, PathUtils.getTestDirName(getClass()) + "/work-dir/decommission");
-    hostsFile = new Path(dir, "hosts");
-    excludeFile = new Path(dir, "exclude");
-    
-    // Setup conf
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY, false);
-    conf.set(DFSConfigKeys.DFS_HOSTS, hostsFile.toUri().getPath());
-    conf.set(DFSConfigKeys.DFS_HOSTS_EXCLUDE, excludeFile.toUri().getPath());
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 2000);
-    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, HEARTBEAT_INTERVAL);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, BLOCKREPORT_INTERVAL_MSEC);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 4);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, NAMENODE_REPLICATION_INTERVAL);
-  
-    writeConfigFile(hostsFile, null);
-    writeConfigFile(excludeFile, null);
-  }
-  
-  @After
-  public void teardown() throws IOException {
-    cleanupFile(localFileSys, dir);
-    if (cluster != null) {
-      cluster.shutdown();
-      cluster = null;
-    }
-  }
-  
-  private void writeConfigFile(Path name, List<String> nodes) 
-    throws IOException {
-    // delete if it already exists
-    if (localFileSys.exists(name)) {
-      localFileSys.delete(name, true);
-    }
-
-    FSDataOutputStream stm = localFileSys.create(name);
-    
-    if (nodes != null) {
-      for (Iterator<String> it = nodes.iterator(); it.hasNext();) {
-        String node = it.next();
-        stm.writeBytes(node);
-        stm.writeBytes("\n");
-      }
-    }
-    stm.close();
-  }
-
-  private void writeFile(FileSystem fileSys, Path name, int repl)
-    throws IOException {
-    // create and write a file that contains three blocks of data
-    FSDataOutputStream stm = fileSys.create(name, true, fileSys.getConf()
-        .getInt(CommonConfigurationKeys.IO_FILE_BUFFER_SIZE_KEY, 4096),
-        (short) repl, blockSize);
-    byte[] buffer = new byte[fileSize];
-    Random rand = new Random(seed);
-    rand.nextBytes(buffer);
-    stm.write(buffer);
-    stm.close();
-    LOG.info("Created file " + name + " with " + repl + " replicas.");
-  }
 
   /**
    * Verify that the number of replicas are as expected for each block in
@@ -223,128 +145,6 @@ public class TestDecommission {
     return null;
   }
 
-  private void cleanupFile(FileSystem fileSys, Path name) throws IOException {
-    assertTrue(fileSys.exists(name));
-    fileSys.delete(name, true);
-    assertTrue(!fileSys.exists(name));
-  }
-
-  /*
-   * decommission the DN at index dnIndex or one random node if dnIndex is set
-   * to -1 and wait for the node to reach the given {@code waitForState}.
-   */
-  private DatanodeInfo decommissionNode(int nnIndex,
-                                  String datanodeUuid,
-                                  ArrayList<DatanodeInfo>decommissionedNodes,
-                                  AdminStates waitForState)
-    throws IOException {
-    DFSClient client = getDfsClient(cluster.getNameNode(nnIndex), conf);
-    DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
-
-    //
-    // pick one datanode randomly unless the caller specifies one.
-    //
-    int index = 0;
-    if (datanodeUuid == null) {
-      boolean found = false;
-      while (!found) {
-        index = myrand.nextInt(info.length);
-        if (!info[index].isDecommissioned()) {
-          found = true;
-        }
-      }
-    } else {
-      // The caller specifies a DN
-      for (; index < info.length; index++) {
-        if (info[index].getDatanodeUuid().equals(datanodeUuid)) {
-          break;
-        }
-      }
-      if (index == info.length) {
-        throw new IOException("invalid datanodeUuid " + datanodeUuid);
-      }
-    }
-    String nodename = info[index].getXferAddr();
-    LOG.info("Decommissioning node: " + nodename);
-
-    // write nodename into the exclude file.
-    ArrayList<String> nodes = new ArrayList<String>();
-    if (decommissionedNodes != null) {
-      for (DatanodeInfo dn : decommissionedNodes) {
-        nodes.add(dn.getName());
-      }
-    }
-    nodes.add(nodename);
-    writeConfigFile(excludeFile, nodes);
-    refreshNodes(cluster.getNamesystem(nnIndex), conf);
-    DatanodeInfo ret = NameNodeAdapter.getDatanode(
-        cluster.getNamesystem(nnIndex), info[index]);
-    waitNodeState(ret, waitForState);
-    return ret;
-  }
-
-  /* Ask a specific NN to stop decommission of the datanode and wait for each
-   * to reach the NORMAL state.
-   */
-  private void recommissionNode(int nnIndex, DatanodeInfo decommissionedNode) throws IOException {
-    LOG.info("Recommissioning node: " + decommissionedNode);
-    writeConfigFile(excludeFile, null);
-    refreshNodes(cluster.getNamesystem(nnIndex), conf);
-    waitNodeState(decommissionedNode, AdminStates.NORMAL);
-
-  }
-
-  /* 
-   * Wait till node is fully decommissioned.
-   */
-  private void waitNodeState(DatanodeInfo node,
-                             AdminStates state) {
-    boolean done = state == node.getAdminState();
-    while (!done) {
-      LOG.info("Waiting for node " + node + " to change state to "
-          + state + " current state: " + node.getAdminState());
-      try {
-        Thread.sleep(HEARTBEAT_INTERVAL * 500);
-      } catch (InterruptedException e) {
-        // nothing
-      }
-      done = state == node.getAdminState();
-    }
-    LOG.info("node " + node + " reached the state " + state);
-  }
-  
-  /* Get DFSClient to the namenode */
-  private static DFSClient getDfsClient(NameNode nn,
-      Configuration conf) throws IOException {
-    return new DFSClient(nn.getNameNodeAddress(), conf);
-  }
-  
-  /* Validate cluster has expected number of datanodes */
-  private static void validateCluster(DFSClient client, int numDNs)
-      throws IOException {
-    DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
-    assertEquals("Number of Datanodes ", numDNs, info.length);
-  }
-  
-  /** Start a MiniDFSCluster 
-   * @throws IOException */
-  private void startCluster(int numNameNodes, int numDatanodes,
-      Configuration conf) throws IOException {
-    cluster = new MiniDFSCluster.Builder(conf)
-      .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(numNameNodes))
-        .numDataNodes(numDatanodes).build();
-    cluster.waitActive();
-    for (int i = 0; i < numNameNodes; i++) {
-      DFSClient client = getDfsClient(cluster.getNameNode(i), conf);
-      validateCluster(client, numDatanodes);
-    }
-  }
-
-  static void refreshNodes(final FSNamesystem ns, final Configuration conf
-      ) throws IOException {
-    ns.getBlockManager().getDatanodeManager().refreshNodes(conf);
-  }
-  
   private void verifyStats(NameNode namenode, FSNamesystem fsn,
       DatanodeInfo info, DataNode node, boolean decommissioning)
       throws InterruptedException, IOException {
@@ -376,7 +176,7 @@ public class TestDecommission {
   public void testDecommission() throws IOException {
     testDecommission(1, 6);
   }
-  
+
   /**
    * Tests decommission with replicas on the target datanode cannot be migrated
    * to other datanodes and satisfy the replication factor. Make sure the
@@ -387,8 +187,8 @@ public class TestDecommission {
     LOG.info("Starting test testDecommission");
     int numNamenodes = 1;
     int numDatanodes = 4;
-    conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 3);
-    startCluster(numNamenodes, numDatanodes, conf);
+    getConf().setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 3);
+    startCluster(numNamenodes, numDatanodes);
 
     ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList = new ArrayList<ArrayList<DatanodeInfo>>(
         numNamenodes);
@@ -399,8 +199,8 @@ public class TestDecommission {
 
     // Start decommissioning one namenode at a time
     ArrayList<DatanodeInfo> decommissionedNodes = namenodeDecomList.get(0);
-    FileSystem fileSys = cluster.getFileSystem(0);
-    FSNamesystem ns = cluster.getNamesystem(0);
+    FileSystem fileSys = getCluster().getFileSystem(0);
+    FSNamesystem ns = getCluster().getNamesystem(0);
 
     writeFile(fileSys, file1, replicas);
 
@@ -408,14 +208,14 @@ public class TestDecommission {
     int liveDecomissioned = ns.getNumDecomLiveDataNodes();
 
     // Decommission one node. Verify that node is decommissioned.
-    DatanodeInfo decomNode = decommissionNode(0, null, decommissionedNodes,
-        AdminStates.DECOMMISSIONED);
+    DatanodeInfo decomNode = takeNodeOutofService(0, null, 0,
+        decommissionedNodes, AdminStates.DECOMMISSIONED);
     decommissionedNodes.add(decomNode);
     assertEquals(deadDecomissioned, ns.getNumDecomDeadDataNodes());
     assertEquals(liveDecomissioned + 1, ns.getNumDecomLiveDataNodes());
 
     // Ensure decommissioned datanode is not automatically shutdown
-    DFSClient client = getDfsClient(cluster.getNameNode(0), conf);
+    DFSClient client = getDfsClient(0);
     assertEquals("All datanodes must be alive", numDatanodes,
         client.datanodeReport(DatanodeReportType.LIVE).length);
     assertNull(checkFile(fileSys, file1, replicas, decomNode.getXferAddr(),
@@ -424,9 +224,8 @@ public class TestDecommission {
 
     // Restart the cluster and ensure recommissioned datanodes
     // are allowed to register with the namenode
-    cluster.shutdown();
-    startCluster(1, 4, conf);
-    cluster.shutdown();
+    shutdownCluster();
+    startCluster(1, 4);
   }
   
   /**
@@ -449,64 +248,61 @@ public class TestDecommission {
    */
   @Test(timeout=360000)
   public void testDecommissionOnStandby() throws Exception {
-    Configuration hdfsConf = new HdfsConfiguration(conf);
-    hdfsConf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
-    hdfsConf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 30000);
-    hdfsConf.setInt(DFSConfigKeys.DFS_NAMENODE_TOLERATE_HEARTBEAT_MULTIPLIER_KEY, 2);
+    getConf().setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+    getConf().setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY,
+        30000);
+    getConf().setInt(
+        DFSConfigKeys.DFS_NAMENODE_TOLERATE_HEARTBEAT_MULTIPLIER_KEY, 2);
 
     // The time to wait so that the slow DN's heartbeat is considered old
     // by BlockPlacementPolicyDefault and thus will choose that DN for
     // excess replica.
     long slowHeartbeatDNwaitTime =
-        hdfsConf.getLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY,
-        DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_DEFAULT) * 1000 * (hdfsConf.getInt(
-        DFSConfigKeys.DFS_NAMENODE_TOLERATE_HEARTBEAT_MULTIPLIER_KEY,
+        getConf().getLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY,
+        DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_DEFAULT) * 1000 * (getConf().
+        getInt(DFSConfigKeys.DFS_NAMENODE_TOLERATE_HEARTBEAT_MULTIPLIER_KEY,
         DFSConfigKeys.DFS_NAMENODE_TOLERATE_HEARTBEAT_MULTIPLIER_DEFAULT) + 1);
 
-    cluster = new MiniDFSCluster.Builder(hdfsConf)
-        .nnTopology(MiniDFSNNTopology.simpleHATopology()).numDataNodes(3).build();
+    startSimpleHACluster(3);
 
-    cluster.transitionToActive(0);
-    cluster.waitActive();
-
-
-    // Step 1, create a cluster with 4 DNs. Blocks are stored on the first 3 DNs.
-    // The last DN is empty. Also configure the last DN to have slow heartbeat
-    // so that it will be chosen as excess replica candidate during recommission.
+    // Step 1, create a cluster with 4 DNs. Blocks are stored on the
+    // first 3 DNs. The last DN is empty. Also configure the last DN to have
+    // slow heartbeat so that it will be chosen as excess replica candidate
+    // during recommission.
 
     // Step 1.a, copy blocks to the first 3 DNs. Given the replica count is the
     // same as # of DNs, each DN will have a replica for any block.
     Path file1 = new Path("testDecommissionHA.dat");
     int replicas = 3;
-    FileSystem activeFileSys = cluster.getFileSystem(0);
+    FileSystem activeFileSys = getCluster().getFileSystem(0);
     writeFile(activeFileSys, file1, replicas);
 
-    HATestUtil.waitForStandbyToCatchUp(cluster.getNameNode(0),
-        cluster.getNameNode(1));
+    HATestUtil.waitForStandbyToCatchUp(getCluster().getNameNode(0),
+        getCluster().getNameNode(1));
 
     // Step 1.b, start a DN with slow heartbeat, so that we can know for sure it
     // will be chosen as the target of excess replica during recommission.
-    hdfsConf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 30);
-    cluster.startDataNodes(hdfsConf, 1, true, null, null, null);
-    DataNode lastDN = cluster.getDataNodes().get(3);
+    getConf().setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 30);
+    getCluster().startDataNodes(getConf(), 1, true, null, null, null);
+    DataNode lastDN = getCluster().getDataNodes().get(3);
     lastDN.getDatanodeUuid();
 
     // Step 2, decommission the first DN at both ANN and SBN.
-    DataNode firstDN = cluster.getDataNodes().get(0);
+    DataNode firstDN = getCluster().getDataNodes().get(0);
 
     // Step 2.a, ask ANN to decomm the first DN
-    DatanodeInfo decommissionedNodeFromANN = decommissionNode(
-        0, firstDN.getDatanodeUuid(), null, AdminStates.DECOMMISSIONED);
+    DatanodeInfo decommissionedNodeFromANN = takeNodeOutofService(
+        0, firstDN.getDatanodeUuid(), 0, null, AdminStates.DECOMMISSIONED);
 
     // Step 2.b, ask SBN to decomm the first DN
-    DatanodeInfo decomNodeFromSBN = decommissionNode(1, firstDN.getDatanodeUuid(), null,
-        AdminStates.DECOMMISSIONED);
+    DatanodeInfo decomNodeFromSBN = takeNodeOutofService(1,
+        firstDN.getDatanodeUuid(), 0, null, AdminStates.DECOMMISSIONED);
 
     // Step 3, recommission the first DN on SBN and ANN to create excess replica
     // It recommissions the node on SBN first to create potential
-    // inconsistent state. In production cluster, such insistent state can happen
-    // even if recommission command was issued on ANN first given the async nature
-    // of the system.
+    // inconsistent state. In production cluster, such insistent state can
+    // happen even if recommission command was issued on ANN first given the
+    // async nature of the system.
 
     // Step 3.a, ask SBN to recomm the first DN.
     // SBN has been fixed so that it no longer invalidates excess replica during
@@ -515,12 +311,12 @@ public class TestDecommission {
     //    1. the last DN would have been chosen as excess replica, given its
     //    heartbeat is considered old.
     //    Please refer to BlockPlacementPolicyDefault#chooseReplicaToDelete
-    //    2. After recommissionNode finishes, SBN has 3 live replicas ( 0, 1, 2 )
+    //    2. After recommissionNode finishes, SBN has 3 live replicas (0, 1, 2)
     //    and one excess replica ( 3 )
     // After the fix,
-    //    After recommissionNode finishes, SBN has 4 live replicas ( 0, 1, 2, 3 )
+    //    After recommissionNode finishes, SBN has 4 live replicas (0, 1, 2, 3)
     Thread.sleep(slowHeartbeatDNwaitTime);
-    recommissionNode(1, decomNodeFromSBN);
+    putNodeInService(1, decomNodeFromSBN);
 
     // Step 3.b, ask ANN to recommission the first DN.
     // To verify the fix, the test makes sure the excess replica picked by ANN
@@ -529,41 +325,41 @@ public class TestDecommission {
     // by ANN.
     // 1. restore LastDNprop's heartbeat interval.
     // 2. Make next-to-last DN's heartbeat slow.
-    MiniDFSCluster.DataNodeProperties LastDNprop = cluster.stopDataNode(3);
-    LastDNprop.conf.setLong(
+    MiniDFSCluster.DataNodeProperties lastDNprop =
+        getCluster().stopDataNode(3);
+    lastDNprop.conf.setLong(
         DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, HEARTBEAT_INTERVAL);
-    cluster.restartDataNode(LastDNprop);
+    getCluster().restartDataNode(lastDNprop);
 
-    MiniDFSCluster.DataNodeProperties nextToLastDNprop = cluster.stopDataNode(2);
-    nextToLastDNprop.conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 30);
-    cluster.restartDataNode(nextToLastDNprop);
-    cluster.waitActive();
+    MiniDFSCluster.DataNodeProperties nextToLastDNprop =
+        getCluster().stopDataNode(2);
+    nextToLastDNprop.conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY,
+        30);
+    getCluster().restartDataNode(nextToLastDNprop);
+    getCluster().waitActive();
     Thread.sleep(slowHeartbeatDNwaitTime);
-    recommissionNode(0, decommissionedNodeFromANN);
+    putNodeInService(0, decommissionedNodeFromANN);
 
     // Step 3.c, make sure the DN has deleted the block and report to NNs
-    cluster.triggerHeartbeats();
-    HATestUtil.waitForDNDeletions(cluster);
-    cluster.triggerDeletionReports();
+    getCluster().triggerHeartbeats();
+    HATestUtil.waitForDNDeletions(getCluster());
+    getCluster().triggerDeletionReports();
 
     // Step 4, decommission the first DN on both ANN and SBN
     // With the fix to make sure SBN no longer marks excess replica
     // during recommission, SBN's decommission can finish properly
-    decommissionNode(0, firstDN.getDatanodeUuid(), null,
+    takeNodeOutofService(0, firstDN.getDatanodeUuid(), 0, null,
         AdminStates.DECOMMISSIONED);
 
     // Ask SBN to decomm the first DN
-    decommissionNode(1, firstDN.getDatanodeUuid(), null,
+    takeNodeOutofService(1, firstDN.getDatanodeUuid(), 0, null,
         AdminStates.DECOMMISSIONED);
-
-    cluster.shutdown();
-
   }
 
   private void testDecommission(int numNamenodes, int numDatanodes)
       throws IOException {
     LOG.info("Starting test testDecommission");
-    startCluster(numNamenodes, numDatanodes, conf);
+    startCluster(numNamenodes, numDatanodes);
     
     ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList = 
       new ArrayList<ArrayList<DatanodeInfo>>(numNamenodes);
@@ -577,8 +373,8 @@ public class TestDecommission {
       // Start decommissioning one namenode at a time
       for (int i = 0; i < numNamenodes; i++) {
         ArrayList<DatanodeInfo> decommissionedNodes = namenodeDecomList.get(i);
-        FileSystem fileSys = cluster.getFileSystem(i);
-        FSNamesystem ns = cluster.getNamesystem(i);
+        FileSystem fileSys = getCluster().getFileSystem(i);
+        FSNamesystem ns = getCluster().getNamesystem(i);
 
         writeFile(fileSys, file1, replicas);
 
@@ -586,14 +382,14 @@ public class TestDecommission {
         int liveDecomissioned = ns.getNumDecomLiveDataNodes();
 
         // Decommission one node. Verify that node is decommissioned.
-        DatanodeInfo decomNode = decommissionNode(i, null, decommissionedNodes,
-            AdminStates.DECOMMISSIONED);
+        DatanodeInfo decomNode = takeNodeOutofService(i, null, 0,
+            decommissionedNodes, AdminStates.DECOMMISSIONED);
         decommissionedNodes.add(decomNode);
         assertEquals(deadDecomissioned, ns.getNumDecomDeadDataNodes());
         assertEquals(liveDecomissioned + 1, ns.getNumDecomLiveDataNodes());
 
         // Ensure decommissioned datanode is not automatically shutdown
-        DFSClient client = getDfsClient(cluster.getNameNode(i), conf);
+        DFSClient client = getDfsClient(i);
         assertEquals("All datanodes must be alive", numDatanodes, 
             client.datanodeReport(DatanodeReportType.LIVE).length);
         // wait for the block to be replicated
@@ -616,9 +412,8 @@ public class TestDecommission {
 
     // Restart the cluster and ensure decommissioned datanodes
     // are allowed to register with the namenode
-    cluster.shutdown();
-    startCluster(numNamenodes, numDatanodes, conf);
-    cluster.shutdown();
+    shutdownCluster();
+    startCluster(numNamenodes, numDatanodes);
   }
 
   /**
@@ -630,13 +425,13 @@ public class TestDecommission {
     try {
       LOG.info("Starting test testRecommission");
 
-      startCluster(1, numDatanodes, conf);
+      startCluster(1, numDatanodes);
 
       final Path file1 = new Path("testDecommission.dat");
       final int replicas = numDatanodes - 1;
 
       ArrayList<DatanodeInfo> decommissionedNodes = Lists.newArrayList();
-      final FileSystem fileSys = cluster.getFileSystem();
+      final FileSystem fileSys = getCluster().getFileSystem();
 
       // Write a file to n-1 datanodes
       writeFile(fileSys, file1, replicas);
@@ -647,25 +442,24 @@ public class TestDecommission {
           replicas, loc.getHosts().length);
       final String toDecomHost = loc.getNames()[0];
       String toDecomUuid = null;
-      for (DataNode d : cluster.getDataNodes()) {
+      for (DataNode d : getCluster().getDataNodes()) {
         if (d.getDatanodeId().getXferAddr().equals(toDecomHost)) {
           toDecomUuid = d.getDatanodeId().getDatanodeUuid();
           break;
         }
       }
       assertNotNull("Could not find a dn with the block!", toDecomUuid);
-      final DatanodeInfo decomNode =
-          decommissionNode(0, toDecomUuid, decommissionedNodes,
-              AdminStates.DECOMMISSIONED);
+      final DatanodeInfo decomNode = takeNodeOutofService(0, toDecomUuid,
+          0, decommissionedNodes, AdminStates.DECOMMISSIONED);
       decommissionedNodes.add(decomNode);
       final BlockManager blockManager =
-          cluster.getNamesystem().getBlockManager();
+          getCluster().getNamesystem().getBlockManager();
       final DatanodeManager datanodeManager =
           blockManager.getDatanodeManager();
       BlockManagerTestUtil.recheckDecommissionState(datanodeManager);
 
       // Ensure decommissioned datanode is not automatically shutdown
-      DFSClient client = getDfsClient(cluster.getNameNode(), conf);
+      DFSClient client = getDfsClient(0);
       assertEquals("All datanodes must be alive", numDatanodes,
           client.datanodeReport(DatanodeReportType.LIVE).length);
 
@@ -675,8 +469,7 @@ public class TestDecommission {
       GenericTestUtils.waitFor(new Supplier<Boolean>() {
         @Override
         public Boolean get() {
-          BlockInfo info =
-              blockManager.getStoredBlock(b.getLocalBlock());
+          BlockInfo info = blockManager.getStoredBlock(b.getLocalBlock());
           int count = 0;
           StringBuilder sb = new StringBuilder("Replica locations: ");
           for (int i = 0; i < info.numNodes(); i++) {
@@ -693,18 +486,16 @@ public class TestDecommission {
       }, 500, 30000);
 
       // redecommission and wait for over-replication to be fixed
-      recommissionNode(0, decomNode);
+      putNodeInService(0, decomNode);
       BlockManagerTestUtil.recheckDecommissionState(datanodeManager);
-      DFSTestUtil.waitForReplication(cluster, b, 1, replicas, 0);
+      DFSTestUtil.waitForReplication(getCluster(), b, 1, replicas, 0);
 
       cleanupFile(fileSys, file1);
     } finally {
-      if (cluster != null) {
-        cluster.shutdown();
-      }
+      shutdownCluster();
     }
   }
-  
+
   /**
    * Tests cluster storage statistics during decommissioning for non
    * federated cluster
@@ -727,35 +518,33 @@ public class TestDecommission {
       InterruptedException {
     LOG.info("Starting test testClusterStats");
     int numDatanodes = 1;
-    startCluster(numNameNodes, numDatanodes, conf);
+    startCluster(numNameNodes, numDatanodes);
     
     for (int i = 0; i < numNameNodes; i++) {
-      FileSystem fileSys = cluster.getFileSystem(i);
+      FileSystem fileSys = getCluster().getFileSystem(i);
       Path file = new Path("testClusterStats.dat");
       writeFile(fileSys, file, 1);
       
-      FSNamesystem fsn = cluster.getNamesystem(i);
-      NameNode namenode = cluster.getNameNode(i);
+      FSNamesystem fsn = getCluster().getNamesystem(i);
+      NameNode namenode = getCluster().getNameNode(i);
       
-      DatanodeInfo decomInfo = decommissionNode(i, null, null,
+      DatanodeInfo decomInfo = takeNodeOutofService(i, null, 0, null,
           AdminStates.DECOMMISSION_INPROGRESS);
       DataNode decomNode = getDataNode(decomInfo);
       // Check namenode stats for multiple datanode heartbeats
       verifyStats(namenode, fsn, decomInfo, decomNode, true);
       
       // Stop decommissioning and verify stats
-      writeConfigFile(excludeFile, null);
-      refreshNodes(fsn, conf);
       DatanodeInfo retInfo = NameNodeAdapter.getDatanode(fsn, decomInfo);
+      putNodeInService(i, retInfo);
       DataNode retNode = getDataNode(decomInfo);
-      waitNodeState(retInfo, AdminStates.NORMAL);
       verifyStats(namenode, fsn, retInfo, retNode, false);
     }
   }
 
   private DataNode getDataNode(DatanodeInfo decomInfo) {
     DataNode decomNode = null;
-    for (DataNode dn: cluster.getDataNodes()) {
+    for (DataNode dn: getCluster().getDataNodes()) {
       if (decomInfo.equals(dn.getDatanodeId())) {
         decomNode = dn;
         break;
@@ -782,7 +571,8 @@ public class TestDecommission {
    * federated cluster.
    */
   @Test(timeout=360000)
-  public void testHostsFileFederation() throws IOException, InterruptedException {
+  public void testHostsFileFederation()
+      throws IOException, InterruptedException {
     // Test for 3 namenode federated cluster
     testHostsFile(3);
   }
@@ -790,22 +580,16 @@ public class TestDecommission {
   public void testHostsFile(int numNameNodes) throws IOException,
       InterruptedException {
     int numDatanodes = 1;
-    cluster = new MiniDFSCluster.Builder(conf)
-        .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(numNameNodes))
-        .numDataNodes(numDatanodes).setupHostsFile(true).build();
-    cluster.waitActive();
-    
+    startCluster(numNameNodes, numDatanodes, true, null, false);
+
     // Now empty hosts file and ensure the datanode is disallowed
     // from talking to namenode, resulting in it's shutdown.
-    ArrayList<String>list = new ArrayList<String>();
     final String bogusIp = "127.0.30.1";
-    list.add(bogusIp);
-    writeConfigFile(hostsFile, list);
-    
+    initIncludeHost(bogusIp);
+
     for (int j = 0; j < numNameNodes; j++) {
-      refreshNodes(cluster.getNamesystem(j), conf);
-      
-      DFSClient client = getDfsClient(cluster.getNameNode(j), conf);
+      refreshNodes(j);
+      DFSClient client = getDfsClient(j);
       DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
       for (int i = 0 ; i < 5 && info.length != 0; i++) {
         LOG.info("Waiting for datanode to be marked dead");
@@ -825,23 +609,25 @@ public class TestDecommission {
   }
   
   @Test(timeout=120000)
-  public void testDecommissionWithOpenfile() throws IOException, InterruptedException {
+  public void testDecommissionWithOpenfile()
+      throws IOException, InterruptedException {
     LOG.info("Starting test testDecommissionWithOpenfile");
     
     //At most 4 nodes will be decommissioned
-    startCluster(1, 7, conf);
+    startCluster(1, 7);
         
-    FileSystem fileSys = cluster.getFileSystem(0);
-    FSNamesystem ns = cluster.getNamesystem(0);
-    
+    FileSystem fileSys = getCluster().getFileSystem(0);
+    FSNamesystem ns = getCluster().getNamesystem(0);
+
     String openFile = "/testDecommissionWithOpenfile.dat";
            
     writeFile(fileSys, new Path(openFile), (short)3);   
     // make sure the file was open for write
     FSDataOutputStream fdos =  fileSys.append(new Path(openFile)); 
     
-    LocatedBlocks lbs = NameNodeAdapter.getBlockLocations(cluster.getNameNode(0), openFile, 0, fileSize);
-              
+    LocatedBlocks lbs = NameNodeAdapter.getBlockLocations(
+        getCluster().getNameNode(0), openFile, 0, fileSize);
+
     DatanodeInfo[] dnInfos4LastBlock = lbs.getLastLocatedBlock().getLocations();
     DatanodeInfo[] dnInfos4FirstBlock = lbs.get(0).getLocations();
     
@@ -864,50 +650,353 @@ public class TestDecommission {
     //decommission one of the 3 nodes which have last block
     nodes.add(dnInfos4LastBlock[0].getXferAddr());
     dnInfos.add(dm.getDatanode(dnInfos4LastBlock[0]));
-    
-    writeConfigFile(excludeFile, nodes);
-    refreshNodes(ns, conf);  
+
+    initExcludeHosts(nodes);
+    refreshNodes(0);
     for (DatanodeInfo dn : dnInfos) {
       waitNodeState(dn, AdminStates.DECOMMISSIONED);
-    }           
+    }
 
     fdos.close();
+  }
+
+  private static String scanIntoString(final ByteArrayOutputStream baos) {
+    final StrBuilder sb = new StrBuilder();
+    final Scanner scanner = new Scanner(baos.toString());
+    while (scanner.hasNextLine()) {
+      sb.appendln(scanner.nextLine());
+    }
+    scanner.close();
+    return sb.toString();
+  }
+
+  private boolean verifyOpenFilesListing(String message,
+      HashSet<Path> closedFileSet,
+      HashMap<Path, FSDataOutputStream> openFilesMap,
+      ByteArrayOutputStream out, int expOpenFilesListSize) {
+    final String outStr = scanIntoString(out);
+    LOG.info(message + " - stdout: \n" + outStr);
+    for (Path closedFilePath : closedFileSet) {
+      if(outStr.contains(closedFilePath.toString())) {
+        return false;
+      }
+    }
+    HashSet<Path> openFilesNotListed = new HashSet<>();
+    for (Path openFilePath : openFilesMap.keySet()) {
+      if(!outStr.contains(openFilePath.toString())) {
+        openFilesNotListed.add(openFilePath);
+      }
+    }
+    int actualOpenFilesListedSize =
+        openFilesMap.size() - openFilesNotListed.size();
+    if (actualOpenFilesListedSize >= expOpenFilesListSize) {
+      return true;
+    } else {
+      LOG.info("Open files that are not listed yet: " + openFilesNotListed);
+      return false;
+    }
+  }
+
+  private void verifyOpenFilesBlockingDecommission(HashSet<Path> closedFileSet,
+      HashMap<Path, FSDataOutputStream> openFilesMap, final int maxOpenFiles)
+      throws Exception {
+    final PrintStream oldStreamOut = System.out;
+    try {
+      final ByteArrayOutputStream toolOut = new ByteArrayOutputStream();
+      System.setOut(new PrintStream(toolOut));
+      final DFSAdmin dfsAdmin = new DFSAdmin(getConf());
+
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          try {
+            boolean result1 = false;
+            boolean result2 = false;
+            toolOut.reset();
+            assertEquals(0, ToolRunner.run(dfsAdmin,
+                new String[]{"-listOpenFiles", "-blockingDecommission"}));
+            toolOut.flush();
+            result1 = verifyOpenFilesListing(
+                "dfsadmin -listOpenFiles -blockingDecommission",
+                closedFileSet, openFilesMap, toolOut, maxOpenFiles);
+
+            // test -blockingDecommission with option -path
+            if (openFilesMap.size() > 0) {
+              String firstOpenFile = null;
+              // Construct a new open-file and close-file map.
+              // Pick the first open file into new open-file map, remaining
+              //  open files move into close-files map.
+              HashMap<Path, FSDataOutputStream> newOpenFilesMap =
+                  new HashMap<>();
+              HashSet<Path> newClosedFileSet = new HashSet<>();
+              for (Map.Entry<Path, FSDataOutputStream> entry : openFilesMap
+                  .entrySet()) {
+                if (firstOpenFile == null) {
+                  newOpenFilesMap.put(entry.getKey(), entry.getValue());
+                  firstOpenFile = entry.getKey().toString();
+                } else {
+                  newClosedFileSet.add(entry.getKey());
+                }
+              }
+
+              toolOut.reset();
+              assertEquals(0,
+                  ToolRunner.run(dfsAdmin, new String[] {"-listOpenFiles",
+                      "-blockingDecommission", "-path", firstOpenFile}));
+              toolOut.flush();
+              result2 = verifyOpenFilesListing(
+                  "dfsadmin -listOpenFiles -blockingDecommission -path"
+                      + firstOpenFile,
+                  newClosedFileSet, newOpenFilesMap, toolOut, 1);
+            } else {
+              result2 = true;
+            }
+
+            return result1 && result2;
+          } catch (Exception e) {
+            LOG.warn("Unexpected exception: " + e);
+          }
+          return false;
+        }
+      }, 1000, 60000);
+    } finally {
+      System.setOut(oldStreamOut);
+    }
+  }
+
+  @Test(timeout=180000)
+  public void testDecommissionWithOpenfileReporting()
+      throws Exception {
+    LOG.info("Starting test testDecommissionWithOpenfileReporting");
+
+    // Disable redundancy monitor check so that open files blocking
+    // decommission can be listed and verified.
+    getConf().setInt(
+        DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+        1000);
+    getConf().setLong(
+        DFSConfigKeys.DFS_NAMENODE_LIST_OPENFILES_NUM_RESPONSES, 1);
+
+    //At most 1 node can be decommissioned
+    startSimpleCluster(1, 4);
+
+    FileSystem fileSys = getCluster().getFileSystem(0);
+    FSNamesystem ns = getCluster().getNamesystem(0);
+
+    final String[] closedFiles = new String[3];
+    final String[] openFiles = new String[3];
+    HashSet<Path> closedFileSet = new HashSet<>();
+    HashMap<Path, FSDataOutputStream> openFilesMap = new HashMap<>();
+    for (int i = 0; i < 3; i++) {
+      closedFiles[i] = "/testDecommissionWithOpenfileReporting.closed." + i;
+      openFiles[i] = "/testDecommissionWithOpenfileReporting.open." + i;
+      writeFile(fileSys, new Path(closedFiles[i]), (short)3, 10);
+      closedFileSet.add(new Path(closedFiles[i]));
+      writeFile(fileSys, new Path(openFiles[i]), (short)3, 10);
+      FSDataOutputStream fdos =  fileSys.append(new Path(openFiles[i]));
+      openFilesMap.put(new Path(openFiles[i]), fdos);
+    }
+
+    HashMap<DatanodeInfo, Integer> dnInfoMap = new HashMap<>();
+    for (int i = 0; i < 3; i++) {
+      LocatedBlocks lbs = NameNodeAdapter.getBlockLocations(
+          getCluster().getNameNode(0), openFiles[i], 0, blockSize * 10);
+      for (DatanodeInfo dn : lbs.getLastLocatedBlock().getLocations()) {
+        if (dnInfoMap.containsKey(dn)) {
+          dnInfoMap.put(dn, dnInfoMap.get(dn) + 1);
+        } else {
+          dnInfoMap.put(dn, 1);
+        }
+      }
+    }
+
+    DatanodeInfo dnToDecommission = null;
+    int maxDnOccurance = 0;
+    for (Map.Entry<DatanodeInfo, Integer> entry : dnInfoMap.entrySet()) {
+      if (entry.getValue() > maxDnOccurance) {
+        maxDnOccurance = entry.getValue();
+        dnToDecommission = entry.getKey();
+      }
+    }
+    LOG.info("XXX Dn to decommission: " + dnToDecommission + ", max: "
+        + maxDnOccurance);
+
+    //decommission one of the 3 nodes which have last block
+    DatanodeManager dm = ns.getBlockManager().getDatanodeManager();
+    ArrayList<String> nodes = new ArrayList<>();
+    dnToDecommission = dm.getDatanode(dnToDecommission.getDatanodeUuid());
+    nodes.add(dnToDecommission.getXferAddr());
+    initExcludeHosts(nodes);
+    refreshNodes(0);
+    waitNodeState(dnToDecommission, AdminStates.DECOMMISSION_INPROGRESS);
+
+    // list and verify all the open files that are blocking decommission
+    verifyOpenFilesBlockingDecommission(
+        closedFileSet, openFilesMap, maxDnOccurance);
+
+    final AtomicBoolean stopRedundancyMonitor = new AtomicBoolean(false);
+    Thread monitorThread = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        while (!stopRedundancyMonitor.get()) {
+          try {
+            BlockManagerTestUtil.checkRedundancy(
+                getCluster().getNamesystem().getBlockManager());
+            BlockManagerTestUtil.updateState(
+                getCluster().getNamesystem().getBlockManager());
+            Thread.sleep(1000);
+          } catch (Exception e) {
+            LOG.warn("Encountered exception during redundancy monitor: " + e);
+          }
+        }
+      }
+    });
+    monitorThread.start();
+
+    waitNodeState(dnToDecommission, AdminStates.DECOMMISSIONED);
+    stopRedundancyMonitor.set(true);
+    monitorThread.join();
+
+    // Open file is no more blocking decommission as all its blocks
+    // are re-replicated.
+    openFilesMap.clear();
+    verifyOpenFilesBlockingDecommission(
+        closedFileSet, openFilesMap, 0);
+  }
+
+  @Test(timeout = 360000)
+  public void testDecommissionWithOpenFileAndBlockRecovery()
+      throws IOException, InterruptedException {
+    startCluster(1, 6);
+    getCluster().waitActive();
+
+    Path file = new Path("/testRecoveryDecommission");
+
+    // Create a file and never close the output stream to trigger recovery
+    DistributedFileSystem dfs = getCluster().getFileSystem();
+    FSDataOutputStream out = dfs.create(file, true,
+        getConf().getInt(CommonConfigurationKeys.IO_FILE_BUFFER_SIZE_KEY, 4096),
+        (short) 3, blockSize);
+
+    // Write data to the file
+    long writtenBytes = 0;
+    while (writtenBytes < fileSize) {
+      out.writeLong(writtenBytes);
+      writtenBytes += 8;
+    }
+    out.hsync();
+
+    DatanodeInfo[] lastBlockLocations = NameNodeAdapter.getBlockLocations(
+      getCluster().getNameNode(), "/testRecoveryDecommission", 0, fileSize)
+      .getLastLocatedBlock().getLocations();
+
+    // Decommission all nodes of the last block
+    ArrayList<String> toDecom = new ArrayList<>();
+    for (DatanodeInfo dnDecom : lastBlockLocations) {
+      toDecom.add(dnDecom.getXferAddr());
+    }
+    initExcludeHosts(toDecom);
+    refreshNodes(0);
+
+    // Make sure hard lease expires to trigger replica recovery
+    getCluster().setLeasePeriod(300L, 300L);
+    Thread.sleep(2 * BLOCKREPORT_INTERVAL_MSEC);
+
+    for (DatanodeInfo dnDecom : lastBlockLocations) {
+      DatanodeInfo datanode = NameNodeAdapter.getDatanode(
+          getCluster().getNamesystem(), dnDecom);
+      waitNodeState(datanode, AdminStates.DECOMMISSIONED);
+    }
+
+    assertEquals(dfs.getFileStatus(file).getLen(), writtenBytes);
+  }
+
+  @Test(timeout=120000)
+  public void testCloseWhileDecommission() throws IOException,
+      ExecutionException, InterruptedException {
+    LOG.info("Starting test testCloseWhileDecommission");
+
+    // min replication = 2
+    getConf().setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MIN_KEY, 2);
+    startCluster(1, 3);
+
+    FileSystem fileSys = getCluster().getFileSystem(0);
+    FSNamesystem ns = getCluster().getNamesystem(0);
+
+    String openFile = "/testDecommissionWithOpenfile.dat";
+
+    writeFile(fileSys, new Path(openFile), (short)3);
+    // make sure the file was open for write
+    FSDataOutputStream fdos =  fileSys.append(new Path(openFile));
+    byte[] bytes = new byte[1];
+    fdos.write(bytes);
+    fdos.hsync();
+
+    LocatedBlocks lbs = NameNodeAdapter.getBlockLocations(
+        getCluster().getNameNode(0), openFile, 0, fileSize);
+
+    DatanodeInfo[] dnInfos4LastBlock = lbs.getLastLocatedBlock().getLocations();
+
+    ArrayList<String> nodes = new ArrayList<String>();
+    ArrayList<DatanodeInfo> dnInfos = new ArrayList<DatanodeInfo>();
+
+    DatanodeManager dm = ns.getBlockManager().getDatanodeManager();
+    //decommission 2 of the 3 nodes which have last block
+    nodes.add(dnInfos4LastBlock[0].getXferAddr());
+    dnInfos.add(dm.getDatanode(dnInfos4LastBlock[0]));
+    nodes.add(dnInfos4LastBlock[1].getXferAddr());
+    dnInfos.add(dm.getDatanode(dnInfos4LastBlock[1]));
+
+    // because the cluster has only 3 nodes, and 2 of which are decomm'ed,
+    // the last block file will remain under replicated.
+    initExcludeHosts(nodes);
+    refreshNodes(0);
+
+    // the close() should not fail despite the number of live replicas of
+    // the last block becomes one.
+    fdos.close();
+
+    // make sure the two datanodes remain in decomm in progress state
+    BlockManagerTestUtil.recheckDecommissionState(dm);
+    assertTrackedAndPending(dm.getDatanodeAdminManager(), 2, 0);
   }
   
   /**
    * Tests restart of namenode while datanode hosts are added to exclude file
    **/
   @Test(timeout=360000)
-  public void testDecommissionWithNamenodeRestart()throws IOException, InterruptedException {
+  public void testDecommissionWithNamenodeRestart()
+      throws IOException, InterruptedException {
     LOG.info("Starting test testDecommissionWithNamenodeRestart");
     int numNamenodes = 1;
     int numDatanodes = 1;
     int replicas = 1;
-    conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY,
+    getConf().setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY,
         DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT);
-    conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INITIAL_DELAY_KEY, 5);
+    getConf().setLong(DFSConfigKeys.DFS_BLOCKREPORT_INITIAL_DELAY_KEY, 5);
 
-    startCluster(numNamenodes, numDatanodes, conf);
+    startCluster(numNamenodes, numDatanodes);
     Path file1 = new Path("testDecommissionWithNamenodeRestart.dat");
-    FileSystem fileSys = cluster.getFileSystem();
+    FileSystem fileSys = getCluster().getFileSystem();
     writeFile(fileSys, file1, replicas);
         
-    DFSClient client = getDfsClient(cluster.getNameNode(), conf);
+    DFSClient client = getDfsClient(0);
     DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
     DatanodeID excludedDatanodeID = info[0];
     String excludedDatanodeName = info[0].getXferAddr();
 
-    writeConfigFile(excludeFile, new ArrayList<String>(Arrays.asList(excludedDatanodeName)));
+    initExcludeHost(excludedDatanodeName);
 
     //Add a new datanode to cluster
-    cluster.startDataNodes(conf, 1, true, null, null, null, null);
+    getCluster().startDataNodes(getConf(), 1, true, null, null, null, null);
     numDatanodes+=1;
 
-    assertEquals("Number of datanodes should be 2 ", 2, cluster.getDataNodes().size());
+    assertEquals("Number of datanodes should be 2 ", 2,
+        getCluster().getDataNodes().size());
     //Restart the namenode
-    cluster.restartNameNode();
+    getCluster().restartNameNode();
     DatanodeInfo datanodeInfo = NameNodeAdapter.getDatanode(
-        cluster.getNamesystem(), excludedDatanodeID);
+        getCluster().getNamesystem(), excludedDatanodeID);
     waitNodeState(datanodeInfo, AdminStates.DECOMMISSIONED);
 
     // Ensure decommissioned datanode is not automatically shutdown
@@ -920,9 +1009,8 @@ public class TestDecommission {
     cleanupFile(fileSys, file1);
     // Restart the cluster and ensure recommissioned datanodes
     // are allowed to register with the namenode
-    cluster.shutdown();
-    startCluster(numNamenodes, numDatanodes, conf);
-    cluster.shutdown();
+    shutdownCluster();
+    startCluster(numNamenodes, numDatanodes);
   }
 
   /**
@@ -934,30 +1022,30 @@ public class TestDecommission {
     int numNamenodes = 1;
     int numDatanodes = 2;
 
-    startCluster(numNamenodes, numDatanodes, conf);
+    startCluster(numNamenodes, numDatanodes);
 
-    DFSClient client = getDfsClient(cluster.getNameNode(), conf);
+    DFSClient client = getDfsClient(0);
     DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
     DatanodeInfo excludedDatanode = info[0];
     String excludedDatanodeName = info[0].getXferAddr();
 
-    writeConfigFile(hostsFile, new ArrayList<String>(Arrays.asList(
-        excludedDatanodeName, info[1].getXferAddr())));
-    decommissionNode(0, excludedDatanode.getDatanodeUuid(), null,
+    List<String> hosts = new ArrayList<String>(Arrays.asList(
+        excludedDatanodeName, info[1].getXferAddr()));
+    initIncludeHosts(hosts.toArray(new String[hosts.size()]));
+    takeNodeOutofService(0, excludedDatanode.getDatanodeUuid(), 0, null,
         AdminStates.DECOMMISSIONED);
 
-    cluster.stopDataNode(excludedDatanodeName);
+    getCluster().stopDataNode(excludedDatanodeName);
     DFSTestUtil.waitForDatanodeState(
-        cluster, excludedDatanode.getDatanodeUuid(), false, 20000);
+        getCluster(), excludedDatanode.getDatanodeUuid(), false, 20000);
 
     //Restart the namenode
-    cluster.restartNameNode();
+    getCluster().restartNameNode();
 
     assertEquals("There should be one node alive", 1,
         client.datanodeReport(DatanodeReportType.LIVE).length);
     assertEquals("There should be one node dead", 1,
         client.datanodeReport(DatanodeReportType.DEAD).length);
-    cluster.shutdown();
   }
 
   /**
@@ -977,7 +1065,6 @@ public class TestDecommission {
   @Ignore
   @Test(timeout=360000)
   public void testIncludeByRegistrationName() throws Exception {
-    Configuration hdfsConf = new Configuration(conf);
     // Any IPv4 address starting with 127 functions as a "loopback" address
     // which is connected to the current host.  So by choosing 127.0.0.100
     // as our registration name, we have chosen a name which is also a valid
@@ -986,26 +1073,21 @@ public class TestDecommission {
     // to deal with DNS in this test.
     final String registrationName = "127.0.0.100";
     final String nonExistentDn = "127.0.0.10";
-    hdfsConf.set(DFSConfigKeys.DFS_DATANODE_HOST_NAME_KEY, registrationName);
-    cluster = new MiniDFSCluster.Builder(hdfsConf)
-        .numDataNodes(1).checkDataNodeHostConfig(true)
-        .setupHostsFile(true).build();
-    cluster.waitActive();
+    getConf().set(DFSConfigKeys.DFS_DATANODE_HOST_NAME_KEY, registrationName);
+    startCluster(1, 1, false, null, true);
 
     // Set up an includes file that doesn't have our datanode.
-    ArrayList<String> nodes = new ArrayList<String>();
-    nodes.add(nonExistentDn);
-    writeConfigFile(hostsFile,  nodes);
-    refreshNodes(cluster.getNamesystem(0), hdfsConf);
+    initIncludeHost(nonExistentDn);
+    refreshNodes(0);
 
     // Wait for the DN to be marked dead.
     LOG.info("Waiting for DN to be marked as dead.");
-    final DFSClient client = getDfsClient(cluster.getNameNode(0), hdfsConf);
+    final DFSClient client = getDfsClient(0);
     GenericTestUtils.waitFor(new Supplier<Boolean>() {
       @Override
       public Boolean get() {
         BlockManagerTestUtil
-            .checkHeartbeat(cluster.getNamesystem().getBlockManager());
+            .checkHeartbeat(getCluster().getNamesystem().getBlockManager());
         try {
           DatanodeInfo info[] = client.datanodeReport(DatanodeReportType.DEAD);
           return info.length == 1;
@@ -1018,13 +1100,11 @@ public class TestDecommission {
 
     // Use a non-empty include file with our registration name.
     // It should work.
-    int dnPort = cluster.getDataNodes().get(0).getXferPort();
-    nodes = new ArrayList<String>();
-    nodes.add(registrationName + ":" + dnPort);
-    writeConfigFile(hostsFile,  nodes);
-    refreshNodes(cluster.getNamesystem(0), hdfsConf);
-    cluster.restartDataNode(0);
-    cluster.triggerHeartbeats();
+    int dnPort = getCluster().getDataNodes().get(0).getXferPort();
+    initIncludeHost(registrationName + ":" + dnPort);
+    refreshNodes(0);
+    getCluster().restartDataNode(0);
+    getCluster().triggerHeartbeats();
 
     // Wait for the DN to come back.
     LOG.info("Waiting for DN to come back.");
@@ -1032,7 +1112,7 @@ public class TestDecommission {
       @Override
       public Boolean get() {
         BlockManagerTestUtil
-            .checkHeartbeat(cluster.getNamesystem().getBlockManager());
+            .checkHeartbeat(getCluster().getNamesystem().getBlockManager());
         try {
           DatanodeInfo info[] = client.datanodeReport(DatanodeReportType.LIVE);
           if (info.length == 1) {
@@ -1051,21 +1131,21 @@ public class TestDecommission {
   
   @Test(timeout=120000)
   public void testBlocksPerInterval() throws Exception {
-    Configuration newConf = new Configuration(conf);
-    org.apache.log4j.Logger.getLogger(DecommissionManager.class)
+    org.apache.log4j.Logger.getLogger(DatanodeAdminManager.class)
         .setLevel(Level.TRACE);
     // Turn the blocks per interval way down
-    newConf.setInt(
+    getConf().setInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_BLOCKS_PER_INTERVAL_KEY,
         3);
     // Disable the normal monitor runs
-    newConf.setInt(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY,
+    getConf().setInt(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY,
         Integer.MAX_VALUE);
-    startCluster(1, 3, newConf);
-    final FileSystem fs = cluster.getFileSystem();
+    startCluster(1, 3);
+    final FileSystem fs = getCluster().getFileSystem();
     final DatanodeManager datanodeManager =
-        cluster.getNamesystem().getBlockManager().getDatanodeManager();
-    final DecommissionManager decomManager = datanodeManager.getDecomManager();
+        getCluster().getNamesystem().getBlockManager().getDatanodeManager();
+    final DatanodeAdminManager decomManager =
+        datanodeManager.getDatanodeAdminManager();
 
     // Write a 3 block file, so each node has one block. Should scan 3 nodes.
     DFSTestUtil.createFile(fs, new Path("/file1"), 64, (short) 3, 0xBAD1DEA);
@@ -1081,41 +1161,14 @@ public class TestDecommission {
     doDecomCheck(datanodeManager, decomManager, 1);
   }
 
-  @Deprecated
-  @Test(timeout=120000)
-  public void testNodesPerInterval() throws Exception {
-    Configuration newConf = new Configuration(conf);
-    org.apache.log4j.Logger.getLogger(DecommissionManager.class)
-        .setLevel(Level.TRACE);
-    // Set the deprecated configuration key which limits the # of nodes per 
-    // interval
-    newConf.setInt("dfs.namenode.decommission.nodes.per.interval", 1);
-    // Disable the normal monitor runs
-    newConf.setInt(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY,
-        Integer.MAX_VALUE);
-    startCluster(1, 3, newConf);
-    final FileSystem fs = cluster.getFileSystem();
-    final DatanodeManager datanodeManager =
-        cluster.getNamesystem().getBlockManager().getDatanodeManager();
-    final DecommissionManager decomManager = datanodeManager.getDecomManager();
-
-    // Write a 3 block file, so each node has one block. Should scan 1 node 
-    // each time.
-    DFSTestUtil.createFile(fs, new Path("/file1"), 64, (short) 3, 0xBAD1DEA);
-    for (int i=0; i<3; i++) {
-      doDecomCheck(datanodeManager, decomManager, 1);
-    }
-  }
-
   private void doDecomCheck(DatanodeManager datanodeManager,
-      DecommissionManager decomManager, int expectedNumCheckedNodes)
+      DatanodeAdminManager decomManager, int expectedNumCheckedNodes)
       throws IOException, ExecutionException, InterruptedException {
     // Decom all nodes
     ArrayList<DatanodeInfo> decommissionedNodes = Lists.newArrayList();
-    for (DataNode d: cluster.getDataNodes()) {
-      DatanodeInfo dn = decommissionNode(0, d.getDatanodeUuid(),
-          decommissionedNodes,
-          AdminStates.DECOMMISSION_INPROGRESS);
+    for (DataNode d: getCluster().getDataNodes()) {
+      DatanodeInfo dn = takeNodeOutofService(0, d.getDatanodeUuid(), 0,
+          decommissionedNodes, AdminStates.DECOMMISSION_INPROGRESS);
       decommissionedNodes.add(dn);
     }
     // Run decom scan and check
@@ -1124,27 +1177,27 @@ public class TestDecommission {
         decomManager.getNumNodesChecked());
     // Recommission all nodes
     for (DatanodeInfo dn : decommissionedNodes) {
-      recommissionNode(0, dn);
+      putNodeInService(0, dn);
     }
   }
 
   @Test(timeout=120000)
   public void testPendingNodes() throws Exception {
-    Configuration newConf = new Configuration(conf);
-    org.apache.log4j.Logger.getLogger(DecommissionManager.class)
+    org.apache.log4j.Logger.getLogger(DatanodeAdminManager.class)
         .setLevel(Level.TRACE);
     // Only allow one node to be decom'd at a time
-    newConf.setInt(
+    getConf().setInt(
         DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_MAX_CONCURRENT_TRACKED_NODES,
         1);
     // Disable the normal monitor runs
-    newConf.setInt(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY, 
+    getConf().setInt(DFSConfigKeys.DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY,
         Integer.MAX_VALUE);
-    startCluster(1, 3, newConf);
-    final FileSystem fs = cluster.getFileSystem();
+    startCluster(1, 3);
+    final FileSystem fs = getCluster().getFileSystem();
     final DatanodeManager datanodeManager =
-        cluster.getNamesystem().getBlockManager().getDatanodeManager();
-    final DecommissionManager decomManager = datanodeManager.getDecomManager();
+        getCluster().getNamesystem().getBlockManager().getDatanodeManager();
+    final DatanodeAdminManager decomManager =
+        datanodeManager.getDatanodeAdminManager();
 
     // Keep a file open to prevent decom from progressing
     HdfsDataOutputStream open1 =
@@ -1152,16 +1205,15 @@ public class TestDecommission {
     // Flush and trigger block reports so the block definitely shows up on NN
     open1.write(123);
     open1.hflush();
-    for (DataNode d: cluster.getDataNodes()) {
+    for (DataNode d: getCluster().getDataNodes()) {
       DataNodeTestUtils.triggerBlockReport(d);
     }
     // Decom two nodes, so one is still alive
     ArrayList<DatanodeInfo> decommissionedNodes = Lists.newArrayList();
     for (int i=0; i<2; i++) {
-      final DataNode d = cluster.getDataNodes().get(i);
-      DatanodeInfo dn = decommissionNode(0, d.getDatanodeUuid(), 
-          decommissionedNodes, 
-          AdminStates.DECOMMISSION_INPROGRESS);
+      final DataNode d = getCluster().getDataNodes().get(i);
+      DatanodeInfo dn = takeNodeOutofService(0, d.getDatanodeUuid(), 0,
+          decommissionedNodes, AdminStates.DECOMMISSION_INPROGRESS);
       decommissionedNodes.add(dn);
     }
 
@@ -1172,17 +1224,16 @@ public class TestDecommission {
 
     // Close file, try to decom the last node, should get stuck in tracked
     open1.close();
-    final DataNode d = cluster.getDataNodes().get(2);
-    DatanodeInfo dn = decommissionNode(0, d.getDatanodeUuid(),
-        decommissionedNodes,
-        AdminStates.DECOMMISSION_INPROGRESS);
+    final DataNode d = getCluster().getDataNodes().get(2);
+    DatanodeInfo dn = takeNodeOutofService(0, d.getDatanodeUuid(), 0,
+        decommissionedNodes, AdminStates.DECOMMISSION_INPROGRESS);
     decommissionedNodes.add(dn);
     BlockManagerTestUtil.recheckDecommissionState(datanodeManager);
     
     assertTrackedAndPending(decomManager, 1, 0);
   }
 
-  private void assertTrackedAndPending(DecommissionManager decomManager,
+  private void assertTrackedAndPending(DatanodeAdminManager decomManager,
       int tracked, int pending) {
     assertEquals("Unexpected number of tracked nodes", tracked,
         decomManager.getNumTrackedNodes());
@@ -1198,16 +1249,11 @@ public class TestDecommission {
    */
   @Test
   public void testCountOnDecommissionedNodeList() throws IOException{
-    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 1);
+    getConf().setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    getConf().setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY,
+        1);
     try {
-      cluster =
-          new MiniDFSCluster.Builder(conf)
-              .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(1))
-              .numDataNodes(1).build();
-      cluster.waitActive();
-      DFSClient client = getDfsClient(cluster.getNameNode(0), conf);
-      validateCluster(client, 1);
+      startCluster(1, 1);
 
       ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList =
           new ArrayList<ArrayList<DatanodeInfo>>(1);
@@ -1215,10 +1261,10 @@ public class TestDecommission {
 
       // Move datanode1 to Decommissioned state
       ArrayList<DatanodeInfo> decommissionedNode = namenodeDecomList.get(0);
-      decommissionNode(0, null,
-          decommissionedNode, AdminStates.DECOMMISSIONED);
+      takeNodeOutofService(0, null, 0, decommissionedNode,
+          AdminStates.DECOMMISSIONED);
 
-      FSNamesystem ns = cluster.getNamesystem(0);
+      FSNamesystem ns = getCluster().getNamesystem(0);
       DatanodeManager datanodeManager =
           ns.getBlockManager().getDatanodeManager();
       List<DatanodeDescriptor> live = new ArrayList<DatanodeDescriptor>();
@@ -1229,7 +1275,7 @@ public class TestDecommission {
       datanodeManager.fetchDatanodes(live, null, true);
       assertTrue(0==live.size());
     }finally {
-      cluster.shutdown();
+      shutdownCluster();
     }
   }
 
@@ -1262,21 +1308,15 @@ public class TestDecommission {
     Map<String, Map<String, String>> usage = null;
     DatanodeInfo decommissionedNodeInfo = null;
     String zeroNodeUsage = "0.00%";
-    conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 1);
+    getConf().setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
+    getConf().setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    getConf().setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY,
+        1);
     FileSystem fileSys = null;
     Path file1 = new Path("testNodeUsage.dat");
     try {
-      SimulatedFSDataset.setFactory(conf);
-      cluster =
-          new MiniDFSCluster.Builder(conf)
-              .nnTopology(MiniDFSNNTopology.simpleFederatedTopology(1))
-              .numDataNodes(numDatanodes)
-              .simulatedCapacities(nodesCapacity).build();
-      cluster.waitActive();
-      DFSClient client = getDfsClient(cluster.getNameNode(0), conf);
-      validateCluster(client, numDatanodes);
+      SimulatedFSDataset.setFactory(getConf());
+      startCluster(1, numDatanodes, false, nodesCapacity, false);
 
       ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList =
           new ArrayList<ArrayList<DatanodeInfo>>(1);
@@ -1285,12 +1325,12 @@ public class TestDecommission {
       if (decommissionState == AdminStates.DECOMMISSIONED) {
         // Move datanode1 to Decommissioned state
         ArrayList<DatanodeInfo> decommissionedNode = namenodeDecomList.get(0);
-        decommissionedNodeInfo = decommissionNode(0, null,
+        decommissionedNodeInfo = takeNodeOutofService(0, null, 0,
             decommissionedNode, decommissionState);
       }
       // Write a file(replica 1).Hence will be written to only one live node.
-      fileSys = cluster.getFileSystem(0);
-      FSNamesystem ns = cluster.getNamesystem(0);
+      fileSys = getCluster().getFileSystem(0);
+      FSNamesystem ns = getCluster().getNamesystem(0);
       writeFile(fileSys, file1, 1);
       Thread.sleep(2000);
 
@@ -1303,7 +1343,7 @@ public class TestDecommission {
         // Start decommissioning datanode
         ArrayList<DatanodeInfo> decommissioningNodes = namenodeDecomList.
             get(0);
-        decommissionedNodeInfo = decommissionNode(0, null,
+        decommissionedNodeInfo = takeNodeOutofService(0, null, 0,
             decommissioningNodes, decommissionState);
         // NodeUsage should not include DECOMMISSION_INPROGRESS node
         // (minUsage should be 0.00%)
@@ -1313,7 +1353,7 @@ public class TestDecommission {
             equalsIgnoreCase(zeroNodeUsage));
       }
       // Recommission node
-      recommissionNode(0, decommissionedNodeInfo);
+      putNodeInService(0, decommissionedNodeInfo);
 
       usage = (Map<String, Map<String, String>>) JSON.parse(ns.getNodeUsage());
       String nodeusageAfterRecommi =
@@ -1324,7 +1364,6 @@ public class TestDecommission {
           equalsIgnoreCase(nodeusageAfterRecommi));
     } finally {
       cleanupFile(fileSys, file1);
-      cluster.shutdown();
     }
   }
 
@@ -1333,9 +1372,8 @@ public class TestDecommission {
     int numNamenodes = 1;
     int numDatanodes = 2;
 
-    startCluster(numNamenodes,numDatanodes,conf);
-    cluster.waitActive();
-    FSNamesystem ns = cluster.getNamesystem(0);
+    startCluster(numNamenodes, numDatanodes);
+    FSNamesystem ns = getCluster().getNamesystem(0);
     BlockManager blockManager = ns.getBlockManager();
     DatanodeStatistics datanodeStatistics = blockManager.getDatanodeManager()
         .getDatanodeStatistics();
@@ -1345,11 +1383,11 @@ public class TestDecommission {
     long initialBlockPoolUsed = datanodeStatistics.getBlockPoolUsed();
     ArrayList<ArrayList<DatanodeInfo>> namenodeDecomList =
         new ArrayList<ArrayList<DatanodeInfo>>(numNamenodes);
-    namenodeDecomList.add(0, new ArrayList<DatanodeInfo>(numDatanodes));
+    namenodeDecomList.add(0, new ArrayList<>(numDatanodes));
     ArrayList<DatanodeInfo> decommissionedNodes = namenodeDecomList.get(0);
     //decommission one node
-    DatanodeInfo decomNode = decommissionNode(0, null, decommissionedNodes,
-        AdminStates.DECOMMISSIONED);
+    DatanodeInfo decomNode = takeNodeOutofService(0, null, 0,
+        decommissionedNodes, AdminStates.DECOMMISSIONED);
     decommissionedNodes.add(decomNode);
     long newUsedCapacity = datanodeStatistics.getCapacityUsed();
     long newTotalCapacity = datanodeStatistics.getCapacityTotal();
@@ -1361,5 +1399,48 @@ public class TestDecommission {
         "been decommissioned!", initialTotalCapacity != newTotalCapacity);
     assertTrue("BlockPoolUsed should not be the same after a node has " +
         "been decommissioned!",initialBlockPoolUsed != newBlockPoolUsed);
+  }
+
+  /**
+   * Verify if multiple DataNodes can be decommission at the same time.
+   */
+  @Test(timeout = 360000)
+  public void testMultipleNodesDecommission() throws Exception {
+    startCluster(1, 5);
+    final Path file = new Path("/testMultipleNodesDecommission.dat");
+    final FileSystem fileSys = getCluster().getFileSystem(0);
+    final FSNamesystem ns = getCluster().getNamesystem(0);
+
+    int repl = 3;
+    writeFile(fileSys, file, repl, 1);
+    // Request Decommission for DataNodes 1 and 2.
+    List<DatanodeInfo> decomDataNodes = takeNodeOutofService(0,
+        Lists.newArrayList(getCluster().getDataNodes().get(0).getDatanodeUuid(),
+            getCluster().getDataNodes().get(1).getDatanodeUuid()),
+        Long.MAX_VALUE, null, null, AdminStates.DECOMMISSIONED);
+
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        try {
+          String errMsg = checkFile(fileSys, file, repl,
+              decomDataNodes.get(0).getXferAddr(), 5);
+          if (errMsg != null) {
+            LOG.warn("Check file: " + errMsg);
+          }
+          return true;
+        } catch (IOException e) {
+          LOG.warn("Check file: " + e);
+          return false;
+        }
+      }
+    }, 500, 30000);
+
+    // Put the decommissioned nodes back in service.
+    for (DatanodeInfo datanodeInfo : decomDataNodes) {
+      putNodeInService(0, datanodeInfo);
+    }
+
+    cleanupFile(fileSys, file);
   }
 }

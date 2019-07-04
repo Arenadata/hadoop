@@ -18,6 +18,9 @@
 
 package org.apache.hadoop.yarn.server.webapp.dao;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import javax.xml.bind.annotation.XmlAccessType;
 import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlRootElement;
@@ -27,6 +30,8 @@ import org.apache.hadoop.classification.InterfaceStability.Evolving;
 
 import org.apache.hadoop.yarn.api.records.ContainerReport;
 import org.apache.hadoop.yarn.api.records.ContainerState;
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.util.Times;
 
 @Public
@@ -48,20 +53,19 @@ public class ContainerInfo {
   protected int containerExitStatus;
   protected ContainerState containerState;
   protected String nodeHttpAddress;
+  protected String nodeId;
+  protected Map<String, Long> allocatedResources;
 
   public ContainerInfo() {
     // JAXB needs this
   }
 
   public ContainerInfo(ContainerReport container) {
-    containerId = container.getContainerId().toString();
-    if (container.getAllocatedResource() != null) {
-      allocatedMB = container.getAllocatedResource().getMemorySize();
-      allocatedVCores = container.getAllocatedResource().getVirtualCores();
-    }
     if (container.getAssignedNode() != null) {
       assignedNodeId = container.getAssignedNode().toString();
     }
+
+    containerId = container.getContainerId().toString();
     priority = container.getPriority().getPriority();
     startedTime = container.getCreationTime();
     finishedTime = container.getFinishTime();
@@ -71,6 +75,23 @@ public class ContainerInfo {
     containerExitStatus = container.getContainerExitStatus();
     containerState = container.getContainerState();
     nodeHttpAddress = container.getNodeHttpAddress();
+    nodeId = container.getAssignedNode().toString();
+
+    Resource allocated = container.getAllocatedResource();
+
+    if (allocated != null) {
+      allocatedMB = allocated.getMemorySize();
+      allocatedVCores = allocated.getVirtualCores();
+
+      // Now populate the allocated resources. This map will include memory
+      // and CPU, because it's where they belong. We still keep allocatedMB
+      // and allocatedVCores so that we don't break the API.
+      allocatedResources = new HashMap<>();
+
+      for (ResourceInformation info : allocated.getResources()) {
+        allocatedResources.put(info.getName(), info.getValue());
+      }
+    }
   }
 
   public String getContainerId() {
@@ -123,5 +144,19 @@ public class ContainerInfo {
 
   public String getNodeHttpAddress() {
     return nodeHttpAddress;
+  }
+
+  public String getNodeId() {
+    return nodeId;
+  }
+
+  /**
+   * Return a map of the allocated resources. The map key is the resource name,
+   * and the value is the resource value.
+   *
+   * @return the allocated resources map
+   */
+  public Map<String, Long> getAllocatedResources() {
+    return Collections.unmodifiableMap(allocatedResources);
   }
 }

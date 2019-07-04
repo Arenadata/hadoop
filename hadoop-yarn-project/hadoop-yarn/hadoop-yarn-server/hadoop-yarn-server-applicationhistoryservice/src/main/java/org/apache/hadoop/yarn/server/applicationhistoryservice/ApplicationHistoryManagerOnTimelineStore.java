@@ -28,8 +28,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
@@ -48,6 +46,7 @@ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntities;
@@ -69,12 +68,14 @@ import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
     implements
     ApplicationHistoryManager {
-  private static final Log LOG = LogFactory
-      .getLog(ApplicationHistoryManagerOnTimelineStore.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(ApplicationHistoryManagerOnTimelineStore.class);
 
   @VisibleForTesting
   static final String UNAVAILABLE = "N/A";
@@ -330,20 +331,30 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
       }
 
       if (entityInfo.containsKey(ApplicationMetricsConstants.APP_CPU_METRICS)) {
-        long vcoreSeconds=Long.parseLong(entityInfo.get(
-                ApplicationMetricsConstants.APP_CPU_METRICS).toString());
-        long memorySeconds=Long.parseLong(entityInfo.get(
-                ApplicationMetricsConstants.APP_MEM_METRICS).toString());
-        long preemptedMemorySeconds = Long.parseLong(entityInfo.get(
-            ApplicationMetricsConstants
-                .APP_MEM_PREEMPT_METRICS).toString());
-        long preemptedVcoreSeconds = Long.parseLong(entityInfo.get(
-            ApplicationMetricsConstants
-                .APP_CPU_PREEMPT_METRICS).toString());
+        long vcoreSeconds = parseLong(entityInfo,
+            ApplicationMetricsConstants.APP_CPU_METRICS);
+        long memorySeconds = parseLong(entityInfo,
+            ApplicationMetricsConstants.APP_MEM_METRICS);
+        long preemptedMemorySeconds = parseLong(entityInfo,
+            ApplicationMetricsConstants.APP_MEM_PREEMPT_METRICS);
+        long preemptedVcoreSeconds = parseLong(entityInfo,
+            ApplicationMetricsConstants.APP_CPU_PREEMPT_METRICS);
+        Map<String, Long> resourceSecondsMap = new HashMap<>();
+        Map<String, Long> preemptedResoureSecondsMap = new HashMap<>();
+        resourceSecondsMap
+            .put(ResourceInformation.MEMORY_MB.getName(), memorySeconds);
+        resourceSecondsMap
+            .put(ResourceInformation.VCORES.getName(), vcoreSeconds);
+        preemptedResoureSecondsMap.put(ResourceInformation.MEMORY_MB.getName(),
+            preemptedMemorySeconds);
+        preemptedResoureSecondsMap
+            .put(ResourceInformation.VCORES.getName(), preemptedVcoreSeconds);
+
         appResources = ApplicationResourceUsageReport
-            .newInstance(0, 0, null, null, null, memorySeconds, vcoreSeconds, 0,
-                0, preemptedMemorySeconds, preemptedVcoreSeconds);
+            .newInstance(0, 0, null, null, null, resourceSecondsMap, 0, 0,
+                preemptedResoureSecondsMap);
       }
+
       if (entityInfo.containsKey(ApplicationMetricsConstants.APP_TAGS_INFO)) {
         appTags = new HashSet<String>();
         Object obj = entityInfo.get(ApplicationMetricsConstants.APP_TAGS_INFO);
@@ -445,6 +456,16 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
         amNodeLabelExpression), appViewACLs);
   }
 
+  private static long parseLong(Map<String, Object> entityInfo,
+      String infoKey) {
+    long result = 0;
+    Object infoValue = entityInfo.get(infoKey);
+    if (infoValue != null) {
+      result = Long.parseLong(infoValue.toString());
+    }
+    return result;
+  }
+
   private static boolean isFinalState(YarnApplicationState state) {
     return state == YarnApplicationState.FINISHED
         || state == YarnApplicationState.FAILED
@@ -469,21 +490,21 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
           if (eventInfo == null) {
             continue;
           }
-          if (eventInfo.containsKey(AppAttemptMetricsConstants.HOST_EVENT_INFO)) {
+          if (eventInfo.containsKey(AppAttemptMetricsConstants.HOST_INFO)) {
             host =
-                eventInfo.get(AppAttemptMetricsConstants.HOST_EVENT_INFO)
+                eventInfo.get(AppAttemptMetricsConstants.HOST_INFO)
                     .toString();
           }
           if (eventInfo
-              .containsKey(AppAttemptMetricsConstants.RPC_PORT_EVENT_INFO)) {
+              .containsKey(AppAttemptMetricsConstants.RPC_PORT_INFO)) {
             rpcPort = (Integer) eventInfo.get(
-                    AppAttemptMetricsConstants.RPC_PORT_EVENT_INFO);
+                    AppAttemptMetricsConstants.RPC_PORT_INFO);
           }
           if (eventInfo
-              .containsKey(AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)) {
+              .containsKey(AppAttemptMetricsConstants.MASTER_CONTAINER_INFO)) {
             amContainerId =
                 ContainerId.fromString(eventInfo.get(
-                    AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)
+                    AppAttemptMetricsConstants.MASTER_CONTAINER_INFO)
                     .toString());
           }
         } else if (event.getEventType().equals(
@@ -493,39 +514,40 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
             continue;
           }
           if (eventInfo
-              .containsKey(AppAttemptMetricsConstants.TRACKING_URL_EVENT_INFO)) {
+              .containsKey(AppAttemptMetricsConstants.TRACKING_URL_INFO)) {
             trackingUrl =
                 eventInfo.get(
-                    AppAttemptMetricsConstants.TRACKING_URL_EVENT_INFO)
+                    AppAttemptMetricsConstants.TRACKING_URL_INFO)
                     .toString();
           }
           if (eventInfo
-              .containsKey(AppAttemptMetricsConstants.ORIGINAL_TRACKING_URL_EVENT_INFO)) {
+              .containsKey(
+                  AppAttemptMetricsConstants.ORIGINAL_TRACKING_URL_INFO)) {
             originalTrackingUrl =
                 eventInfo
                     .get(
-                        AppAttemptMetricsConstants.ORIGINAL_TRACKING_URL_EVENT_INFO)
+                        AppAttemptMetricsConstants.ORIGINAL_TRACKING_URL_INFO)
                     .toString();
           }
           if (eventInfo
-              .containsKey(AppAttemptMetricsConstants.DIAGNOSTICS_INFO_EVENT_INFO)) {
+              .containsKey(AppAttemptMetricsConstants.DIAGNOSTICS_INFO)) {
             diagnosticsInfo =
                 eventInfo.get(
-                    AppAttemptMetricsConstants.DIAGNOSTICS_INFO_EVENT_INFO)
+                    AppAttemptMetricsConstants.DIAGNOSTICS_INFO)
                     .toString();
           }
           if (eventInfo
-              .containsKey(AppAttemptMetricsConstants.STATE_EVENT_INFO)) {
+              .containsKey(AppAttemptMetricsConstants.STATE_INFO)) {
             state =
                 YarnApplicationAttemptState.valueOf(eventInfo.get(
-                    AppAttemptMetricsConstants.STATE_EVENT_INFO)
+                    AppAttemptMetricsConstants.STATE_INFO)
                     .toString());
           }
           if (eventInfo
-              .containsKey(AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)) {
+              .containsKey(AppAttemptMetricsConstants.MASTER_CONTAINER_INFO)) {
             amContainerId =
                 ContainerId.fromString(eventInfo.get(
-                    AppAttemptMetricsConstants.MASTER_CONTAINER_EVENT_INFO)
+                    AppAttemptMetricsConstants.MASTER_CONTAINER_INFO)
                     .toString());
           }
         }
@@ -553,37 +575,37 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
     Map<String, Object> entityInfo = entity.getOtherInfo();
     if (entityInfo != null) {
       if (entityInfo
-          .containsKey(ContainerMetricsConstants.ALLOCATED_MEMORY_ENTITY_INFO)) {
+          .containsKey(ContainerMetricsConstants.ALLOCATED_MEMORY_INFO)) {
         allocatedMem = (Integer) entityInfo.get(
-                ContainerMetricsConstants.ALLOCATED_MEMORY_ENTITY_INFO);
+                ContainerMetricsConstants.ALLOCATED_MEMORY_INFO);
       }
       if (entityInfo
-          .containsKey(ContainerMetricsConstants.ALLOCATED_VCORE_ENTITY_INFO)) {
+          .containsKey(ContainerMetricsConstants.ALLOCATED_VCORE_INFO)) {
         allocatedVcore = (Integer) entityInfo.get(
-                ContainerMetricsConstants.ALLOCATED_VCORE_ENTITY_INFO);
+                ContainerMetricsConstants.ALLOCATED_VCORE_INFO);
       }
       if (entityInfo
-          .containsKey(ContainerMetricsConstants.ALLOCATED_HOST_ENTITY_INFO)) {
+          .containsKey(ContainerMetricsConstants.ALLOCATED_HOST_INFO)) {
         allocatedHost =
             entityInfo
-                .get(ContainerMetricsConstants.ALLOCATED_HOST_ENTITY_INFO)
+                .get(ContainerMetricsConstants.ALLOCATED_HOST_INFO)
                 .toString();
       }
       if (entityInfo
-          .containsKey(ContainerMetricsConstants.ALLOCATED_PORT_ENTITY_INFO)) {
+          .containsKey(ContainerMetricsConstants.ALLOCATED_PORT_INFO)) {
         allocatedPort = (Integer) entityInfo.get(
-                ContainerMetricsConstants.ALLOCATED_PORT_ENTITY_INFO);
+                ContainerMetricsConstants.ALLOCATED_PORT_INFO);
       }
       if (entityInfo
-          .containsKey(ContainerMetricsConstants.ALLOCATED_PRIORITY_ENTITY_INFO)) {
+          .containsKey(ContainerMetricsConstants.ALLOCATED_PRIORITY_INFO)) {
         allocatedPriority = (Integer) entityInfo.get(
-                ContainerMetricsConstants.ALLOCATED_PRIORITY_ENTITY_INFO);
+                ContainerMetricsConstants.ALLOCATED_PRIORITY_INFO);
       }
       if (entityInfo.containsKey(
-          ContainerMetricsConstants.ALLOCATED_HOST_HTTP_ADDRESS_ENTITY_INFO)) {
+          ContainerMetricsConstants.ALLOCATED_HOST_HTTP_ADDRESS_INFO)) {
         nodeHttpAddress =
             (String) entityInfo
-              .get(ContainerMetricsConstants.ALLOCATED_HOST_HTTP_ADDRESS_ENTITY_INFO);
+              .get(ContainerMetricsConstants.ALLOCATED_HOST_HTTP_ADDRESS_INFO);
       }
     }
     List<TimelineEvent> events = entity.getEvents();
@@ -600,22 +622,22 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
             continue;
           }
           if (eventInfo
-              .containsKey(ContainerMetricsConstants.DIAGNOSTICS_INFO_EVENT_INFO)) {
+              .containsKey(ContainerMetricsConstants.DIAGNOSTICS_INFO)) {
             diagnosticsInfo =
                 eventInfo.get(
-                    ContainerMetricsConstants.DIAGNOSTICS_INFO_EVENT_INFO)
+                    ContainerMetricsConstants.DIAGNOSTICS_INFO)
                     .toString();
           }
           if (eventInfo
-              .containsKey(ContainerMetricsConstants.EXIT_STATUS_EVENT_INFO)) {
+              .containsKey(ContainerMetricsConstants.EXIT_STATUS_INFO)) {
             exitStatus = (Integer) eventInfo.get(
-                    ContainerMetricsConstants.EXIT_STATUS_EVENT_INFO);
+                    ContainerMetricsConstants.EXIT_STATUS_INFO);
           }
           if (eventInfo
-              .containsKey(ContainerMetricsConstants.STATE_EVENT_INFO)) {
+              .containsKey(ContainerMetricsConstants.STATE_INFO)) {
             state =
                 ContainerState.valueOf(eventInfo.get(
-                    ContainerMetricsConstants.STATE_EVENT_INFO).toString());
+                    ContainerMetricsConstants.STATE_INFO).toString());
           }
         }
       }
@@ -721,7 +743,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
              app.appReport.getApplicationId())) {
            throw new AuthorizationException("User "
                + UserGroupInformation.getCurrentUser().getShortUserName()
-               + " does not have privilage to see this application "
+               + " does not have privilege to see this application "
                + app.appReport.getApplicationId());
          }
        } finally {
@@ -730,7 +752,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
      }
    }
 
-  private static enum ApplicationReportField {
+  private enum ApplicationReportField {
     ALL, // retrieve all the fields
     USER_AND_ACLS // retrieve user and ACLs info only
   }

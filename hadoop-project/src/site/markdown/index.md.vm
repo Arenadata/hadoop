@@ -15,83 +15,61 @@
 Apache Hadoop ${project.version}
 ================================
 
-Apache Hadoop ${project.version} is a minor release in the 2.x.y release
-line, building upon the previous stable release 2.7.3.
+Apache Hadoop ${project.version} incorporates a number of significant
+enhancements over the previous minor release line (hadoop-3.0).
+
+Overview
+========
+
+Users are encouraged to read the full set of release notes.
+This page provides an overview of the major changes.
 
 Here is a short overview of the major features and improvements.
 
-*   Common
+### YARN
 
-    *   Support async call retry and failover which can be used in async DFS
-        implementation with retry effort.
+#### YARN Native Services
 
-    *   Cross Frame Scripting (XFS) prevention for UIs can be provided through
-        a common servlet filter.
+Yarn Service framework provides first class support and APIs to host long running services natively in YARN. 
 
-    *   S3A improvements: add ability to plug in any AWSCredentialsProvider,
-        support read s3a credentials from hadoop credential provider API in
-        addition to XML configuraiton files, support Amazon STS temporary
-        credentials
+In a nutshell, it serves as a container orchestration platform for managing containerized services on YARN. It supports both docker container and traditional process based containers in YARN.
+    
+See the [user documentation](./hadoop-yarn/hadoop-yarn-site/yarn-service/Overview.html) for more details.
 
-    *   WASB improvements: adding append API support
+#### First-class GPU support on YARN 
+First-class GPU scheduling and isolation (For both docker/non-docker containers) on YARN.
 
-    *   Build enhancements: replace dev-support with wrappers to Yetus,
-        provide a docker based solution to setup a build environment,
-        remove CHANGES.txt and rework the change log and release notes.
+See the [user documentation](./hadoop-yarn/hadoop-yarn-site/UsingGpus.html) for more details.
 
-    *   Add posixGroups support for LDAP groups mapping service.
+#### First-class FPGA support on YARN 
+First-class FPGA scheduling and isolation (For both docker/non-docker containers) on YARN.
 
-    *   Support integration with Azure Data Lake (ADL) as an alternative
-        Hadoop-compatible file system.
+See the [user documentation](./hadoop-yarn/hadoop-yarn-site/UsingFPGA.html) for more details.
 
-*   HDFS
+#### Support Rich Placement Constraints in YARN 
 
-    *   WebHDFS enhancements: integrate CSRF prevention filter in WebHDFS,
-        support OAuth2 in WebHDFS, disallow/allow snapshots via WebHDFS
+Support more expressive placement constraints in YARN. Such constraints can be crucial for the performance and resilience of applications, especially those that include long-running containers, such as services, machine-learning and streaming workloads.
 
-    *   Allow long-running Balancer to login with keytab
+For example, it may be beneficial to co-locate the allocations of a job on the same rack (*affinity* constraints) to reduce network costs, spread allocations across machines (*anti-affinity* constraints) to minimize resource interference, or allow up to a specific number of allocations in a node group (*cardinality* constraints) to strike a balance between the two. Placement decisions also affect resilience. For example, allocations placed within the same cluster upgrade domain would go offline simultaneously.
 
-    *   Add ReverseXML processor which reconstructs an fsimage from an XML file.
-        This will make it easy to create fsimages for testing, and manually edit
-        fsimages when there is corruption
+See the [user documentation](./hadoop-yarn/hadoop-yarn-site/PlacementConstraints.html) for more details.
 
-    *   Support nested encryption zones
+#### Add Absolute Resource Configuration to CapacityScheduler
 
-    *   DataNode Lifeline Protocol: an alternative protocol for reporting DataNode
-        liveness. This can prevent the NameNode from incorrectly marking DataNodes
-        as stale or dead in highly overloaded clusters where heartbeat processing
-        is suffering delays.
+Support administrators to specify absolute resources (X Memory, Y VCores, Z GPUs, etc.) to a queue instead of providing percentage based values. This provides better control for admins to configure required amount of resources for a given queue.
 
-    *   Logging HDFS operation's caller context into audit logs
+See the [user documentation](./hadoop-yarn/hadoop-yarn-site/CapacityScheduler.html) for more details.
 
-    *   A new Datanode command for evicting writers which is useful when data node
-        decommissioning is blocked by slow writers.
+### HDFS
 
-*   YARN
+#### Allow HDFS block replicas to be provided by an external storage system 
 
-    *   NodeManager CPU resource monitoring in Windows.
+Provided storage allows data *stored outside HDFS* to be mapped to and addressed from HDFS. It builds on [heterogeneous storage](./hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html) by introducing a new storage type, `PROVIDED`, to the set of media in a DataNode.
 
-    *   NM shutdown more graceful: NM will unregister to RM immediately rather than
-        waiting for timeout to be LOST (if NM work preserving is not enabled).
-
-    *   Add ability to fail a specific AM attempt in scenario of AM attempt get stuck.
-
-    *   CallerContext support in YARN audit log.
-
-    *   ATS versioning support: a new configuration to indicate timeline service version.
-
-*   MAPREDUCE
-
-    *   Allow node labels get specificed in submitting MR jobs
-
-    *   Add a new tool to combine aggregated logs into HAR files
+See the [user documentation](./hadoop-project-dist/hadoop-hdfs/HdfsProvidedStorage.html) for more details.
 
 Getting Started
 ===============
 
 The Hadoop documentation includes the information you need to get started using
-Hadoop. Begin with the
-[Single Node Setup](./hadoop-project-dist/hadoop-common/SingleCluster.html) which
-shows you how to set up a single-node Hadoop installation. Then move on to the
-[Cluster Setup](./hadoop-project-dist/hadoop-common/ClusterSetup.html) to learn how
-to set up a multi-node Hadoop installation.
+Hadoop. Begin with the [Single Node Setup](./hadoop-project-dist/hadoop-common/SingleCluster.html) which shows you how to set up a single-node Hadoop installation. Then move on to the [Cluster Setup](./hadoop-project-dist/hadoop-common/ClusterSetup.html) to learn how to set up a multi-node Hadoop installation.

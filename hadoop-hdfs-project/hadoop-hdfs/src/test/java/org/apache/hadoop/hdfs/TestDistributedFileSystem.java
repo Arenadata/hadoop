@@ -18,9 +18,10 @@
 
 package org.apache.hadoop.hdfs;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeys.FS_CLIENT_TOPOLOGY_RESOLUTION_ENABLED;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_CONTEXT;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -38,7 +39,6 @@ import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -46,19 +46,17 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
-import org.apache.commons.lang.ArrayUtils;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
-import org.apache.hadoop.fs.BlockStorageLocation;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileSystem.Statistics.StatisticsData;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.FileChecksum;
@@ -69,26 +67,33 @@ import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.MD5MD5CRC32FileChecksum;
 import org.apache.hadoop.fs.Options.ChecksumOpt;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.PathIsNotEmptyDirectoryException;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.StorageStatistics.LongStatistic;
 import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.fs.VolumeId;
+import org.apache.hadoop.fs.contract.ContractTestUtils;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.hdfs.MiniDFSCluster.DataNodeProperties;
+import org.apache.hadoop.hdfs.DistributedFileSystem.HdfsDataOutputStreamBuilder;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.impl.LeaseRenewer;
 import org.apache.hadoop.hdfs.DFSOpsCountStatistics.OpType;
 import org.apache.hadoop.hdfs.net.Peer;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants.RollingUpgradeAction;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
-import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
-import org.apache.hadoop.hdfs.web.HftpFileSystem;
-import org.apache.hadoop.hdfs.server.namenode.top.window.RollingWindowManager.Op;
+import org.apache.hadoop.hdfs.server.namenode.ErasureCodingPolicyManager;
 import org.apache.hadoop.hdfs.web.WebHdfsConstants;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.io.erasurecode.ECSchema;
+import org.apache.hadoop.net.DNSToSwitchMapping;
+import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.net.ScriptBasedMapping;
+import org.apache.hadoop.net.StaticMapping;
+import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.DataChecksum;
@@ -98,12 +103,6 @@ import org.apache.log4j.Level;
 import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.InOrder;
-import org.mockito.Mockito;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
-
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
 import org.mockito.internal.util.reflection.Whitebox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -188,22 +187,167 @@ public class TestDistributedFileSystem {
     MiniDFSCluster cluster = null;
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
-      FileSystem fileSys = cluster.getFileSystem();
-      
+      DistributedFileSystem fileSys = cluster.getFileSystem();
+
       // create two files, leaving them open
       fileSys.create(new Path("/test/dfsclose/file-0"));
       fileSys.create(new Path("/test/dfsclose/file-1"));
-      
+
       // create another file, close it, and read it, so
       // the client gets a socket in its SocketCache
       Path p = new Path("/non-empty-file");
       DFSTestUtil.createFile(fileSys, p, 1L, (short)1, 0L);
       DFSTestUtil.readFile(fileSys, p);
-      
+
       fileSys.close();
-      
+
+      DFSClient dfsClient = fileSys.getClient();
+      verifyOpsUsingClosedClient(dfsClient);
     } finally {
       if (cluster != null) {cluster.shutdown();}
+    }
+  }
+
+  private void verifyOpsUsingClosedClient(DFSClient dfsClient) {
+    Path p = new Path("/non-empty-file");
+    try {
+      dfsClient.getBlockSize(p.getName());
+      fail("getBlockSize using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.getServerDefaults();
+      fail("getServerDefaults using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.reportBadBlocks(new LocatedBlock[0]);
+      fail("reportBadBlocks using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.getBlockLocations(p.getName(), 0, 1);
+      fail("getBlockLocations using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.createSymlink("target", "link", true);
+      fail("createSymlink using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.getLinkTarget(p.getName());
+      fail("getLinkTarget using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.setReplication(p.getName(), (short) 3);
+      fail("setReplication using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.setStoragePolicy(p.getName(),
+          HdfsConstants.ONESSD_STORAGE_POLICY_NAME);
+      fail("setStoragePolicy using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.getStoragePolicies();
+      fail("getStoragePolicies using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      fail("setSafeMode using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.refreshNodes();
+      fail("refreshNodes using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.metaSave(p.getName());
+      fail("metaSave using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.setBalancerBandwidth(1000L);
+      fail("setBalancerBandwidth using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.finalizeUpgrade();
+      fail("finalizeUpgrade using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.rollingUpgrade(RollingUpgradeAction.QUERY);
+      fail("rollingUpgrade using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.getInotifyEventStream();
+      fail("getInotifyEventStream using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.getInotifyEventStream(100L);
+      fail("getInotifyEventStream using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.saveNamespace(1000L, 200L);
+      fail("saveNamespace using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.rollEdits();
+      fail("rollEdits using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.restoreFailedStorage("");
+      fail("restoreFailedStorage using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.getContentSummary(p.getName());
+      fail("getContentSummary using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.setQuota(p.getName(), 1000L, 500L);
+      fail("setQuota using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfsClient.setQuotaByStorageType(p.getName(), StorageType.DISK, 500L);
+      fail("setQuotaByStorageType using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
     }
   }
 
@@ -281,6 +425,7 @@ public class TestDistributedFileSystem {
     Configuration conf = getTestConfiguration();
     final long grace = 1000L;
     MiniDFSCluster cluster = null;
+    LeaseRenewer.setLeaseRenewerGraceDefault(grace);
 
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
@@ -293,10 +438,6 @@ public class TestDistributedFileSystem {
 
       {
         final DistributedFileSystem dfs = cluster.getFileSystem();
-        Method setMethod = dfs.dfs.getLeaseRenewer().getClass()
-            .getDeclaredMethod("setGraceSleepPeriod", long.class);
-        setMethod.setAccessible(true);
-        setMethod.invoke(dfs.dfs.getLeaseRenewer(), grace);
         Method checkMethod = dfs.dfs.getLeaseRenewer().getClass()
             .getDeclaredMethod("isRunning");
         checkMethod.setAccessible(true);
@@ -431,6 +572,22 @@ public class TestDistributedFileSystem {
         in.close();
         fs.close();
       }
+
+      {
+        // Test PathIsNotEmptyDirectoryException while deleting non-empty dir
+        FileSystem fs = cluster.getFileSystem();
+        fs.mkdirs(new Path("/test/nonEmptyDir"));
+        fs.create(new Path("/tmp/nonEmptyDir/emptyFile")).close();
+        try {
+          fs.delete(new Path("/tmp/nonEmptyDir"), false);
+          Assert.fail("Expecting PathIsNotEmptyDirectoryException");
+        } catch (PathIsNotEmptyDirectoryException ex) {
+          // This is the proper exception to catch; move on.
+        }
+        Assert.assertTrue(fs.exists(new Path("/test/nonEmptyDir")));
+        fs.delete(new Path("/tmp/nonEmptyDir"), true);
+      }
+
     }
     finally {
       if (cluster != null) {cluster.shutdown();}
@@ -693,6 +850,105 @@ public class TestDistributedFileSystem {
     assertEquals(largeReadOps, DFSTestUtil.getStatistics(fs).getLargeReadOps());
   }
 
+  /** Checks read statistics. */
+  private void checkReadStatistics(FileSystem fs, int distance, long expectedReadBytes) {
+    long bytesRead = DFSTestUtil.getStatistics(fs).
+        getBytesReadByDistance(distance);
+    assertEquals(expectedReadBytes, bytesRead);
+  }
+
+  @Test
+  public void testLocalHostReadStatistics() throws Exception {
+    testReadFileSystemStatistics(0, false, false);
+  }
+
+  @Test
+  public void testLocalRackReadStatistics() throws Exception {
+    testReadFileSystemStatistics(2, false, false);
+  }
+
+  @Test
+  public void testRemoteRackOfFirstDegreeReadStatistics() throws Exception {
+    testReadFileSystemStatistics(4, false, false);
+  }
+
+  @Test
+  public void testInvalidScriptMappingFileReadStatistics() throws Exception {
+    // Even though network location of the client machine is unknown,
+    // MiniDFSCluster's datanode is on the local host and thus the network
+    // distance is 0.
+    testReadFileSystemStatistics(0, true, true);
+  }
+
+  @Test
+  public void testEmptyScriptMappingFileReadStatistics() throws Exception {
+    // Network location of the client machine is resolved to
+    // {@link NetworkTopology#DEFAULT_RACK} when there is no script file
+    // defined. This is equivalent to unknown network location.
+    // MiniDFSCluster's datanode is on the local host and thus the network
+    // distance is 0.
+    testReadFileSystemStatistics(0, true, false);
+  }
+
+  /** expectedDistance is the expected distance between client and dn.
+   * 0 means local host.
+   * 2 means same rack.
+   * 4 means remote rack of first degree.
+   * invalidScriptMappingConfig is used to test
+   */
+  private void testReadFileSystemStatistics(int expectedDistance,
+      boolean useScriptMapping, boolean invalidScriptMappingFile)
+      throws IOException {
+    MiniDFSCluster cluster = null;
+    StaticMapping.addNodeToRack(NetUtils.getLocalHostname(), "/rackClient");
+    final Configuration conf = getTestConfiguration();
+    conf.setBoolean(FS_CLIENT_TOPOLOGY_RESOLUTION_ENABLED, true);
+    // ClientContext is cached globally by default thus we will end up using
+    // the network distance computed by other test cases.
+    // Use different value for DFS_CLIENT_CONTEXT in each test case so that it
+    // can compute network distance independently.
+    conf.set(DFS_CLIENT_CONTEXT, "testContext_" + expectedDistance);
+
+    // create a cluster with a dn with the expected distance.
+    // MiniDFSCluster by default uses StaticMapping unless the test
+    // overrides it.
+    if (useScriptMapping) {
+      conf.setClass(DFSConfigKeys.NET_TOPOLOGY_NODE_SWITCH_MAPPING_IMPL_KEY,
+          ScriptBasedMapping.class, DNSToSwitchMapping.class);
+      if (invalidScriptMappingFile) {
+        conf.set(DFSConfigKeys.NET_TOPOLOGY_SCRIPT_FILE_NAME_KEY,
+            "invalidScriptFile.txt");
+      }
+      cluster = new MiniDFSCluster.Builder(conf).
+          useConfiguredTopologyMappingClass(true).build();
+    } else if (expectedDistance == 0) {
+      cluster = new MiniDFSCluster.Builder(conf).
+          hosts(new String[] {NetUtils.getLocalHostname()}).build();
+    } else if (expectedDistance == 2) {
+      cluster = new MiniDFSCluster.Builder(conf).
+          racks(new String[]{"/rackClient"}).build();
+    } else if (expectedDistance == 4) {
+      cluster = new MiniDFSCluster.Builder(conf).
+          racks(new String[]{"/rackFoo"}).build();
+    }
+
+    // create a file, read the file and verify the metrics
+    try {
+      final FileSystem fs = cluster.getFileSystem();
+      DFSTestUtil.getStatistics(fs).reset();
+      Path dir = new Path("/test");
+      Path file = new Path(dir, "file");
+      String input = "hello world";
+      DFSTestUtil.writeFile(fs, file, input);
+      FSDataInputStream stm = fs.open(file);
+      byte[] actual = new byte[4096];
+      stm.read(actual);
+      checkReadStatistics(fs, expectedDistance, input.length());
+    } finally {
+      if (cluster != null) cluster.shutdown();
+    }
+  }
+
   private static void checkOpStatistics(OpType op, long count) {
     assertEquals("Op " + op.getSymbol() + " has unexpected count!",
         count, getOpStatistics(op));
@@ -706,14 +962,11 @@ public class TestDistributedFileSystem {
 
   @Test
   public void testFileChecksum() throws Exception {
-    GenericTestUtils.setLogLevel(HftpFileSystem.LOG, Level.ALL);
-
     final long seed = RAN.nextLong();
     System.out.println("seed=" + seed);
     RAN.setSeed(seed);
 
     final Configuration conf = getTestConfiguration();
-    conf.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
 
     final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(2).build();
@@ -742,17 +995,6 @@ public class TestDistributedFileSystem {
       assertTrue("Not throwing the intended exception message", e.getMessage()
           .contains("Path is not a file: /test/TestExistingDir"));
     }
-    
-    //hftp
-    final String hftpuri = "hftp://" + nnAddr;
-    System.out.println("hftpuri=" + hftpuri);
-    final FileSystem hftp = ugi.doAs(
-        new PrivilegedExceptionAction<FileSystem>() {
-      @Override
-      public FileSystem run() throws Exception {
-        return new Path(hftpuri).getFileSystem(conf);
-      }
-    });
 
     //webhdfs
     final String webhdfsuri = WebHdfsConstants.WEBHDFS_SCHEME + "://" + nnAddr;
@@ -791,14 +1033,6 @@ public class TestDistributedFileSystem {
       final FileChecksum hdfsfoocs = hdfs.getFileChecksum(foo);
       System.out.println("hdfsfoocs=" + hdfsfoocs);
 
-      //hftp
-      final FileChecksum hftpfoocs = hftp.getFileChecksum(foo);
-      System.out.println("hftpfoocs=" + hftpfoocs);
-
-      final Path qualified = new Path(hftpuri + dir, "foo" + n);
-      final FileChecksum qfoocs = hftp.getFileChecksum(qualified);
-      System.out.println("qfoocs=" + qfoocs);
-
       //webhdfs
       final FileChecksum webhdfsfoocs = webhdfs.getFileChecksum(foo);
       System.out.println("webhdfsfoocs=" + webhdfsfoocs);
@@ -816,13 +1050,6 @@ public class TestDistributedFileSystem {
         out.close();
       }
 
-      // verify the magic val for zero byte files
-      {
-        final FileChecksum zeroChecksum = hdfs.getFileChecksum(zeroByteFile);
-        assertEquals(zeroChecksum.toString(),
-            "MD5-of-0MD5-of-0CRC32:70bc8f4b72a86921468bf8e8441dce51");
-      }
-
       //write another file
       final Path bar = new Path(dir, "bar" + n);
       {
@@ -831,19 +1058,23 @@ public class TestDistributedFileSystem {
         out.write(data);
         out.close();
       }
-  
-      { //verify checksum
+
+      {
+        final FileChecksum zeroChecksum = hdfs.getFileChecksum(zeroByteFile);
+        final String magicValue =
+            "MD5-of-0MD5-of-0CRC32:70bc8f4b72a86921468bf8e8441dce51";
+        // verify the magic val for zero byte files
+        assertEquals(magicValue, zeroChecksum.toString());
+
+        //verify checksums for empty file and 0 request length
+        final FileChecksum checksumWith0 = hdfs.getFileChecksum(bar, 0);
+        assertEquals(zeroChecksum, checksumWith0);
+
+        //verify checksum
         final FileChecksum barcs = hdfs.getFileChecksum(bar);
         final int barhashcode = barcs.hashCode();
         assertEquals(hdfsfoocs.hashCode(), barhashcode);
         assertEquals(hdfsfoocs, barcs);
-
-        //hftp
-        assertEquals(hftpfoocs.hashCode(), barhashcode);
-        assertEquals(hftpfoocs, barcs);
-
-        assertEquals(qfoocs.hashCode(), barhashcode);
-        assertEquals(qfoocs, barcs);
 
         //webhdfs
         assertEquals(webhdfsfoocs.hashCode(), barhashcode);
@@ -854,14 +1085,6 @@ public class TestDistributedFileSystem {
       }
 
       hdfs.setPermission(dir, new FsPermission((short)0));
-      { //test permission error on hftp 
-        try {
-          hftp.getFileChecksum(qualified);
-          fail();
-        } catch(IOException ioe) {
-          FileSystem.LOG.info("GOOD: getting an exception", ioe);
-        }
-      }
 
       { //test permission error on webhdfs 
         try {
@@ -954,213 +1177,6 @@ public class TestDistributedFileSystem {
           assertEquals("Unexpected storage type", StorageType.DEFAULT, t);
         }
       }
-    } finally {
-      if (cluster != null) {
-        cluster.shutdown();
-      }
-    }
-  }
-
-  /**
-   * Tests the normal path of batching up BlockLocation[]s to be passed to a
-   * single
-   * {@link DistributedFileSystem#getFileBlockStorageLocations(java.util.List)}
-   * call
-   */
-  @Test(timeout=60000)
-  public void testGetFileBlockStorageLocationsBatching() throws Exception {
-    final Configuration conf = getTestConfiguration();
-    GenericTestUtils.setLogLevel(ProtobufRpcEngine.LOG, Level.TRACE);
-    GenericTestUtils.setLogLevel(BlockStorageLocationUtil.LOG, Level.TRACE);
-    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.TRACE);
-
-    conf.setBoolean(DFSConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED,
-        true);
-    final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
-        .numDataNodes(2).build();
-    try {
-      final DistributedFileSystem fs = cluster.getFileSystem();
-      // Create two files
-      final Path tmpFile1 = new Path("/tmpfile1.dat");
-      final Path tmpFile2 = new Path("/tmpfile2.dat");
-      DFSTestUtil.createFile(fs, tmpFile1, 1024, (short) 2, 0xDEADDEADl);
-      DFSTestUtil.createFile(fs, tmpFile2, 1024, (short) 2, 0xDEADDEADl);
-      // Make sure files are fully replicated before continuing
-      GenericTestUtils.waitFor(new Supplier<Boolean>() {
-        @Override
-        public Boolean get() {
-          try {
-            List<BlockLocation> list = Lists.newArrayList();
-            list.addAll(Arrays.asList(fs.getFileBlockLocations(tmpFile1, 0,
-                1024)));
-            list.addAll(Arrays.asList(fs.getFileBlockLocations(tmpFile2, 0,
-                1024)));
-            int totalRepl = 0;
-            for (BlockLocation loc : list) {
-              totalRepl += loc.getHosts().length;
-            }
-            if (totalRepl == 4) {
-              return true;
-            }
-          } catch(IOException e) {
-            // swallow
-          }
-          return false;
-        }
-      }, 500, 30000);
-      // Get locations of blocks of both files and concat together
-      BlockLocation[] blockLocs1 = fs.getFileBlockLocations(tmpFile1, 0, 1024);
-      BlockLocation[] blockLocs2 = fs.getFileBlockLocations(tmpFile2, 0, 1024);
-      BlockLocation[] blockLocs = (BlockLocation[]) ArrayUtils.addAll(blockLocs1,
-          blockLocs2);
-      // Fetch VolumeBlockLocations in batch
-      BlockStorageLocation[] locs = fs.getFileBlockStorageLocations(Arrays
-          .asList(blockLocs));
-      int counter = 0;
-      // Print out the list of ids received for each block
-      for (BlockStorageLocation l : locs) {
-        for (int i = 0; i < l.getVolumeIds().length; i++) {
-          VolumeId id = l.getVolumeIds()[i];
-          String name = l.getNames()[i];
-          if (id != null) {
-            System.out.println("Datanode " + name + " has block " + counter
-                + " on volume id " + id.toString());
-          }
-        }
-        counter++;
-      }
-      assertEquals("Expected two HdfsBlockLocations for two 1-block files", 2,
-          locs.length);
-      for (BlockStorageLocation l : locs) {
-        assertEquals("Expected two replicas for each block", 2,
-            l.getVolumeIds().length);
-        for (int i = 0; i < l.getVolumeIds().length; i++) {
-          VolumeId id = l.getVolumeIds()[i];
-          String name = l.getNames()[i];
-          assertTrue("Expected block to be valid on datanode " + name,
-              id != null);
-        }
-      }
-    } finally {
-      cluster.shutdown();
-    }
-  }
-
-  /**
-   * Tests error paths for
-   * {@link DistributedFileSystem#getFileBlockStorageLocations(java.util.List)}
-   */
-  @Test(timeout=60000)
-  public void testGetFileBlockStorageLocationsError() throws Exception {
-    final Configuration conf = getTestConfiguration();
-    conf.setBoolean(DFSConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED,
-        true);
-    conf.setInt(
-        DFSConfigKeys.DFS_CLIENT_FILE_BLOCK_STORAGE_LOCATIONS_TIMEOUT_MS, 1500);
-    conf.setInt(
-        CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 0);
-    
-    MiniDFSCluster cluster = null;
-    try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
-      cluster.getDataNodes();
-      final DistributedFileSystem fs = cluster.getFileSystem();
-      
-      // Create a few files and add together their block locations into
-      // a list.
-      final Path tmpFile1 = new Path("/errorfile1.dat");
-      final Path tmpFile2 = new Path("/errorfile2.dat");
-
-      DFSTestUtil.createFile(fs, tmpFile1, 1024, (short) 2, 0xDEADDEADl);
-      DFSTestUtil.createFile(fs, tmpFile2, 1024, (short) 2, 0xDEADDEADl);
-
-      // Make sure files are fully replicated before continuing
-      GenericTestUtils.waitFor(new Supplier<Boolean>() {
-        @Override
-        public Boolean get() {
-          try {
-            List<BlockLocation> list = Lists.newArrayList();
-            list.addAll(Arrays.asList(fs.getFileBlockLocations(tmpFile1, 0,
-                1024)));
-            list.addAll(Arrays.asList(fs.getFileBlockLocations(tmpFile2, 0,
-                1024)));
-            int totalRepl = 0;
-            for (BlockLocation loc : list) {
-              totalRepl += loc.getHosts().length;
-            }
-            if (totalRepl == 4) {
-              return true;
-            }
-          } catch(IOException e) {
-            // swallow
-          }
-          return false;
-        }
-      }, 500, 30000);
-      
-      BlockLocation[] blockLocs1 = fs.getFileBlockLocations(tmpFile1, 0, 1024);
-      BlockLocation[] blockLocs2 = fs.getFileBlockLocations(tmpFile2, 0, 1024);
-
-      List<BlockLocation> allLocs = Lists.newArrayList();
-      allLocs.addAll(Arrays.asList(blockLocs1));
-      allLocs.addAll(Arrays.asList(blockLocs2));
-
-      // Stall on the DN to test the timeout
-      DataNodeFaultInjector injector = Mockito.mock(DataNodeFaultInjector.class);
-      Mockito.doAnswer(new Answer<Void>() {
-        @Override
-        public Void answer(InvocationOnMock invocation) throws Throwable {
-          Thread.sleep(3000);
-          return null;
-        }
-      }).when(injector).getHdfsBlocksMetadata();
-      DataNodeFaultInjector.instance = injector;
-
-      BlockStorageLocation[] locs = fs.getFileBlockStorageLocations(allLocs);
-      for (BlockStorageLocation loc: locs) {
-        assertEquals(
-            "Found more than 0 cached hosts although RPCs supposedly timed out",
-            0, loc.getCachedHosts().length);
-      }
-
-      // Restore a default injector
-      DataNodeFaultInjector.instance = new DataNodeFaultInjector();
-
-      // Stop a datanode to simulate a failure.
-      DataNodeProperties stoppedNode = cluster.stopDataNode(0);
-      
-      // Fetch VolumeBlockLocations
-      locs = fs.getFileBlockStorageLocations(allLocs);
-      assertEquals("Expected two HdfsBlockLocation for two 1-block files", 2,
-          locs.length);
-  
-      for (BlockStorageLocation l : locs) {
-        assertEquals("Expected two replicas for each block", 2,
-            l.getHosts().length);
-        assertEquals("Expected two VolumeIDs for each block", 2,
-            l.getVolumeIds().length);
-        assertTrue("Expected one valid and one invalid volume",
-            (l.getVolumeIds()[0] == null) ^ (l.getVolumeIds()[1] == null));
-      }
-      
-      // Start the datanode again, and remove one of the blocks.
-      // This is a different type of failure where the block itself
-      // is invalid.
-      cluster.restartDataNode(stoppedNode, true /*keepPort*/);
-      cluster.waitActive();
-      
-      fs.delete(tmpFile2, true);
-      HATestUtil.waitForNNToIssueDeletions(cluster.getNameNode());
-      cluster.triggerHeartbeats();
-      HATestUtil.waitForDNDeletions(cluster);
-  
-      locs = fs.getFileBlockStorageLocations(allLocs);
-      assertEquals("Expected two HdfsBlockLocations for two 1-block files", 2,
-          locs.length);
-      assertNotNull(locs[0].getVolumeIds()[0]);
-      assertNotNull(locs[0].getVolumeIds()[1]);
-      assertNull(locs[1].getVolumeIds()[0]);
-      assertNull(locs[1].getVolumeIds()[1]);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -1262,6 +1278,25 @@ public class TestDistributedFileSystem {
         retVal.add(iter.next());
       }
       System.out.println("retVal = " + retVal);
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
+  @Test
+  public void testListStatusOfSnapshotDirs() throws IOException {
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(new HdfsConfiguration())
+        .build();
+    try {
+      DistributedFileSystem dfs = cluster.getFileSystem();
+      dfs.create(new Path("/parent/test1/dfsclose/file-0"));
+      Path snapShotDir = new Path("/parent/test1/");
+      dfs.allowSnapshot(snapShotDir);
+
+      FileStatus status = dfs.getFileStatus(new Path("/parent/test1"));
+      assertTrue(status.isSnapshotEnabled());
+      status = dfs.getFileStatus(new Path("/parent/"));
+      assertFalse(status.isSnapshotEnabled());
     } finally {
       cluster.shutdown();
     }
@@ -1408,6 +1443,252 @@ public class TestDistributedFileSystem {
       // The list of clients corresponding to this renewer should be empty
       assertEquals(true, leaseRenewer.isEmpty());
       assertEquals(true, dfsClient.isFilesBeingWrittenEmpty());
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  private void testBuilderSetters(DistributedFileSystem fs) {
+    Path testFilePath = new Path("/testBuilderSetters");
+    HdfsDataOutputStreamBuilder builder = fs.createFile(testFilePath);
+
+    builder.append().overwrite(false).newBlock().lazyPersist().noLocalWrite()
+        .ecPolicyName("ec-policy");
+    EnumSet<CreateFlag> flags = builder.getFlags();
+    assertTrue(flags.contains(CreateFlag.APPEND));
+    assertTrue(flags.contains(CreateFlag.CREATE));
+    assertTrue(flags.contains(CreateFlag.NEW_BLOCK));
+    assertTrue(flags.contains(CreateFlag.NO_LOCAL_WRITE));
+    assertFalse(flags.contains(CreateFlag.OVERWRITE));
+    assertFalse(flags.contains(CreateFlag.SYNC_BLOCK));
+
+    assertEquals("ec-policy", builder.getEcPolicyName());
+    assertFalse(builder.shouldReplicate());
+  }
+
+  @Test
+  public void testHdfsDataOutputStreamBuilderSetParameters()
+      throws IOException {
+    Configuration conf = getTestConfiguration();
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(1).build()) {
+      cluster.waitActive();
+      DistributedFileSystem fs = cluster.getFileSystem();
+
+      testBuilderSetters(fs);
+    }
+  }
+
+  @Test
+  public void testDFSDataOutputStreamBuilderForCreation() throws Exception {
+    Configuration conf = getTestConfiguration();
+    String testFile = "/testDFSDataOutputStreamBuilder";
+    Path testFilePath = new Path(testFile);
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(1).build()) {
+      DistributedFileSystem fs = cluster.getFileSystem();
+
+      // Before calling build(), no change was made in the file system
+      HdfsDataOutputStreamBuilder builder = fs.createFile(testFilePath)
+          .blockSize(4096).replication((short)1);
+      assertFalse(fs.exists(testFilePath));
+
+      // Test create an empty file
+      try (FSDataOutputStream out =
+               fs.createFile(testFilePath).build()) {
+        LOG.info("Test create an empty file");
+      }
+
+      // Test create a file with content, and verify the content
+      String content = "This is a test!";
+      try (FSDataOutputStream out1 = fs.createFile(testFilePath)
+          .bufferSize(4096)
+          .replication((short) 1)
+          .blockSize(4096)
+          .build()) {
+        byte[] contentOrigin = content.getBytes("UTF8");
+        out1.write(contentOrigin);
+      }
+
+      ContractTestUtils.verifyFileContents(fs, testFilePath,
+          content.getBytes());
+
+      try (FSDataOutputStream out = fs.createFile(testFilePath).overwrite(false)
+        .build()) {
+        fail("it should fail to overwrite an existing file");
+      } catch (FileAlreadyExistsException e) {
+        // As expected, ignore.
+      }
+
+      Path nonParentFile = new Path("/parent/test");
+      try (FSDataOutputStream out = fs.createFile(nonParentFile).build()) {
+        fail("parent directory not exist");
+      } catch (FileNotFoundException e) {
+        // As expected.
+      }
+      assertFalse("parent directory should not be created",
+          fs.exists(new Path("/parent")));
+
+      try (FSDataOutputStream out = fs.createFile(nonParentFile).recursive()
+        .build()) {
+        out.write(1);
+      }
+      assertTrue("parent directory has not been created",
+          fs.exists(new Path("/parent")));
+    }
+  }
+
+  @Test
+  public void testDFSDataOutputStreamBuilderForAppend() throws IOException {
+    Configuration conf = getTestConfiguration();
+    String testFile = "/testDFSDataOutputStreamBuilderForAppend";
+    Path path = new Path(testFile);
+    Random random = new Random();
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(1).build()) {
+      DistributedFileSystem fs = cluster.getFileSystem();
+
+      byte[] buf = new byte[16];
+      random.nextBytes(buf);
+
+      try (FSDataOutputStream out = fs.appendFile(path).build()) {
+        out.write(buf);
+        fail("should fail on appending to non-existent file");
+      } catch (IOException e) {
+        GenericTestUtils.assertExceptionContains("non-existent", e);
+      }
+
+      random.nextBytes(buf);
+      try (FSDataOutputStream out = fs.createFile(path).build()) {
+        out.write(buf);
+      }
+
+      random.nextBytes(buf);
+      try (FSDataOutputStream out = fs.appendFile(path).build()) {
+        out.write(buf);
+      }
+
+      FileStatus status = fs.getFileStatus(path);
+      assertEquals(16 * 2, status.getLen());
+    }
+  }
+
+  @Test
+  public void testRemoveErasureCodingPolicy() throws Exception {
+    Configuration conf = getTestConfiguration();
+    MiniDFSCluster cluster = null;
+
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+      DistributedFileSystem fs = cluster.getFileSystem();
+      ECSchema toAddSchema = new ECSchema("rs", 3, 2);
+      ErasureCodingPolicy toAddPolicy =
+          new ErasureCodingPolicy(toAddSchema, 128 * 1024, (byte) 254);
+      String policyName = toAddPolicy.getName();
+      ErasureCodingPolicy[] policies = new ErasureCodingPolicy[]{toAddPolicy};
+      fs.addErasureCodingPolicies(policies);
+      assertEquals(policyName, ErasureCodingPolicyManager.getInstance().
+          getByName(policyName).getName());
+      fs.removeErasureCodingPolicy(policyName);
+      assertEquals(policyName, ErasureCodingPolicyManager.getInstance().
+          getRemovedPolicies().get(0).getName());
+
+      // remove erasure coding policy as a user without privilege
+      UserGroupInformation fakeUGI = UserGroupInformation.createUserForTesting(
+          "ProbablyNotARealUserName", new String[] {"ShangriLa"});
+      final MiniDFSCluster finalCluster = cluster;
+      fakeUGI.doAs(new PrivilegedExceptionAction<Object>() {
+        @Override
+        public Object run() throws Exception {
+          DistributedFileSystem fs = finalCluster.getFileSystem();
+          try {
+            fs.removeErasureCodingPolicy(policyName);
+            fail();
+          } catch (AccessControlException ace) {
+            GenericTestUtils.assertExceptionContains("Access denied for user " +
+                "ProbablyNotARealUserName. Superuser privilege is required",
+                ace);
+          }
+          return null;
+        }
+      });
+
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  @Test
+  public void testEnableAndDisableErasureCodingPolicy() throws Exception {
+    Configuration conf = getTestConfiguration();
+    MiniDFSCluster cluster = null;
+
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+      DistributedFileSystem fs = cluster.getFileSystem();
+      ECSchema toAddSchema = new ECSchema("rs", 3, 2);
+      ErasureCodingPolicy toAddPolicy =
+          new ErasureCodingPolicy(toAddSchema, 128 * 1024, (byte) 254);
+      String policyName = toAddPolicy.getName();
+      ErasureCodingPolicy[] policies =
+          new ErasureCodingPolicy[]{toAddPolicy};
+      fs.addErasureCodingPolicies(policies);
+      assertEquals(policyName, ErasureCodingPolicyManager.getInstance().
+          getByName(policyName).getName());
+      fs.disableErasureCodingPolicy(policyName);
+      fs.enableErasureCodingPolicy(policyName);
+      assertEquals(policyName, ErasureCodingPolicyManager.getInstance().
+          getByName(policyName).getName());
+
+      //test enable a policy that doesn't exist
+      try {
+        fs.enableErasureCodingPolicy("notExistECName");
+        Assert.fail("enable the policy that doesn't exist should fail");
+      } catch (Exception e) {
+        GenericTestUtils.assertExceptionContains("does not exist", e);
+        // pass
+      }
+
+      //test disable a policy that doesn't exist
+      try {
+        fs.disableErasureCodingPolicy("notExistECName");
+        Assert.fail("disable the policy that doesn't exist should fail");
+      } catch (Exception e) {
+        GenericTestUtils.assertExceptionContains("does not exist", e);
+        // pass
+      }
+
+      // disable and enable erasure coding policy as a user without privilege
+      UserGroupInformation fakeUGI = UserGroupInformation.createUserForTesting(
+          "ProbablyNotARealUserName", new String[] {"ShangriLa"});
+      final MiniDFSCluster finalCluster = cluster;
+      fakeUGI.doAs(new PrivilegedExceptionAction<Object>() {
+        @Override
+        public Object run() throws Exception {
+          DistributedFileSystem fs = finalCluster.getFileSystem();
+          try {
+            fs.disableErasureCodingPolicy(policyName);
+            fail();
+          } catch (AccessControlException ace) {
+            GenericTestUtils.assertExceptionContains("Access denied for user " +
+                    "ProbablyNotARealUserName. Superuser privilege is required",
+                ace);
+          }
+          try {
+            fs.enableErasureCodingPolicy(policyName);
+            fail();
+          } catch (AccessControlException ace) {
+            GenericTestUtils.assertExceptionContains("Access denied for user " +
+                    "ProbablyNotARealUserName. Superuser privilege is required",
+                ace);
+          }
+          return null;
+        }
+      });
     } finally {
       if (cluster != null) {
         cluster.shutdown();

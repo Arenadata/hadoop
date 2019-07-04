@@ -15,30 +15,7 @@
 HDFS High Availability Using the Quorum Journal Manager
 =======================================================
 
-* [HDFS High Availability Using the Quorum Journal Manager](#HDFS_High_Availability_Using_the_Quorum_Journal_Manager)
-    * [Purpose](#Purpose)
-    * [Note: Using the Quorum Journal Manager or Conventional Shared Storage](#Note:_Using_the_Quorum_Journal_Manager_or_Conventional_Shared_Storage)
-    * [Background](#Background)
-    * [Architecture](#Architecture)
-    * [Hardware resources](#Hardware_resources)
-    * [Deployment](#Deployment)
-        * [Configuration overview](#Configuration_overview)
-        * [Configuration details](#Configuration_details)
-        * [Deployment details](#Deployment_details)
-        * [Administrative commands](#Administrative_commands)
-    * [Automatic Failover](#Automatic_Failover)
-        * [Introduction](#Introduction)
-        * [Components](#Components)
-        * [Deploying ZooKeeper](#Deploying_ZooKeeper)
-        * [Before you begin](#Before_you_begin)
-        * [Configuring automatic failover](#Configuring_automatic_failover)
-        * [Initializing HA state in ZooKeeper](#Initializing_HA_state_in_ZooKeeper)
-        * [Starting the cluster with start-dfs.sh](#Starting_the_cluster_with_start-dfs.sh)
-        * [Starting the cluster manually](#Starting_the_cluster_manually)
-        * [Securing access to ZooKeeper](#Securing_access_to_ZooKeeper)
-        * [Verifying automatic failover](#Verifying_automatic_failover)
-    * [Automatic Failover FAQ](#Automatic_Failover_FAQ)
-    * [HDFS Upgrade/Finalization/Rollback with HA Enabled](#HDFS_UpgradeFinalizationRollback_with_HA_Enabled)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Purpose
 -------
@@ -65,16 +42,16 @@ This impacted the total availability of the HDFS cluster in two major ways:
 * Planned maintenance events such as software or hardware upgrades on the
   NameNode machine would result in windows of cluster downtime.
 
-The HDFS High Availability feature addresses the above problems by providing the option of running two redundant NameNodes in the same cluster in an Active/Passive configuration with a hot standby. This allows a fast failover to a new NameNode in the case that a machine crashes, or a graceful administrator-initiated failover for the purpose of planned maintenance.
+The HDFS High Availability feature addresses the above problems by providing the option of running two (and as of 3.0.0 more than two) redundant NameNodes in the same cluster in an Active/Passive configuration with a hot standby. This allows a fast failover to a new NameNode in the case that a machine crashes, or a graceful administrator-initiated failover for the purpose of planned maintenance.
 
 Architecture
 ------------
 
-In a typical HA cluster, two separate machines are configured as NameNodes. At any point in time, exactly one of the NameNodes is in an *Active* state, and the other is in a *Standby* state. The Active NameNode is responsible for all client operations in the cluster, while the Standby is simply acting as a slave, maintaining enough state to provide a fast failover if necessary.
+In a typical HA cluster, two or more separate machines are configured as NameNodes. At any point in time, exactly one of the NameNodes is in an *Active* state, and the others are in a *Standby* state. The Active NameNode is responsible for all client operations in the cluster, while the Standbys are simply acting as workers, maintaining enough state to provide a fast failover if necessary.
 
-In order for the Standby node to keep its state synchronized with the Active node, both nodes communicate with a group of separate daemons called "JournalNodes" (JNs). When any namespace modification is performed by the Active node, it durably logs a record of the modification to a majority of these JNs. The Standby node is capable of reading the edits from the JNs, and is constantly watching them for changes to the edit log. As the Standby Node sees the edits, it applies them to its own namespace. In the event of a failover, the Standby will ensure that it has read all of the edits from the JounalNodes before promoting itself to the Active state. This ensures that the namespace state is fully synchronized before a failover occurs.
+In order for the Standby node to keep its state synchronized with the Active node, both nodes communicate with a group of separate daemons called "JournalNodes" (JNs). When any namespace modification is performed by the Active node, it durably logs a record of the modification to a majority of these JNs. The Standby node is capable of reading the edits from the JNs, and is constantly watching them for changes to the edit log. As the Standby Node sees the edits, it applies them to its own namespace. In the event of a failover, the Standby will ensure that it has read all of the edits from the JournalNodes before promoting itself to the Active state. This ensures that the namespace state is fully synchronized before a failover occurs.
 
-In order to provide a fast failover, it is also necessary that the Standby node have up-to-date information regarding the location of blocks in the cluster. In order to achieve this, the DataNodes are configured with the location of both NameNodes, and send block location information and heartbeats to both.
+In order to provide a fast failover, it is also necessary that the Standby node have up-to-date information regarding the location of blocks in the cluster. In order to achieve this, the DataNodes are configured with the location of all NameNodes, and send block location information and heartbeats to all.
 
 It is vital for the correct operation of an HA cluster that only one of the NameNodes be Active at a time. Otherwise, the namespace state would quickly diverge between the two, risking data loss or other incorrect results. In order to ensure this property and prevent the so-called "split-brain scenario," the JournalNodes will only ever allow a single NameNode to be a writer at a time. During a failover, the NameNode which is to become active will simply take over the role of writing to the JournalNodes, which will effectively prevent the other NameNode from continuing in the Active state, allowing the new Active to safely proceed with failover.
 
@@ -99,7 +76,7 @@ In order to deploy an HA cluster, you should prepare the following:
   running with N JournalNodes, the system can tolerate at most (N - 1) / 2
   failures and continue to function normally.
 
-Note that, in an HA cluster, the Standby NameNode also performs checkpoints of the namespace state, and thus it is not necessary to run a Secondary NameNode, CheckpointNode, or BackupNode in an HA cluster. In fact, to do so would be an error. This also allows one who is reconfiguring a non-HA-enabled HDFS cluster to be HA-enabled to reuse the hardware which they had previously dedicated to the Secondary NameNode.
+Note that, in an HA cluster, the Standby NameNodes also performs checkpoints of the namespace state, and thus it is not necessary to run a Secondary NameNode, CheckpointNode, or BackupNode in an HA cluster. In fact, to do so would be an error. This also allows one who is reconfiguring a non-HA-enabled HDFS cluster to be HA-enabled to reuse the hardware which they had previously dedicated to the Secondary NameNode.
 
 Deployment
 ----------
@@ -136,16 +113,16 @@ The order in which you set these configurations is unimportant, but the values y
 
     Configure with a list of comma-separated NameNode IDs. This will be used by
     DataNodes to determine all the NameNodes in the cluster. For example, if you
-    used "mycluster" as the nameservice ID previously, and you wanted to use "nn1"
-    and "nn2" as the individual IDs of the NameNodes, you would configure this as
+    used "mycluster" as the nameservice ID previously, and you wanted to use "nn1",
+    "nn2" and "nn3" as the individual IDs of the NameNodes, you would configure this as
     such:
 
         <property>
           <name>dfs.ha.namenodes.mycluster</name>
-          <value>nn1,nn2</value>
+          <value>nn1,nn2, nn3</value>
         </property>
 
-    **Note:** Currently, only a maximum of two NameNodes may be configured per nameservice.
+    **Note:** The minimum number of NameNodes for HA is two, but you can configure more. Its suggested to not exceed 5 - with a recommended 3 NameNodes - due to communication overheads.
 
 *   **dfs.namenode.rpc-address.[nameservice ID].[name node ID]** - the fully-qualified RPC address for each NameNode to listen on
 
@@ -161,6 +138,10 @@ The order in which you set these configurations is unimportant, but the values y
           <name>dfs.namenode.rpc-address.mycluster.nn2</name>
           <value>machine2.example.com:8020</value>
         </property>
+        <property>
+          <name>dfs.namenode.rpc-address.mycluster.nn3</name>
+          <value>machine3.example.com:8020</value>
+        </property>
 
     **Note:** You may similarly configure the "**servicerpc-address**" setting if you so desire.
 
@@ -171,11 +152,15 @@ The order in which you set these configurations is unimportant, but the values y
 
         <property>
           <name>dfs.namenode.http-address.mycluster.nn1</name>
-          <value>machine1.example.com:50070</value>
+          <value>machine1.example.com:9870</value>
         </property>
         <property>
           <name>dfs.namenode.http-address.mycluster.nn2</name>
-          <value>machine2.example.com:50070</value>
+          <value>machine2.example.com:9870</value>
+        </property>
+        <property>
+          <name>dfs.namenode.http-address.mycluster.nn3</name>
+          <value>machine3.example.com:9870</value>
         </property>
 
     **Note:** If you have Hadoop's security features enabled, you should also set
@@ -359,7 +344,7 @@ The order in which you set these configurations is unimportant, but the values y
 
 ### Deployment details
 
-After all of the necessary configuration options have been set, you must start the JournalNode daemons on the set of machines where they will run. This can be done by running the command "*hadoop-daemon.sh start journalnode*" and waiting for the daemon to start on each of the relevant machines.
+After all of the necessary configuration options have been set, you must start the JournalNode daemons on the set of machines where they will run. This can be done by running the command "*hdfs \--daemon start journalnode*" and waiting for the daemon to start on each of the relevant machines.
 
 Once the JournalNodes have been started, one must initially synchronize the two HA NameNodes' on-disk metadata.
 
@@ -369,8 +354,8 @@ Once the JournalNodes have been started, one must initially synchronize the two 
 * If you have already formatted the NameNode, or are converting a
   non-HA-enabled cluster to be HA-enabled, you should now copy over the
   contents of your NameNode metadata directories to the other, unformatted
-  NameNode by running the command "*hdfs namenode -bootstrapStandby*" on the
-  unformatted NameNode. Running this command will also ensure that the
+  NameNode(s) by running the command "*hdfs namenode -bootstrapStandby*" on the
+  unformatted NameNode(s). Running this command will also ensure that the
   JournalNodes (as configured by **dfs.namenode.shared.edits.dir**) contain
   sufficient edits transactions to be able to start both NameNodes.
 
@@ -378,7 +363,7 @@ Once the JournalNodes have been started, one must initially synchronize the two 
   command "*hdfs namenode -initializeSharedEdits*", which will initialize the
   JournalNodes with the edits data from the local NameNode edits directories.
 
-At this point you may start both of your HA NameNodes as you normally would start a NameNode.
+At this point you may start all your HA NameNodes as you normally would start a NameNode.
 
 You can visit each of the NameNodes' web pages separately by browsing to their configured HTTP addresses. You should notice that next to the configured address will be the HA state of the NameNode (either "standby" or "active".) Whenever an HA NameNode starts, it is initially in the Standby state.
 
@@ -391,6 +376,7 @@ Now that your HA NameNodes are configured and started, you will have access to s
         [-transitionToStandby <serviceId>]
         [-failover [--forcefence] [--forceactive] <serviceId> <serviceId>]
         [-getServiceState <serviceId>]
+        [-getAllServiceState]
         [-checkHealth <serviceId>]
         [-help <command>]
 
@@ -422,6 +408,11 @@ This guide describes high-level uses of each of these subcommands. For specific 
     used by cron jobs or monitoring scripts which need to behave differently based
     on whether the NameNode is currently Active or Standby.
 
+*   **getAllServiceState** - returns the state of all the NameNodes
+
+    Connect to the configured NameNodes to determine the current state, print
+    either "standby" or "active" to STDOUT appropriately.
+
 *   **checkHealth** - check the health of the given NameNode
 
     Connect to the provided NameNode to check its health. The NameNode is capable
@@ -447,7 +438,7 @@ Apache ZooKeeper is a highly available service for maintaining small amounts of 
 
 * **Failure detection** - each of the NameNode machines in the cluster
   maintains a persistent session in ZooKeeper. If the machine crashes, the
-  ZooKeeper session will expire, notifying the other NameNode that a failover
+  ZooKeeper session will expire, notifying the other NameNode(s) that a failover
   should be triggered.
 
 * **Active NameNode election** - ZooKeeper provides a simple mechanism to
@@ -515,7 +506,7 @@ There are also several other configuration parameters which may be set to contro
 
 After the configuration keys have been added, the next step is to initialize required state in ZooKeeper. You can do so by running the following command from one of the NameNode hosts.
 
-    [hdfs]$ $HADOOP_PREFIX/bin/hdfs zkfc -formatZK
+    [hdfs]$ $HADOOP_HOME/bin/hdfs zkfc -formatZK
 
 This will create a znode in ZooKeeper inside of which the automatic failover system stores its data.
 
@@ -527,8 +518,7 @@ Since automatic failover has been enabled in the configuration, the `start-dfs.s
 
 If you manually manage the services on your cluster, you will need to manually start the `zkfc` daemon on each of the machines that runs a NameNode. You can start the daemon by running:
 
-    [hdfs]$ $HADOOP_PREFIX/sbin/hadoop-daemon.sh --script $HADOOP_PREFIX/bin/hdfs start zkfc
-
+    [hdfs]$ $HADOOP_HOME/bin/hdfs --daemon start zkfc
 
 ### Securing access to ZooKeeper
 
@@ -545,7 +535,7 @@ In order to secure the information in ZooKeeper, first add the following to your
        <value>@/path/to/zk-acl.txt</value>
      </property>
 
-Please note the '@' character in these values -- this specifies that the configurations are not inline, but rather point to a file on disk.
+Please note the '@' character in these values -- this specifies that the configurations are not inline, but rather point to a file on disk. The authentication info may also be read via a CredentialProvider (pls see the CredentialProviderAPI Guide in the hadoop-common project).
 
 The first configured file specifies a list of ZooKeeper authentications, in the same format as used by the ZK CLI. For example, you may specify something like:
 

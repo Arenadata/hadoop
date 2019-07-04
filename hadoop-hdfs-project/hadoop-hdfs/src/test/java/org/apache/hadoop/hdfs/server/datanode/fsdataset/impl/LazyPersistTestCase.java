@@ -18,7 +18,6 @@
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
 import com.google.common.base.Supplier;
-import org.apache.commons.lang.UnhandledException;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
@@ -130,12 +129,12 @@ public abstract class LazyPersistTestCase {
   public Timeout timeout = new Timeout(300000);
 
   protected final LocatedBlocks ensureFileReplicasOnStorageType(
-      final Path path, final StorageType storageType)
+      Path path, StorageType storageType)
       throws IOException, TimeoutException, InterruptedException {
     // Ensure that returned block locations returned are correct!
     LOG.info("Ensure path: " + path + " is on StorageType: " + storageType);
     assertThat(fs.exists(path), is(true));
-    final long fileLength = client.getFileInfo(path.toString()).getLen();
+    long fileLength = client.getFileInfo(path.toString()).getLen();
 
     GenericTestUtils.waitFor(new Supplier<Boolean>() {
       @Override
@@ -468,7 +467,7 @@ public abstract class LazyPersistTestCase {
     triggerBlockReport();
 
     while(
-      DataNodeTestUtils.getPendingAsyncDeletions(cluster.getDataNodes().get(0))
+        cluster.getFsDatasetTestUtils(0).getPendingAsyncDeletions()
         > 0L){
       Thread.sleep(1000);
     }

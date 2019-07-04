@@ -23,12 +23,25 @@ import java.util.regex.Pattern;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.regex.Matcher;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
+import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+import org.apache.hadoop.hdfs.server.common.Storage;
+import org.apache.hadoop.hdfs.server.datanode.checker.Checkable;
+import org.apache.hadoop.hdfs.server.datanode.checker.VolumeCheckResult;
+import org.apache.hadoop.util.DiskChecker;
 import org.apache.hadoop.util.StringUtils;
+
 
 /**
  * Encapsulates the URI and storage medium that together describe a
@@ -37,10 +50,11 @@ import org.apache.hadoop.util.StringUtils;
  *
  */
 @InterfaceAudience.Private
-public class StorageLocation {
-  final StorageType storageType;
-  final File file;
-
+public class StorageLocation
+    implements Checkable<StorageLocation.CheckContext, VolumeCheckResult>,
+               Comparable<StorageLocation> {
+  private final StorageType storageType;
+  private final URI baseURI;
   /** Regular expression that describes a storage uri with a storage type.
    *  e.g. [Disk]/storages/storage1/
    */
@@ -48,13 +62,24 @@ public class StorageLocation {
 
   private StorageLocation(StorageType storageType, URI uri) {
     this.storageType = storageType;
+    if (uri.getScheme() == null || uri.getScheme().equals("file")) {
+      // make sure all URIs that point to a file have the same scheme
+      uri = normalizeFileURI(uri);
+    }
+    baseURI = uri;
+  }
 
-    if (uri.getScheme() == null ||
-        "file".equalsIgnoreCase(uri.getScheme())) {
-      // drop any (illegal) authority in the URI for backwards compatibility
-      this.file = new File(uri.getPath());
-    } else {
-      throw new IllegalArgumentException("Unsupported URI schema in " + uri);
+  public static URI normalizeFileURI(URI uri) {
+    try {
+      File uriFile = new File(uri.getPath());
+      String uriStr = uriFile.toURI().normalize().toString();
+      if (uriStr.endsWith("/")) {
+        uriStr = uriStr.substring(0, uriStr.length() - 1);
+      }
+      return new URI(uriStr);
+    } catch (URISyntaxException e) {
+      throw new IllegalArgumentException(
+              "URI: " + uri + " is not in the expected format");
     }
   }
 
@@ -62,12 +87,33 @@ public class StorageLocation {
     return this.storageType;
   }
 
-  URI getUri() {
-    return file.toURI();
+  public URI getUri() {
+    return baseURI;
   }
 
-  public File getFile() {
-    return this.file;
+  public URI getNormalizedUri() {
+    return baseURI.normalize();
+  }
+
+  public boolean matchesStorageDirectory(StorageDirectory sd)
+      throws IOException {
+    return this.equals(sd.getStorageLocation());
+  }
+
+  public boolean matchesStorageDirectory(StorageDirectory sd,
+      String bpid) throws IOException {
+    if (sd.getStorageLocation().getStorageType() == StorageType.PROVIDED &&
+        storageType == StorageType.PROVIDED) {
+      return matchesStorageDirectory(sd);
+    }
+    if (sd.getStorageLocation().getStorageType() == StorageType.PROVIDED ||
+        storageType == StorageType.PROVIDED) {
+      // only one PROVIDED storage directory can exist; so this cannot match!
+      return false;
+    }
+    // both storage directories are local
+    return this.getBpURI(bpid, Storage.STORAGE_DIR_CURRENT).normalize()
+        .equals(sd.getRoot().toURI().normalize());
   }
 
   /**
@@ -93,27 +139,122 @@ public class StorageLocation {
             StorageType.valueOf(StringUtils.toUpperCase(classString));
       }
     }
-
+    //do Path.toURI instead of new URI(location) as this ensures that
+    //"/a/b" and "/a/b/" are represented in a consistent manner
     return new StorageLocation(storageType, new Path(location).toUri());
   }
 
   @Override
   public String toString() {
-    return "[" + storageType + "]" + file.toURI();
+    return "[" + storageType + "]" + baseURI.normalize();
   }
 
   @Override
   public boolean equals(Object obj) {
-    if (obj == this) {
-      return true;
-    } else if (obj == null || !(obj instanceof StorageLocation)) {
+    if (obj == null || !(obj instanceof StorageLocation)) {
       return false;
     }
-    return toString().equals(obj.toString());
+    int comp = compareTo((StorageLocation) obj);
+    return comp == 0;
   }
 
   @Override
   public int hashCode() {
     return toString().hashCode();
+  }
+
+  @Override
+  public int compareTo(StorageLocation obj) {
+    if (obj == this) {
+      return 0;
+    } else if (obj == null) {
+      return -1;
+    }
+
+    StorageLocation otherStorage = (StorageLocation) obj;
+    if (this.getNormalizedUri() != null &&
+        otherStorage.getNormalizedUri() != null) {
+      return this.getNormalizedUri().compareTo(
+          otherStorage.getNormalizedUri());
+    } else if (this.getNormalizedUri() == null &&
+        otherStorage.getNormalizedUri() == null) {
+      return this.storageType.compareTo(otherStorage.getStorageType());
+    } else if (this.getNormalizedUri() == null) {
+      return -1;
+    } else {
+      return 1;
+    }
+
+  }
+
+  public URI getBpURI(String bpid, String currentStorageDir) {
+    try {
+      File localFile = new File(getUri());
+      return new File(new File(localFile, currentStorageDir), bpid).toURI();
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Create physical directory for block pools on the data node.
+   *
+   * @param blockPoolID
+   *          the block pool id
+   * @param conf
+   *          Configuration instance to use.
+   * @throws IOException on errors
+   */
+  public void makeBlockPoolDir(String blockPoolID,
+      Configuration conf) throws IOException {
+
+    if (conf == null) {
+      conf = new HdfsConfiguration();
+    }
+    if (storageType == StorageType.PROVIDED) {
+      // skip creation if the storage type is PROVIDED
+      Storage.LOG.info("Skipping creating directory for block pool "
+          + blockPoolID + " for PROVIDED storage location " + this);
+      return;
+    }
+
+    LocalFileSystem localFS = FileSystem.getLocal(conf);
+    FsPermission permission = new FsPermission(conf.get(
+        DFSConfigKeys.DFS_DATANODE_DATA_DIR_PERMISSION_KEY,
+        DFSConfigKeys.DFS_DATANODE_DATA_DIR_PERMISSION_DEFAULT));
+    File data = new File(getBpURI(blockPoolID, Storage.STORAGE_DIR_CURRENT));
+    try {
+      DiskChecker.checkDir(localFS, new Path(data.toURI()), permission);
+    } catch (IOException e) {
+      DataStorage.LOG.warn("Invalid directory in: " + data.getCanonicalPath() +
+          ": " + e.getMessage());
+    }
+  }
+
+  @Override  // Checkable
+  public VolumeCheckResult check(CheckContext context) throws IOException {
+    // assume provided storage locations are always healthy,
+    // and check only for local storages.
+    if (storageType != StorageType.PROVIDED) {
+      DiskChecker.checkDir(
+          context.localFileSystem,
+          new Path(baseURI),
+          context.expectedPermission);
+    }
+    return VolumeCheckResult.HEALTHY;
+  }
+
+  /**
+   * Class to hold the parameters for running a {@link #check}.
+   */
+  public static final class CheckContext {
+    private final LocalFileSystem localFileSystem;
+    private final FsPermission expectedPermission;
+
+    public CheckContext(LocalFileSystem localFileSystem,
+                        FsPermission expectedPermission) {
+      this.localFileSystem = localFileSystem;
+      this.expectedPermission = expectedPermission;
+    }
   }
 }

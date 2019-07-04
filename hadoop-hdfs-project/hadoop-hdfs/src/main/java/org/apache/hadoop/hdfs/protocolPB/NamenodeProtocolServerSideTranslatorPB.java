@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs.protocolPB;
 import java.io.IOException;
 
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo.DatanodeInfoBuilder;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.VersionRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos.VersionResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.EndCheckpointRequestProto;
@@ -36,6 +37,8 @@ import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetMostRecen
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetMostRecentCheckpointTxIdResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetTransactionIdRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.GetTransactionIdResponseProto;
+import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.IsRollingUpgradeRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.IsRollingUpgradeResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.IsUpgradeFinalizedRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.IsUpgradeFinalizedResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.RegisterRequestProto;
@@ -78,11 +81,13 @@ public class NamenodeProtocolServerSideTranslatorPB implements
   @Override
   public GetBlocksResponseProto getBlocks(RpcController unused,
       GetBlocksRequestProto request) throws ServiceException {
-    DatanodeInfo dnInfo = new DatanodeInfo(PBHelperClient.convert(request
-        .getDatanode()));
+    DatanodeInfo dnInfo = new DatanodeInfoBuilder()
+        .setNodeID(PBHelperClient.convert(request.getDatanode()))
+        .build();
     BlocksWithLocations blocks;
     try {
-      blocks = impl.getBlocks(dnInfo, request.getSize());
+      blocks = impl.getBlocks(dnInfo, request.getSize(),
+          request.getMinBlockSize());
     } catch (IOException e) {
       throw new ServiceException(e);
     }
@@ -237,5 +242,19 @@ public class NamenodeProtocolServerSideTranslatorPB implements
     }
     return IsUpgradeFinalizedResponseProto.newBuilder()
         .setIsUpgradeFinalized(isUpgradeFinalized).build();
+  }
+
+  @Override
+  public IsRollingUpgradeResponseProto isRollingUpgrade(
+      RpcController controller, IsRollingUpgradeRequestProto request)
+      throws ServiceException {
+    boolean isRollingUpgrade;
+    try {
+      isRollingUpgrade = impl.isRollingUpgrade();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return IsRollingUpgradeResponseProto.newBuilder()
+        .setIsRollingUpgrade(isRollingUpgrade).build();
   }
 }

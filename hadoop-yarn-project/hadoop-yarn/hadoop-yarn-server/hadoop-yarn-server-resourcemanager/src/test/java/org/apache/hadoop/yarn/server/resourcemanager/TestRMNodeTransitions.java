@@ -27,7 +27,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
 
@@ -55,6 +57,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeCleanAppEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeCleanContainerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeFinishedContainersPulledByAMEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeReconnectEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNodeResourceUpdateEvent;
@@ -97,13 +100,16 @@ public class TestRMNodeTransitions {
   }
 
   private NodesListManagerEvent nodesListManagerEvent = null;
-  
+  private List<NodeState> nodesListManagerEventsNodeStateSequence =
+      new LinkedList<>();
+
   private class TestNodeListManagerEventDispatcher implements
       EventHandler<NodesListManagerEvent> {
     
     @Override
     public void handle(NodesListManagerEvent event) {
       nodesListManagerEvent = event;
+      nodesListManagerEventsNodeStateSequence.add(event.getNode().getState());
     }
 
   }
@@ -149,7 +155,7 @@ public class TestRMNodeTransitions {
     NodeId nodeId = BuilderUtils.newNodeId("localhost", 0);
     node = new RMNodeImpl(nodeId, rmContext, null, 0, 0, null, null, null);
     nodesListManagerEvent =  null;
-
+    nodesListManagerEventsNodeStateSequence.clear();
   }
   
   @After
@@ -158,15 +164,12 @@ public class TestRMNodeTransitions {
   
   private RMNodeStatusEvent getMockRMNodeStatusEvent(
       List<ContainerStatus> containerStatus) {
-    NodeHeartbeatResponse response = mock(NodeHeartbeatResponse.class);
-
     NodeHealthStatus healthStatus = mock(NodeHealthStatus.class);
     Boolean yes = new Boolean(true);
     doReturn(yes).when(healthStatus).getIsNodeHealthy();
     
     RMNodeStatusEvent event = mock(RMNodeStatusEvent.class);
     doReturn(healthStatus).when(event).getNodeHealthStatus();
-    doReturn(response).when(event).getLatestResponse();
     doReturn(RMNodeEventType.STATUS_UPDATE).when(event).getType();
     if (containerStatus != null) {
       doReturn(containerStatus).when(event).getContainers();
@@ -175,15 +178,12 @@ public class TestRMNodeTransitions {
   }
   
   private RMNodeStatusEvent getMockRMNodeStatusEventWithRunningApps() {
-    NodeHeartbeatResponse response = mock(NodeHeartbeatResponse.class);
-
     NodeHealthStatus healthStatus = mock(NodeHealthStatus.class);
     Boolean yes = new Boolean(true);
     doReturn(yes).when(healthStatus).getIsNodeHealthy();
 
     RMNodeStatusEvent event = mock(RMNodeStatusEvent.class);
     doReturn(healthStatus).when(event).getNodeHealthStatus();
-    doReturn(response).when(event).getLatestResponse();
     doReturn(RMNodeEventType.STATUS_UPDATE).when(event).getType();
     doReturn(getAppIdList()).when(event).getKeepAliveAppIds();
     return event;
@@ -196,15 +196,12 @@ public class TestRMNodeTransitions {
   }
 
   private RMNodeStatusEvent getMockRMNodeStatusEventWithoutRunningApps() {
-    NodeHeartbeatResponse response = mock(NodeHeartbeatResponse.class);
-
     NodeHealthStatus healthStatus = mock(NodeHealthStatus.class);
     Boolean yes = new Boolean(true);
     doReturn(yes).when(healthStatus).getIsNodeHealthy();
 
     RMNodeStatusEvent event = mock(RMNodeStatusEvent.class);
     doReturn(healthStatus).when(event).getNodeHealthStatus();
-    doReturn(response).when(event).getLatestResponse();
     doReturn(RMNodeEventType.STATUS_UPDATE).when(event).getType();
     doReturn(null).when(event).getKeepAliveAppIds();
     return event;
@@ -255,17 +252,6 @@ public class TestRMNodeTransitions {
     Assert.assertEquals("Decommissioning Nodes", initialDecommissioning,
         cm.getNumDecommissioningNMs());
     Assert.assertEquals("Decommissioned Nodes", initialDecommissioned,
-        cm.getNumDecommisionedNMs());
-
-    // Verify node in DECOMMISSIONING will be changed by status update
-    // without running apps
-    statusEvent = getMockRMNodeStatusEventWithoutRunningApps();
-    node.handle(statusEvent);
-    Assert.assertEquals(NodeState.DECOMMISSIONED, node.getState());
-    Assert.assertEquals("Active Nodes", initialActive, cm.getNumActiveNMs());
-    Assert.assertEquals("Decommissioning Nodes", initialDecommissioning - 1,
-        cm.getNumDecommissioningNMs());
-    Assert.assertEquals("Decommissioned Nodes", initialDecommissioned + 1,
         cm.getNumDecommisionedNMs());
   }
 
@@ -651,7 +637,7 @@ public class TestRMNodeTransitions {
     Assert.assertEquals(1, node.getContainersToCleanUp().size());
     Assert.assertEquals(1, node.getAppsToCleanup().size());
     NodeHeartbeatResponse hbrsp = Records.newRecord(NodeHeartbeatResponse.class);
-    node.updateNodeHeartbeatResponseForCleanup(hbrsp);
+    node.setAndUpdateNodeHeartbeatResponse(hbrsp);
     Assert.assertEquals(0, node.getContainersToCleanUp().size());
     Assert.assertEquals(0, node.getAppsToCleanup().size());
     Assert.assertEquals(1, hbrsp.getContainersToCleanup().size());
@@ -731,6 +717,8 @@ public class TestRMNodeTransitions {
     node.handle(new RMNodeEvent(node.getNodeID(),
         RMNodeEventType.GRACEFUL_DECOMMISSION));
     Assert.assertEquals(NodeState.DECOMMISSIONING, node.getState());
+    Assert.assertEquals(Arrays.asList(NodeState.NEW, NodeState.RUNNING),
+        nodesListManagerEventsNodeStateSequence);
     Assert
         .assertEquals("Active Nodes", initialActive - 1, cm.getNumActiveNMs());
     Assert.assertEquals("Decommissioning Nodes", initialDecommissioning + 1,
@@ -927,7 +915,7 @@ public class TestRMNodeTransitions {
 
     Assert.assertEquals(NodeState.REBOOTED, node.getState());
     Assert.assertEquals("Active Nodes", initialActive, cm.getNumActiveNMs());
-    Assert.assertEquals("Unhelathy Nodes", initialUnHealthy,
+    Assert.assertEquals("Unhealthy Nodes", initialUnHealthy,
         cm.getUnhealthyNMs());
     Assert.assertEquals("Decommissioning Nodes", initialDecommissioning,
         cm.getNumDecommissioningNMs());
@@ -1018,7 +1006,7 @@ public class TestRMNodeTransitions {
 
     Assert.assertEquals(NodeState.DECOMMISSIONING, node.getState());
     Assert.assertNotNull(nodesListManagerEvent);
-    Assert.assertEquals(NodesListManagerEventType.NODE_USABLE,
+    Assert.assertEquals(NodesListManagerEventType.NODE_DECOMMISSIONING,
         nodesListManagerEvent.getType());
   }
 
@@ -1075,5 +1063,45 @@ public class TestRMNodeTransitions {
         1, node.getLaunchedContainers().size());
     Assert.assertTrue("second container not running",
         node.getLaunchedContainers().contains(cid2));
+  }
+
+  @Test
+  public void testForHandlingDuplicatedCompltedContainers() {
+    // Start the node
+    node.handle(new RMNodeStartedEvent(null, null, null));
+    // Add info to the queue first
+    node.setNextHeartBeat(false);
+
+    ContainerId completedContainerId1 = BuilderUtils.newContainerId(
+        BuilderUtils.newApplicationAttemptId(BuilderUtils.newApplicationId(0, 0), 0), 0);
+
+    RMNodeStatusEvent statusEvent1 = getMockRMNodeStatusEvent(null);
+
+    ContainerStatus containerStatus1 = mock(ContainerStatus.class);
+
+    doReturn(completedContainerId1).when(containerStatus1).getContainerId();
+    doReturn(Collections.singletonList(containerStatus1)).when(statusEvent1)
+        .getContainers();
+
+    verify(scheduler, times(1)).handle(any(NodeUpdateSchedulerEvent.class));
+    node.handle(statusEvent1);
+    verify(scheduler, times(1)).handle(any(NodeUpdateSchedulerEvent.class));
+    Assert.assertEquals(1, node.getQueueSize());
+    Assert.assertEquals(1, node.getCompletedContainers().size());
+
+    // test for duplicate entries
+    node.handle(statusEvent1);
+    Assert.assertEquals(1, node.getQueueSize());
+
+    // send clean up container event
+    node.handle(new RMNodeFinishedContainersPulledByAMEvent(node.getNodeID(),
+        Collections.singletonList(completedContainerId1)));
+
+    NodeHeartbeatResponse hbrsp =
+        Records.newRecord(NodeHeartbeatResponse.class);
+    node.setAndUpdateNodeHeartbeatResponse(hbrsp);
+
+    Assert.assertEquals(1, hbrsp.getContainersToBeRemovedFromNM().size());
+    Assert.assertEquals(0, node.getCompletedContainers().size());
   }
 }

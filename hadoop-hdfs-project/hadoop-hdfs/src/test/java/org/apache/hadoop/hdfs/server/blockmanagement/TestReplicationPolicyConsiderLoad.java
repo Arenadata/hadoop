@@ -53,7 +53,7 @@ public class TestReplicationPolicyConsiderLoad
   @Override
   DatanodeDescriptor[] getDatanodeDescriptors(Configuration conf) {
     conf.setDouble(DFSConfigKeys
-        .DFS_NAMENODE_REPLICATION_CONSIDERLOAD_FACTOR, 1.2);
+        .DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_FACTOR, 1.2);
     final String[] racks = {
         "/rack1",
         "/rack1",
@@ -100,7 +100,7 @@ public class TestReplicationPolicyConsiderLoad
       // returns false
       for (int i = 0; i < 3; i++) {
         DatanodeDescriptor d = dataNodes[i];
-        dnManager.getDecomManager().startDecommission(d);
+        dnManager.getDatanodeAdminManager().startDecommission(d);
         d.setDecommissioned();
       }
       assertEquals((double)load/3, dnManager.getFSClusterStats()
@@ -126,6 +126,7 @@ public class TestReplicationPolicyConsiderLoad
       dataNodes[2].stopDecommission();
       namenode.getNamesystem().writeUnlock();
     }
+    NameNode.LOG.info("Done working on it");
   }
 
   @Test

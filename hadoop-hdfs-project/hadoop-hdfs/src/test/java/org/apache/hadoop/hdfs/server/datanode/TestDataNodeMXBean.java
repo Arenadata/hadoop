@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -25,23 +26,33 @@ import java.util.Map;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Supplier;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Test;
-import org.mortbay.util.ajax.JSON;
+import org.eclipse.jetty.util.ajax.JSON;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Class for testing {@link DataNodeMXBean} implementation
  */
 public class TestDataNodeMXBean {
+
+  public static final Log LOG = LogFactory.getLog(TestDataNodeMXBean.class);
+
   @Test
   public void testDataNodeMXBean() throws Exception {
     Configuration conf = new Configuration();
@@ -61,6 +72,12 @@ public class TestDataNodeMXBean {
       // get attribute "Version"
       String version = (String)mbs.getAttribute(mxbeanName, "Version");
       Assert.assertEquals(datanode.getVersion(),version);
+      // get attribute "SotfwareVersion"
+      String softwareVersion =
+          (String)mbs.getAttribute(mxbeanName, "SoftwareVersion");
+      Assert.assertEquals(datanode.getSoftwareVersion(),softwareVersion);
+      Assert.assertEquals(version, softwareVersion
+          + ", r" + datanode.getRevision());
       // get attribute "RpcPort"
       String rpcPort = (String)mbs.getAttribute(mxbeanName, "RpcPort");
       Assert.assertEquals(datanode.getRpcPort(),rpcPort);
@@ -71,6 +88,10 @@ public class TestDataNodeMXBean {
       String namenodeAddresses = (String)mbs.getAttribute(mxbeanName, 
           "NamenodeAddresses");
       Assert.assertEquals(datanode.getNamenodeAddresses(),namenodeAddresses);
+      // get attribute "getDatanodeHostname"
+      String datanodeHostname = (String)mbs.getAttribute(mxbeanName,
+          "DatanodeHostname");
+      Assert.assertEquals(datanode.getDatanodeHostname(),datanodeHostname);
       // get attribute "getVolumeInfo"
       String volumeInfo = (String)mbs.getAttribute(mxbeanName, "VolumeInfo");
       Assert.assertEquals(replaceDigits(datanode.getVolumeInfo()),
@@ -88,13 +109,59 @@ public class TestDataNodeMXBean {
       String bpActorInfo = (String)mbs.getAttribute(mxbeanName,
           "BPServiceActorInfo");
       Assert.assertEquals(datanode.getBPServiceActorInfo(), bpActorInfo);
+      String slowDisks = (String)mbs.getAttribute(mxbeanName, "SlowDisks");
+      Assert.assertEquals(datanode.getSlowDisks(), slowDisks);
     } finally {
-      if (cluster != null) {cluster.shutdown();}
+      if (cluster != null) {
+        cluster.shutdown();
+      }
     }
   }
   
   private static String replaceDigits(final String s) {
     return s.replaceAll("[0-9]+", "_DIGITS_");
+  }
+
+  @Test
+  public void testDataNodeMXBeanBlockSize() throws Exception {
+    Configuration conf = new Configuration();
+
+    try(MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).build()) {
+      DataNode dn = cluster.getDataNodes().get(0);
+      for (int i = 0; i < 100; i++) {
+        DFSTestUtil.writeFile(
+            cluster.getFileSystem(),
+            new Path("/foo" + String.valueOf(i) + ".txt"), "test content");
+      }
+      DataNodeTestUtils.triggerBlockReport(dn);
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName = new ObjectName(
+          "Hadoop:service=DataNode,name=DataNodeInfo");
+      String bpActorInfo = (String)mbs.getAttribute(mxbeanName,
+          "BPServiceActorInfo");
+      Assert.assertEquals(dn.getBPServiceActorInfo(), bpActorInfo);
+      LOG.info("bpActorInfo is " + bpActorInfo);
+      TypeReference<ArrayList<Map<String, String>>> typeRef
+          = new TypeReference<ArrayList<Map<String, String>>>() {};
+      ArrayList<Map<String, String>> bpActorInfoList =
+          new ObjectMapper().readValue(bpActorInfo, typeRef);
+      int maxDataLength =
+          Integer.valueOf(bpActorInfoList.get(0).get("maxDataLength"));
+      int confMaxDataLength = dn.getConf().getInt(
+          CommonConfigurationKeys.IPC_MAXIMUM_DATA_LENGTH,
+          CommonConfigurationKeys.IPC_MAXIMUM_DATA_LENGTH_DEFAULT);
+      int maxBlockReportSize =
+          Integer.valueOf(bpActorInfoList.get(0).get("maxBlockReportSize"));
+      LOG.info("maxDataLength is " + maxDataLength);
+      LOG.info("maxBlockReportSize is " + maxBlockReportSize);
+      assertTrue("maxBlockReportSize should be greater than zero",
+          maxBlockReportSize > 0);
+      assertEquals("maxDataLength should be exactly "
+          + "the same value of ipc.maximum.data.length",
+          confMaxDataLength,
+          maxDataLength);
+    }
   }
 
   @Test
@@ -106,8 +173,8 @@ public class TestDataNodeMXBean {
       List<DataNode> datanodes = cluster.getDataNodes();
       assertEquals(datanodes.size(), 1);
 
-      final MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-      final ObjectName mxbeanName =
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName =
               new ObjectName("Hadoop:service=DataNode,name=DataNodeInfo");
       FileSystem fs = cluster.getFileSystem();
       for (int i = 0; i < 5; i++) {
@@ -150,5 +217,31 @@ public class TestDataNodeMXBean {
       totalBlocks += volumeInfoMap.get("numBlocks");
     }
     return totalBlocks;
+  }
+
+  @Test
+  public void testDataNodeMXBeanSlowDisksEnabled() throws Exception {
+    Configuration conf = new Configuration();
+    conf.setInt(DFSConfigKeys
+        .DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY, 100);
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+
+    try {
+      List<DataNode> datanodes = cluster.getDataNodes();
+      Assert.assertEquals(datanodes.size(), 1);
+      DataNode datanode = datanodes.get(0);
+      String slowDiskPath = "test/data1/slowVolume";
+      datanode.getDiskMetrics().addSlowDiskForTesting(slowDiskPath, null);
+
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName = new ObjectName(
+          "Hadoop:service=DataNode,name=DataNodeInfo");
+
+      String slowDisks = (String)mbs.getAttribute(mxbeanName, "SlowDisks");
+      Assert.assertEquals(datanode.getSlowDisks(), slowDisks);
+      Assert.assertTrue(slowDisks.contains(slowDiskPath));
+    } finally {
+      if (cluster != null) {cluster.shutdown();}
+    }
   }
 }

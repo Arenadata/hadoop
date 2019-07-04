@@ -31,6 +31,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.util.DiskChecker.DiskOutOfSpaceException;
 
 /**
@@ -39,11 +40,15 @@ import org.apache.hadoop.util.DiskChecker.DiskOutOfSpaceException;
  * new replica allocation. By default this policy prefers assigning replicas to
  * those volumes with more available free space, so as to over time balance the
  * available space of all the volumes within a DN.
+ * Use fine-grained locks to enable choosing volumes of different storage
+ * types concurrently.
  */
 public class AvailableSpaceVolumeChoosingPolicy<V extends FsVolumeSpi>
     implements VolumeChoosingPolicy<V>, Configurable {
   
   private static final Log LOG = LogFactory.getLog(AvailableSpaceVolumeChoosingPolicy.class);
+
+  private Object[] syncLocks;
   
   private final Random random;
   
@@ -52,14 +57,24 @@ public class AvailableSpaceVolumeChoosingPolicy<V extends FsVolumeSpi>
 
   AvailableSpaceVolumeChoosingPolicy(Random random) {
     this.random = random;
+    initLocks();
   }
 
   public AvailableSpaceVolumeChoosingPolicy() {
     this(new Random());
+    initLocks();
+  }
+
+  private void initLocks() {
+    int numStorageTypes = StorageType.values().length;
+    syncLocks = new Object[numStorageTypes];
+    for (int i = 0; i < numStorageTypes; i++) {
+      syncLocks[i] = new Object();
+    }
   }
 
   @Override
-  public synchronized void setConf(Configuration conf) {
+  public void setConf(Configuration conf) {
     balancedSpaceThreshold = conf.getLong(
         DFS_DATANODE_AVAILABLE_SPACE_VOLUME_CHOOSING_POLICY_BALANCED_SPACE_THRESHOLD_KEY,
         DFS_DATANODE_AVAILABLE_SPACE_VOLUME_CHOOSING_POLICY_BALANCED_SPACE_THRESHOLD_DEFAULT);
@@ -85,7 +100,7 @@ public class AvailableSpaceVolumeChoosingPolicy<V extends FsVolumeSpi>
   }
   
   @Override
-  public synchronized Configuration getConf() {
+  public Configuration getConf() {
     // Nothing to do. Only added to fulfill the Configurable contract.
     return null;
   }
@@ -98,19 +113,32 @@ public class AvailableSpaceVolumeChoosingPolicy<V extends FsVolumeSpi>
       new RoundRobinVolumeChoosingPolicy<V>();
 
   @Override
-  public synchronized V chooseVolume(List<V> volumes,
-      long replicaSize) throws IOException {
+  public V chooseVolume(List<V> volumes, long replicaSize, String storageId)
+      throws IOException {
     if (volumes.size() < 1) {
       throw new DiskOutOfSpaceException("No more available volumes");
     }
-    
+    // As all the items in volumes are with the same storage type,
+    // so only need to get the storage type index of the first item in volumes
+    StorageType storageType = volumes.get(0).getStorageType();
+    int index = storageType != null ?
+            storageType.ordinal() : StorageType.DEFAULT.ordinal();
+
+    synchronized (syncLocks[index]) {
+      return doChooseVolume(volumes, replicaSize, storageId);
+    }
+  }
+
+  private V doChooseVolume(final List<V> volumes, long replicaSize,
+      String storageId) throws IOException {
     AvailableSpaceVolumeList volumesWithSpaces =
         new AvailableSpaceVolumeList(volumes);
     
     if (volumesWithSpaces.areAllVolumesWithinFreeSpaceThreshold()) {
       // If they're actually not too far out of whack, fall back on pure round
       // robin.
-      V volume = roundRobinPolicyBalanced.chooseVolume(volumes, replicaSize);
+      V volume = roundRobinPolicyBalanced.chooseVolume(volumes, replicaSize,
+          storageId);
       if (LOG.isDebugEnabled()) {
         LOG.debug("All volumes are within the configured free space balance " +
             "threshold. Selecting " + volume + " for write of block size " +
@@ -138,7 +166,7 @@ public class AvailableSpaceVolumeChoosingPolicy<V extends FsVolumeSpi>
       if (mostAvailableAmongLowVolumes < replicaSize ||
           random.nextFloat() < scaledPreferencePercent) {
         volume = roundRobinPolicyHighAvailable.chooseVolume(
-            highAvailableVolumes, replicaSize);
+            highAvailableVolumes, replicaSize, storageId);
         if (LOG.isDebugEnabled()) {
           LOG.debug("Volumes are imbalanced. Selecting " + volume +
               " from high available space volumes for write of block size "
@@ -146,7 +174,7 @@ public class AvailableSpaceVolumeChoosingPolicy<V extends FsVolumeSpi>
         }
       } else {
         volume = roundRobinPolicyLowAvailable.chooseVolume(
-            lowAvailableVolumes, replicaSize);
+            lowAvailableVolumes, replicaSize, storageId);
         if (LOG.isDebugEnabled()) {
           LOG.debug("Volumes are imbalanced. Selecting " + volume +
               " from low available space volumes for write of block size "
@@ -239,7 +267,8 @@ public class AvailableSpaceVolumeChoosingPolicy<V extends FsVolumeSpi>
   
   /**
    * Used so that we only check the available space on a given volume once, at
-   * the beginning of {@link AvailableSpaceVolumeChoosingPolicy#chooseVolume(List, long)}.
+   * the beginning of
+   * {@link AvailableSpaceVolumeChoosingPolicy#chooseVolume}.
    */
   private class AvailableSpaceVolumePair {
     private final V volume;

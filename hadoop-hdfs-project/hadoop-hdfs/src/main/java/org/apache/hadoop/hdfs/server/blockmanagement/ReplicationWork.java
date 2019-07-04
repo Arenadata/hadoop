@@ -19,69 +19,42 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import org.apache.hadoop.net.Node;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
-class ReplicationWork {
-  private final BlockInfo block;
-  private final BlockCollection bc;
-  private final DatanodeDescriptor srcNode;
-  private final int additionalReplRequired;
-  private final int priority;
-  private final List<DatanodeDescriptor> containingNodes;
-  private final List<DatanodeStorageInfo> liveReplicaStorages;
-  private DatanodeStorageInfo[] targets;
-
+class ReplicationWork extends BlockReconstructionWork {
   public ReplicationWork(BlockInfo block, BlockCollection bc,
-      DatanodeDescriptor srcNode, List<DatanodeDescriptor> containingNodes,
+      DatanodeDescriptor[] srcNodes, List<DatanodeDescriptor> containingNodes,
       List<DatanodeStorageInfo> liveReplicaStorages, int additionalReplRequired,
       int priority) {
-    this.block = block;
-    this.bc = bc;
-    this.srcNode = srcNode;
-    this.srcNode.incrementPendingReplicationWithoutTargets();
-    this.containingNodes = containingNodes;
-    this.liveReplicaStorages = liveReplicaStorages;
-    this.additionalReplRequired = additionalReplRequired;
-    this.priority = priority;
-    this.targets = null;
+    super(block, bc, srcNodes, containingNodes,
+        liveReplicaStorages, additionalReplRequired, priority);
+    assert getSrcNodes().length == 1 :
+        "There should be exactly 1 source node that have been selected";
+    getSrcNodes()[0].incrementPendingReplicationWithoutTargets();
+    BlockManager.LOG
+        .debug("Creating a ReplicationWork to reconstruct " + block);
   }
 
+  @Override
   void chooseTargets(BlockPlacementPolicy blockplacement,
       BlockStoragePolicySuite storagePolicySuite,
       Set<Node> excludedNodes) {
+    assert getSrcNodes().length > 0
+        : "At least 1 source node should have been selected";
     try {
-      targets = blockplacement.chooseTarget(bc.getName(),
-          additionalReplRequired, srcNode, liveReplicaStorages, false,
-          excludedNodes, block.getNumBytes(),
-          storagePolicySuite.getPolicy(bc.getStoragePolicyID()), null);
+      DatanodeStorageInfo[] chosenTargets = blockplacement.chooseTarget(
+          getSrcPath(), getAdditionalReplRequired(), getSrcNodes()[0],
+          getLiveReplicaStorages(), false, excludedNodes, getBlockSize(),
+          storagePolicySuite.getPolicy(getStoragePolicyID()), null);
+      setTargets(chosenTargets);
     } finally {
-      srcNode.decrementPendingReplicationWithoutTargets();
+      getSrcNodes()[0].decrementPendingReplicationWithoutTargets();
     }
   }
 
-  DatanodeStorageInfo[] getTargets() {
-    return targets;
-  }
-
-  void resetTargets() {
-    this.targets = null;
-  }
-
-  List<DatanodeDescriptor> getContainingNodes() {
-    return Collections.unmodifiableList(containingNodes);
-  }
-
-  public int getPriority() {
-    return priority;
-  }
-
-  public BlockInfo getBlock() {
-    return block;
-  }
-
-  public DatanodeDescriptor getSrcNode() {
-    return srcNode;
+  @Override
+  void addTaskToDatanode(NumberReplicas numberReplicas) {
+    getSrcNodes()[0].addBlockToBeReplicated(getBlock(), getTargets());
   }
 }

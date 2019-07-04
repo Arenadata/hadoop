@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.tracing;
 
+import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.junit.Assume.assumeTrue;
 
 import java.io.File;
@@ -24,7 +25,6 @@ import java.io.IOException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FsTracer;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -63,12 +63,13 @@ public class TestTracingShortCircuitLocalRead {
 
   @Test
   public void testShortCircuitTraceHooks() throws IOException {
-    assumeTrue(NativeCodeLoader.isNativeCodeLoaded() && !Path.WINDOWS);
+    assumeTrue(NativeCodeLoader.isNativeCodeLoaded());
+    assumeNotWindows();
     conf = new Configuration();
-    conf.set(TraceUtils.DEFAULT_HADOOP_PREFIX +
+    conf.set(TraceUtils.DEFAULT_HADOOP_TRACE_PREFIX +
             Tracer.SPAN_RECEIVER_CLASSES_KEY,
         SetSpanReceiver.class.getName());
-    conf.set(TraceUtils.DEFAULT_HADOOP_PREFIX +
+    conf.set(TraceUtils.DEFAULT_HADOOP_TRACE_PREFIX +
             Tracer.SAMPLER_CLASSES_KEY,
         "AlwaysSampler");
     conf.setLong("dfs.blocksize", 100 * 1024);

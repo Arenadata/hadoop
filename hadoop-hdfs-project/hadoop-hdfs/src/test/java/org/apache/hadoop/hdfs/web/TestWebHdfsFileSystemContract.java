@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.hdfs.web;
 
+import static org.junit.Assert.*;
+
 import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -44,7 +46,6 @@ import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.AppendTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.web.resources.*;
 import org.apache.hadoop.hdfs.web.resources.NamenodeAddressParam;
 import org.apache.hadoop.io.IOUtils;
@@ -52,6 +53,7 @@ import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Test;
 
 public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
@@ -62,7 +64,6 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
   private UserGroupInformation ugi;
 
   static {
-    conf.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
       cluster.waitActive();
@@ -75,8 +76,8 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
     }
   }
 
-  @Override
-  protected void setUp() throws Exception {
+  @Before
+  public void setUp() throws Exception {
     //get file system as a non-superuser
     final UserGroupInformation current = UserGroupInformation.getCurrentUser();
     ugi = UserGroupInformation.createUserForTesting(
@@ -94,7 +95,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
    * when calling exist(..) on a path /foo/bar/file
    * but /foo/bar is indeed a file in HDFS.
    */
-  @Override
+  @Test
   public void testMkdirsFailsForSubdirectoryOfExistingFile() throws Exception {
     Path testDir = path("/test/hadoop");
     assertFalse(fs.exists(testDir));
@@ -132,6 +133,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
   
   //the following are new tests (i.e. not over-riding the super class methods)
 
+  @Test
   public void testGetFileBlockLocations() throws IOException {
     final String f = "/test/testGetFileBlockLocations";
     createFile(path(f));
@@ -156,6 +158,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
     }
   }
 
+  @Test
   public void testCaseInsensitive() throws IOException {
     final Path p = new Path("/test/testCaseInsensitive");
     final WebHdfsFileSystem webhdfs = (WebHdfsFileSystem)fs;
@@ -182,6 +185,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
     assertTrue(fs.getFileStatus(p).isDirectory());
   }
 
+  @Test
   public void testOpenNonExistFile() throws IOException {
     final Path p = new Path("/test/testOpenNonExistFile");
     //open it as a file, should get FileNotFoundException 
@@ -193,6 +197,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
     }
   }
 
+  @Test
   public void testSeek() throws IOException {
     final Path dir = new Path("/test/testSeek");
     assertTrue(fs.mkdirs(dir));
@@ -254,6 +259,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
   }
 
 
+  @Test
   public void testRootDir() throws IOException {
     final Path root = new Path("/");
 
@@ -293,6 +299,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
   /**
    * Test get with length parameter greater than actual file length.
    */
+  @Test
   public void testLengthParamLongerThanFile() throws IOException {
     WebHdfsFileSystem webhdfs = (WebHdfsFileSystem)fs;
     Path dir = new Path("/test");
@@ -342,6 +349,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
    * Test get with offset and length parameters that combine to request a length
    * greater than actual file length.
    */
+  @Test
   public void testOffsetPlusLengthParamsLongerThanFile() throws IOException {
     WebHdfsFileSystem webhdfs = (WebHdfsFileSystem)fs;
     Path dir = new Path("/test");
@@ -388,6 +396,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
     }
   }
 
+  @Test
   public void testResponseCode() throws IOException {
     final WebHdfsFileSystem webhdfs = (WebHdfsFileSystem)fs;
     final Path root = new Path("/");
@@ -535,6 +544,7 @@ public class TestWebHdfsFileSystemContract extends FileSystemContractBaseTest {
     }
   }
 
+  @Test
   public void testDatanodeCreateMissingParameter() throws IOException {
     final WebHdfsFileSystem webhdfs = (WebHdfsFileSystem) fs;
     final Path testDir = new Path(MessageFormat.format("/test/{0}/{1}",

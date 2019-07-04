@@ -129,7 +129,7 @@ public class TestDataXceiverLazyPersistHint {
         DataChecksum.newDataChecksum(DataChecksum.Type.NULL, 0),
         CachingStrategy.newDefaultStrategy(),
         lazyPersist,
-        false, null);
+        false, null, null, new String[0]);
   }
 
   // Helper functions to setup the mock objects.
@@ -151,7 +151,7 @@ public class TestDataXceiverLazyPersistHint {
         any(BlockConstructionStage.class), anyLong(), anyLong(), anyLong(),
         anyString(), any(DatanodeInfo.class), any(DataNode.class),
         any(DataChecksum.class), any(CachingStrategy.class),
-        captor.capture(), anyBoolean());
+        captor.capture(), anyBoolean(), any(String.class));
     doReturn(mock(DataOutputStream.class)).when(xceiverSpy)
         .getBufferedOutputStream();
     return xceiverSpy;
@@ -171,12 +171,13 @@ public class TestDataXceiverLazyPersistHint {
     conf.setBoolean(
         DFS_DATANODE_NON_LOCAL_LAZY_PERSIST,
         nonLocalLazyPersist == NonLocalLazyPersist.ALLOWED);
-    DNConf dnConf = new DNConf(conf);
+
     DatanodeRegistration mockDnReg = mock(DatanodeRegistration.class);
     DataNodeMetrics mockMetrics = mock(DataNodeMetrics.class);
     DataNode mockDn = mock(DataNode.class);
-    when(mockDn.getDnConf()).thenReturn(dnConf);
     when(mockDn.getConf()).thenReturn(conf);
+    DNConf dnConf = new DNConf(mockDn);
+    when(mockDn.getDnConf()).thenReturn(dnConf);
     when(mockDn.getMetrics()).thenReturn(mockMetrics);
     when(mockDn.getDNRegistrationForBP("Dummy-pool")).thenReturn(mockDnReg);
     return mockDn;

@@ -23,11 +23,12 @@ import java.io.OutputStream;
 
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
 import org.apache.hadoop.hdfs.server.datanode.ChunkChecksum;
-import org.apache.hadoop.hdfs.server.datanode.ReplicaInPipelineInterface;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaInPipeline;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.ReplicaOutputStreams;
 import org.apache.hadoop.util.DataChecksum;
 
-public class ExternalReplicaInPipeline implements ReplicaInPipelineInterface {
+public class ExternalReplicaInPipeline implements ReplicaInPipeline {
 
   @Override
   public void setNumBytes(long bytesReceived) {
@@ -57,8 +58,10 @@ public class ExternalReplicaInPipeline implements ReplicaInPipelineInterface {
 
   @Override
   public ReplicaOutputStreams createStreams(boolean isCreate,
-      DataChecksum requestedChecksum) throws IOException {
-    return new ReplicaOutputStreams(null, null, requestedChecksum, false);
+      DataChecksum requestedChecksum)
+      throws IOException {
+    return new ReplicaOutputStreams(null, null, requestedChecksum,
+        null, null);
   }
 
   @Override
@@ -104,5 +107,26 @@ public class ExternalReplicaInPipeline implements ReplicaInPipelineInterface {
   @Override
   public boolean isOnTransientStorage() {
     return false;
+  }
+
+  @Override
+  public ReplicaInfo getReplicaInfo() {
+    return null;
+  }
+
+  public void setWriter(Thread writer) {
+  }
+
+  public void stopWriter(long xceiverStopTimeout)
+      throws IOException {
+  }
+
+  @Override
+  public boolean attemptToSetWriter(Thread prevWriter, Thread newWriter) {
+    return false;
+  }
+
+  @Override
+  public void interruptThread() {
   }
 }

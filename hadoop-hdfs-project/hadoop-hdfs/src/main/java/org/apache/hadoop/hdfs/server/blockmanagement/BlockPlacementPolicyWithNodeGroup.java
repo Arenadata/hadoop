@@ -42,6 +42,7 @@ public class BlockPlacementPolicyWithNodeGroup extends BlockPlacementPolicyDefau
   protected BlockPlacementPolicyWithNodeGroup() {
   }
 
+  @Override
   public void initialize(Configuration conf,  FSClusterStats stats,
           NetworkTopology clusterMap, 
           Host2NodesMap host2datanodeMap) {
@@ -196,9 +197,6 @@ public class BlockPlacementPolicyWithNodeGroup extends BlockPlacementPolicyDefau
     }
   }
 
-  /**
-   * {@inheritDoc}
-   */
   @Override
   protected void chooseRemoteRack(int numOfReplicas,
       DatanodeDescriptor localMachine, Set<Node> excludedNodes,

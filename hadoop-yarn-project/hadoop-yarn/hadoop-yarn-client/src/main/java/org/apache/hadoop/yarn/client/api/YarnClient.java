@@ -32,6 +32,8 @@ import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
+import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteResponse;
@@ -41,6 +43,8 @@ import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationTimeoutsRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationTimeoutsResponse;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptReport;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -57,6 +61,8 @@ import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.QueueUserACLInfo;
 import org.apache.hadoop.yarn.api.records.ReservationDefinition;
 import org.apache.hadoop.yarn.api.records.ReservationId;
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceTypeInfo;
 import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.Token;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
@@ -66,6 +72,7 @@ import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ApplicationIdNotProvidedException;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.ContainerNotFoundException;
+import org.apache.hadoop.yarn.exceptions.YARNFeatureNotEnabledException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 
@@ -222,7 +229,7 @@ public abstract class YarnClient extends AbstractService {
    * Get the AMRM token of the application.
    * <p>
    * The AMRM token is required for AM to RM scheduling operations. For 
-   * managed Application Masters Yarn takes care of injecting it. For unmanaged
+   * managed Application Masters YARN takes care of injecting it. For unmanaged
    * Applications Masters, the token must be obtained via this method and set
    * in the {@link org.apache.hadoop.security.UserGroupInformation} of the
    * current user.
@@ -328,6 +335,31 @@ public abstract class YarnClient extends AbstractService {
 
   /**
    * <p>
+   * Get a report (ApplicationReport) of Applications matching the given
+   * application types, application states and application tags in the cluster.
+   * </p>
+   *
+   * <p>
+   * If the user does not have <code>VIEW_APP</code> access for an application
+   * then the corresponding report will be filtered as described in
+   * {@link #getApplicationReport(ApplicationId)}.
+   * </p>
+   *
+   * @param applicationTypes set of application types you are interested in
+   * @param applicationStates set of application states you are interested in
+   * @param applicationTags set of application tags you are interested in
+   * @return a list of reports of applications
+   * @throws YarnException
+   * @throws IOException
+   */
+  public abstract List<ApplicationReport> getApplications(
+      Set<String> applicationTypes,
+      EnumSet<YarnApplicationState> applicationStates,
+      Set<String> applicationTags) throws YarnException,
+      IOException;
+
+  /**
+   * <p>
    * Get a report (ApplicationReport) of Applications matching the given users,
    * queues, application types and application states in the cluster. If any of
    * the params is set to null, it is not used when filtering.
@@ -351,6 +383,30 @@ public abstract class YarnClient extends AbstractService {
       Set<String> users, Set<String> applicationTypes,
       EnumSet<YarnApplicationState> applicationStates) throws YarnException,
       IOException;
+
+  /**
+   * <p>
+   * Get a list of ApplicationReports that match the given
+   * {@link GetApplicationsRequest}.
+   *</p>
+   *
+   * <p>
+   * If the user does not have <code>VIEW_APP</code> access for an application
+   * then the corresponding report will be filtered as described in
+   * {@link #getApplicationReport(ApplicationId)}.
+   * </p>
+   *
+   * @param request the request object to get the list of applications.
+   * @return The list of ApplicationReports that match the request
+   * @throws YarnException Exception specific to YARN.
+   * @throws IOException Exception mostly related to connection errors.
+   */
+  public List<ApplicationReport> getApplications(GetApplicationsRequest request)
+      throws YarnException, IOException {
+    throw new UnsupportedOperationException(
+        "The sub-class extending " + YarnClient.class.getName()
+            + " is expected to implement this !");
+  }
 
   /**
    * <p>
@@ -793,4 +849,55 @@ public abstract class YarnClient extends AbstractService {
    */
   public abstract void signalToContainer(ContainerId containerId,
       SignalContainerCommand command) throws YarnException, IOException;
+
+  @Public
+  @Unstable
+  public UpdateApplicationTimeoutsResponse updateApplicationTimeouts(
+      UpdateApplicationTimeoutsRequest request)
+      throws YarnException, IOException {
+    throw new UnsupportedOperationException("The sub-class extending "
+        + YarnClient.class.getName() + " is expected to implement this !");
+  }
+
+  /**
+   * <p>
+   * Get the resource profiles available in the RM.
+   * </p>
+   * @return a Map of the resource profile names to their capabilities
+   * @throws YARNFeatureNotEnabledException if resource-profile is disabled
+   * @throws YarnException if any error happens inside YARN
+   * @throws IOException in case of other errors
+   */
+  @Public
+  @Unstable
+  public abstract Map<String, Resource> getResourceProfiles()
+      throws YarnException, IOException;
+
+  /**
+   * <p>
+   * Get the details of a specific resource profile from the RM.
+   * </p>
+   * @param profile the profile name
+   * @return resource profile name with its capabilities
+   * @throws YARNFeatureNotEnabledException if resource-profile is disabled
+   * @throws YarnException if any error happens inside YARN
+   * @throws IOException in case of other others
+   */
+  @Public
+  @Unstable
+  public abstract Resource getResourceProfile(String profile)
+      throws YarnException, IOException;
+
+  /**
+   * <p>
+   * Get available resource types supported by RM.
+   * </p>
+   * @return list of supported resource types with detailed information
+   * @throws YarnException if any issue happens inside YARN
+   * @throws IOException in case of other others
+   */
+  @Public
+  @Unstable
+  public abstract List<ResourceTypeInfo> getResourceTypeInfo()
+      throws YarnException, IOException;
 }

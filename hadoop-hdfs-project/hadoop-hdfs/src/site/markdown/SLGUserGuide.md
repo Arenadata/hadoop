@@ -15,12 +15,7 @@
 Synthetic Load Generator Guide
 ==============================
 
-* [Synthetic Load Generator Guide](#Synthetic_Load_Generator_Guide)
-    * [Overview](#Overview)
-    * [Synopsis](#Synopsis)
-    * [Test Space Population](#Test_Space_Population)
-        * [Structure Generator](#Structure_Generator)
-        * [Data Generator](#Data_Generator)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Overview
 --------
@@ -32,7 +27,7 @@ Synopsis
 
 The synopsis of the command is:
 
-        java LoadGenerator [options]
+        yarn jar <HADOOP_HOME>/share/hadoop/mapreduce/hadoop-mapreduce-client-jobclient-<hadoop-version>.jar NNloadGenerator [options]
 
 Options include:
 
@@ -102,7 +97,7 @@ The generated namespace structure is described by two files in the output direct
 
 The synopsis of the command is:
 
-        java StructureGenerator [options]
+        yarn jar <HADOOP_HOME>/share/hadoop/mapreduce/hadoop-mapreduce-client-jobclient-<hadoop-version>.jar NNstructureGenerator [options]
 
 Options include:
 
@@ -140,7 +135,7 @@ This tool reads the directory structure and file structure from the input direct
 
 The synopsis of the command is:
 
-        java DataGenerator [options]
+        yarn jar <HADOOP_HOME>/share/hadoop/mapreduce/hadoop-mapreduce-client-jobclient-<hadoop-version>.jar NNdataGenerator [options]
 
 Options include:
 

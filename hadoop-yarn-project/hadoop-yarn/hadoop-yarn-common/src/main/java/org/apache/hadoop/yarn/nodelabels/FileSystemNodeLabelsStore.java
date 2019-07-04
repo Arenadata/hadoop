@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.nodelabels;
 
 import java.io.EOFException;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
@@ -83,9 +84,7 @@ public class FileSystemNodeLabelsStore extends NodeLabelsStore {
     setFileSystem(conf);
 
     // mkdir of root dir path
-    if (!fs.exists(fsWorkingPath)) {
-      fs.mkdirs(fsWorkingPath);
-    }
+    fs.mkdirs(fsWorkingPath);
   }
 
   @Override
@@ -95,13 +94,8 @@ public class FileSystemNodeLabelsStore extends NodeLabelsStore {
 
   void setFileSystem(Configuration conf) throws IOException {
     Configuration confCopy = new Configuration(conf);
-    confCopy.setBoolean("dfs.client.retry.policy.enabled", true);
-    String retryPolicy =
-        confCopy.get(YarnConfiguration.FS_NODE_LABELS_STORE_RETRY_POLICY_SPEC,
-            YarnConfiguration.DEFAULT_FS_NODE_LABELS_STORE_RETRY_POLICY_SPEC);
-    confCopy.set("dfs.client.retry.policy.spec", retryPolicy);
     fs = fsWorkingPath.getFileSystem(confCopy);
-    
+
     // if it's local file system, use RawLocalFileSystem instead of
     // LocalFileSystem, the latter one doesn't support append.
     if (fs.getScheme().equals("file")) {
@@ -160,12 +154,15 @@ public class FileSystemNodeLabelsStore extends NodeLabelsStore {
       throws IOException {
     // If mirror.new exists, read from mirror.new,
     FSDataInputStream is = null;
-    if (fs.exists(newMirrorPath)) {
+    try {
       is = fs.open(newMirrorPath);
-    } else if (fs.exists(oldMirrorPath)) {
-      is = fs.open(oldMirrorPath);
-    }
+    } catch (FileNotFoundException e) {
+      try {
+        is = fs.open(oldMirrorPath);
+      } catch (FileNotFoundException ignored) {
 
+      }
+    }
     if (null != is) {
       List<NodeLabel> labels = new AddToClusterNodeLabelsRequestPBImpl(
           AddToClusterNodeLabelsRequestProto.parseDelimitedFrom(is))
@@ -209,8 +206,13 @@ public class FileSystemNodeLabelsStore extends NodeLabelsStore {
 
     // Open and process editlog
     editLogPath = new Path(fsWorkingPath, EDITLOG_FILENAME);
-    if (fs.exists(editLogPath)) {
-      FSDataInputStream is = fs.open(editLogPath);
+    FSDataInputStream is;
+    try {
+      is = fs.open(editLogPath);
+    } catch (FileNotFoundException e) {
+      is = null;
+    }
+    if (null != is) {
 
       while (true) {
         try {
@@ -255,6 +257,7 @@ public class FileSystemNodeLabelsStore extends NodeLabelsStore {
           break;
         }
       }
+      is.close();
     }
 
     // Serialize current mirror to mirror.writing

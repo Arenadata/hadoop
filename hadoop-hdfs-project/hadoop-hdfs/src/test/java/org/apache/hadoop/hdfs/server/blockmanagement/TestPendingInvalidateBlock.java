@@ -65,7 +65,7 @@ public class TestPendingInvalidateBlock {
     // set the block report interval to 2s
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 2000);
     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     // disable the RPC timeout for debug
     conf.setLong(CommonConfigurationKeys.IPC_PING_INTERVAL_KEY, 0);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(REPLICATION)
@@ -172,7 +172,7 @@ public class TestPendingInvalidateBlock {
     Assert.assertEquals(0L, cluster.getNamesystem().getPendingDeletionBlocks());
     // restart DataNodes
     for (int i = 0; i < REPLICATION; i++) {
-      cluster.restartDataNode(dnprops[i], true);
+      cluster.restartDataNode(dnprops[i]);
     }
     cluster.waitActive();
 

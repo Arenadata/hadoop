@@ -98,8 +98,8 @@ public class TestSnapshot {
   protected DistributedFileSystem hdfs;
   
   private static final String testDir =
-      System.getProperty("test.build.data", "build/test/data");
-  
+      GenericTestUtils.getTestDir().getAbsolutePath();
+
   @Rule
   public ExpectedException exception = ExpectedException.none();
   
@@ -435,13 +435,13 @@ public class TestSnapshot {
     hdfs.allowSnapshot(root);
     rootNode = fsdir.getINode4Write(root.toString()).asDirectory();
     assertTrue(rootNode.isSnapshottable());
-    assertEquals(DirectorySnapshottableFeature.SNAPSHOT_LIMIT,
+    assertEquals(DirectorySnapshottableFeature.SNAPSHOT_QUOTA_DEFAULT,
         rootNode.getDirectorySnapshottableFeature().getSnapshotQuota());
     // call allowSnapshot again
     hdfs.allowSnapshot(root);
     rootNode = fsdir.getINode4Write(root.toString()).asDirectory();
     assertTrue(rootNode.isSnapshottable());
-    assertEquals(DirectorySnapshottableFeature.SNAPSHOT_LIMIT,
+    assertEquals(DirectorySnapshottableFeature.SNAPSHOT_QUOTA_DEFAULT,
         rootNode.getDirectorySnapshottableFeature().getSnapshotQuota());
     
     // disallowSnapshot on dir
@@ -846,7 +846,7 @@ public class TestSnapshot {
 
     @Override
     void modify() throws Exception {
-      DFSTestUtil.createFile(fs, file, fileLen,
+      DFSTestUtil.createFile(fs, file, fileLen, fileLen, BLOCKSIZE,
           REPLICATION, seed);
     }
 

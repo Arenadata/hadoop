@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Map;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.logging.Log;
@@ -181,7 +182,7 @@ public class TestOfflineEditsViewer {
         hasAllOpCodes(editsStored));
     assertTrue("Reference XML edits and parsed to XML should be same",
         FileUtils.contentEqualsIgnoreEOL(new File(editsStoredXml),
-          new File(editsStoredParsedXml), "UTF-8"));
+            new File(editsStoredParsedXml), "UTF-8"));
     assertTrue(
         "Reference edits and reparsed (bin to XML to bin) should be same",
         filesEqualIgnoreTrailingZeros(editsStored, editsStoredReparsed));
@@ -307,5 +308,52 @@ public class TestOfflineEditsViewer {
       System.setOut(oldOut);
       IOUtils.closeStream(out);
     }
+  }
+
+  @Test
+  public void testStatisticsStrWithNullOpCodeCount() throws IOException {
+    String editFilename = nnHelper.generateEdits();
+    String outFilename = editFilename + ".stats";
+    FileOutputStream fout = new FileOutputStream(outFilename);
+    StatisticsEditsVisitor visitor = new StatisticsEditsVisitor(fout);
+    OfflineEditsViewer oev = new OfflineEditsViewer();
+
+    String statisticsStr = null;
+    if (oev.go(editFilename, outFilename, "stats", new Flags(), visitor) == 0) {
+      statisticsStr = visitor.getStatisticsString();
+    }
+    Assert.assertNotNull(statisticsStr);
+
+    String str;
+    Long count;
+    Map<FSEditLogOpCodes, Long> opCodeCount = visitor.getStatistics();
+    for (FSEditLogOpCodes opCode : FSEditLogOpCodes.values()) {
+      count = opCodeCount.get(opCode);
+      // Verify the str when the opCode's count is null
+      if (count == null) {
+        str =
+            String.format("    %-30.30s (%3d): %d%n", opCode.toString(),
+                opCode.getOpCode(), Long.valueOf(0L));
+        assertTrue(statisticsStr.contains(str));
+      }
+    }
+  }
+
+  @Test
+  public void testProcessorWithSameTypeFormatFile() throws IOException {
+    String edits = nnHelper.generateEdits();
+    LOG.info("Generated edits=" + edits);
+    String binaryEdits = folder.newFile("binaryEdits").getAbsolutePath();
+    String editsParsedXml = folder.newFile("editsParsed.xml").getAbsolutePath();
+    String editsReparsedXml = folder.newFile("editsReparsed.xml")
+        .getAbsolutePath();
+
+    // Binary format input file is not allowed to be processed
+    // by Binary processor.
+    assertEquals(-1, runOev(edits, binaryEdits, "binary", false));
+    // parse to XML then back to XML
+    assertEquals(0, runOev(edits, editsParsedXml, "xml", false));
+    // XML format input file is not allowed to be processed by XML processor.
+    assertEquals(-1, runOev(editsParsedXml, editsReparsedXml, "xml", false));
   }
 }

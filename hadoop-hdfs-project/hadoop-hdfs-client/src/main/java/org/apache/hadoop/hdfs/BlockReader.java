@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.EnumSet;
 
@@ -24,13 +25,15 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.ByteBufferReadable;
 import org.apache.hadoop.fs.ReadOption;
 import org.apache.hadoop.hdfs.shortcircuit.ClientMmap;
+import org.apache.hadoop.util.DataChecksum;
 
 /**
  * A BlockReader is responsible for reading a single block
  * from a single datanode.
  */
 @InterfaceAudience.Private
-public interface BlockReader extends ByteBufferReadable {
+public interface BlockReader extends ByteBufferReadable, Closeable {
+
 
   /* same interface as inputStream java.io.InputStream#read()
    * used by DFSInputStream#read()
@@ -61,6 +64,7 @@ public interface BlockReader extends ByteBufferReadable {
    *
    * @throws IOException
    */
+  @Override // java.io.Closeable
   void close() throws IOException;
 
   /**
@@ -80,11 +84,6 @@ public interface BlockReader extends ByteBufferReadable {
   int readAll(byte[] buf, int offset, int len) throws IOException;
 
   /**
-   * @return              true only if this is a local read.
-   */
-  boolean isLocal();
-
-  /**
    * @return              true only if this is a short-circuit read.
    *                      All short-circuit reads are also local.
    */
@@ -98,4 +97,14 @@ public interface BlockReader extends ByteBufferReadable {
    *                      supported.
    */
   ClientMmap getClientMmap(EnumSet<ReadOption> opts);
+
+  /**
+   * @return              The DataChecksum used by the read block
+   */
+  DataChecksum getDataChecksum();
+
+  /**
+   * Return the network distance between local machine and the remote machine.
+   */
+  int getNetworkDistance();
 }

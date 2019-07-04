@@ -80,7 +80,7 @@ class BackupJournalManager implements JournalManager {
 
   @Override
   public void selectInputStreams(Collection<EditLogInputStream> streams,
-      long fromTxnId, boolean inProgressOk) {
+      long fromTxnId, boolean inProgressOk, boolean onlyDurableTxns) {
     // This JournalManager is never used for input. Therefore it cannot
     // return any transactions
   }
@@ -99,11 +99,6 @@ class BackupJournalManager implements JournalManager {
   @Override
   public String toString() {
     return "BackupJournalManager";
-  }
-
-  @Override
-  public void discardSegments(long startTxId) throws IOException {
-    throw new UnsupportedOperationException();
   }
   
   @Override
@@ -129,6 +124,11 @@ class BackupJournalManager implements JournalManager {
 
   @Override
   public void doRollback() throws IOException {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void discardSegments(long startTxId) throws IOException {
     throw new UnsupportedOperationException();
   }
 

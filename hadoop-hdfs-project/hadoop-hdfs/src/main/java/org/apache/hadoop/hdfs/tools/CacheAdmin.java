@@ -45,6 +45,7 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
 
 import com.google.common.base.Joiner;
+import org.apache.hadoop.util.ToolRunner;
 
 /**
  * This class implements command-line operations on the HDFS Cache.
@@ -64,6 +65,7 @@ public class CacheAdmin extends Configured implements Tool {
   public int run(String[] args) throws IOException {
     if (args.length == 0) {
       AdminHelper.printUsage(false, "cacheadmin", COMMANDS);
+      ToolRunner.printGenericCommandUsage(System.err);
       return 1;
     }
     AdminHelper.Command command = AdminHelper.determineCommand(args[0],
@@ -74,6 +76,7 @@ public class CacheAdmin extends Configured implements Tool {
         System.err.println("Command names must start with dashes.");
       }
       AdminHelper.printUsage(false, "cacheadmin", COMMANDS);
+      ToolRunner.printGenericCommandUsage(System.err);
       return 1;
     }
     List<String> argsList = new LinkedList<String>();
@@ -88,9 +91,10 @@ public class CacheAdmin extends Configured implements Tool {
     }
   }
 
-  public static void main(String[] argsArray) throws IOException {
+  public static void main(String[] argsArray) throws Exception {
     CacheAdmin cacheAdmin = new CacheAdmin(new Configuration());
-    System.exit(cacheAdmin.run(argsArray));
+    int res = ToolRunner.run(cacheAdmin, argsArray);
+    System.exit(res);
   }
 
   private static CacheDirectiveInfo.Expiration parseExpirationString(String ttlString)
@@ -185,8 +189,9 @@ public class CacheAdmin extends Configured implements Tool {
         System.err.println("Can't understand argument: " + args.get(0));
         return 1;
       }
-        
-      DistributedFileSystem dfs = AdminHelper.getDFS(conf);
+
+      DistributedFileSystem dfs =
+          AdminHelper.getDFS(new Path(path).toUri(), conf);
       CacheDirectiveInfo directive = builder.build();
       EnumSet<CacheFlag> flags = EnumSet.noneOf(CacheFlag.class);
       if (force) {
@@ -405,7 +410,8 @@ public class CacheAdmin extends Configured implements Tool {
       }
       int exitCode = 0;
       try {
-        DistributedFileSystem dfs = AdminHelper.getDFS(conf);
+        DistributedFileSystem dfs =
+            AdminHelper.getDFS(new Path(path).toUri(), conf);
         RemoteIterator<CacheDirectiveEntry> iter =
             dfs.listCacheDirectives(
                 new CacheDirectiveInfo.Builder().
@@ -443,7 +449,8 @@ public class CacheAdmin extends Configured implements Tool {
     @Override
     public String getShortUsage() {
       return "[" + getName()
-          + " [-stats] [-path <path>] [-pool <pool>] [-id <id>]\n";
+          + " [-stats] [-path <path>] [-pool <pool>] [-id <id>]"
+          + "]\n";
     }
 
     @Override
@@ -554,7 +561,8 @@ public class CacheAdmin extends Configured implements Tool {
     public String getShortUsage() {
       return "[" + NAME + " <name> [-owner <owner>] " +
           "[-group <group>] [-mode <mode>] [-limit <limit>] " +
-          "[-maxTtl <maxTtl>]\n";
+          "[-defaultReplication <defaultReplication>] [-maxTtl <maxTtl>]" +
+          "]\n";
     }
 
     @Override
@@ -573,6 +581,9 @@ public class CacheAdmin extends Configured implements Tool {
       listing.addRow("<limit>", "The maximum number of bytes that can be " +
           "cached by directives in this pool, in aggregate. By default, " +
           "no limit is set.");
+      listing.addRow("<defaultReplication>", "The default replication " +
+          "number for cache directive in the pool. " +
+          "If not set, the replication is set to 1");
       listing.addRow("<maxTtl>", "The maximum allowed time-to-live for " +
           "directives being added to the pool. This can be specified in " +
           "seconds, minutes, hours, and days, e.g. 120s, 30m, 4h, 2d. " +
@@ -610,6 +621,12 @@ public class CacheAdmin extends Configured implements Tool {
       Long limit = AdminHelper.parseLimitString(limitString);
       if (limit != null) {
         info.setLimit(limit);
+      }
+      String replicationString = StringUtils.
+              popOptionWithArgument("-defaultReplication", args);
+      if (replicationString != null) {
+        short defaultReplication = Short.parseShort(replicationString);
+        info.setDefaultReplication(defaultReplication);
       }
       String maxTtlString = StringUtils.popOptionWithArgument("-maxTtl", args);
       try {
@@ -652,7 +669,7 @@ public class CacheAdmin extends Configured implements Tool {
     public String getShortUsage() {
       return "[" + getName() + " <name> [-owner <owner>] " +
           "[-group <group>] [-mode <mode>] [-limit <limit>] " +
-          "[-maxTtl <maxTtl>]]\n";
+          "[-defaultReplication <defaultReplication>] [-maxTtl <maxTtl>]]\n";
     }
 
     @Override
@@ -665,6 +682,8 @@ public class CacheAdmin extends Configured implements Tool {
       listing.addRow("<mode>", "Unix-style permissions of the pool in octal.");
       listing.addRow("<limit>", "Maximum number of bytes that can be cached " +
           "by this pool.");
+      listing.addRow("<defaultReplication>", "Default replication num for " +
+          "directives in this pool");
       listing.addRow("<maxTtl>", "The maximum allowed time-to-live for " +
           "directives being added to the pool.");
 
@@ -684,6 +703,12 @@ public class CacheAdmin extends Configured implements Tool {
           null : Integer.parseInt(modeString, 8);
       String limitString = StringUtils.popOptionWithArgument("-limit", args);
       Long limit = AdminHelper.parseLimitString(limitString);
+      String replicationString =
+              StringUtils.popOptionWithArgument("-defaultReplication", args);
+      Short defaultReplication = null;
+      if (replicationString != null) {
+        defaultReplication = Short.parseShort(replicationString);
+      }
       String maxTtlString = StringUtils.popOptionWithArgument("-maxTtl", args);
       Long maxTtl;
       try {
@@ -723,6 +748,10 @@ public class CacheAdmin extends Configured implements Tool {
         info.setLimit(limit);
         changed = true;
       }
+      if (defaultReplication != null) {
+        info.setDefaultReplication(defaultReplication);
+        changed = true;
+      }
       if (maxTtl != null) {
         info.setMaxRelativeExpiryMs(maxTtl);
         changed = true;
@@ -756,6 +785,10 @@ public class CacheAdmin extends Configured implements Tool {
       if (limit != null) {
         System.out.print(prefix + "limit " + limit);
         prefix = " and ";
+      }
+      if (defaultReplication != null) {
+        System.out.println(prefix + "replication " + defaultReplication);
+        prefix = " replication ";
       }
       if (maxTtl != null) {
         System.out.print(prefix + "max time-to-live " + maxTtlString);
@@ -852,7 +885,8 @@ public class CacheAdmin extends Configured implements Tool {
           addField("GROUP", Justification.LEFT).
           addField("MODE", Justification.LEFT).
           addField("LIMIT", Justification.RIGHT).
-          addField("MAXTTL", Justification.RIGHT);
+          addField("MAXTTL", Justification.RIGHT).
+          addField("DEFAULT_REPLICATION", Justification.RIGHT);
       if (printStats) {
         builder.
             addField("BYTES_NEEDED", Justification.RIGHT).
@@ -893,6 +927,8 @@ public class CacheAdmin extends Configured implements Tool {
               }
             }
             row.add(maxTtlString);
+            row.add("" + info.getDefaultReplication());
+
             if (printStats) {
               CachePoolStats stats = entry.getStats();
               row.add(Long.toString(stats.getBytesNeeded()));

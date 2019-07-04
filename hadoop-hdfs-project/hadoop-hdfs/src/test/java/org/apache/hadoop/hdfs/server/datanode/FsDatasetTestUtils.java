@@ -29,6 +29,7 @@ import org.apache.hadoop.util.ReflectionUtils;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.Iterator;
 
 /**
  * Provide block access for FsDataset white box tests.
@@ -134,6 +135,13 @@ public interface FsDatasetTestUtils {
      * @throws IOException I/O error.
      */
     void truncateMeta(long newSize) throws IOException;
+
+    /**
+     * Make the replica unreachable, perhaps by renaming it to an
+     * invalid file name.
+     * @throws IOException On I/O error.
+     */
+    void makeUnreachable() throws IOException;
   }
 
   /**
@@ -251,4 +259,28 @@ public interface FsDatasetTestUtils {
    */
   void changeStoredGenerationStamp(ExtendedBlock block, long newGenStamp)
       throws IOException;
+
+  /** Get all stored replicas in the specified block pool. */
+  Iterator<Replica> getStoredReplicas(String bpid) throws IOException;
+
+  /**
+   * Get the number of pending async deletions.
+   */
+  long getPendingAsyncDeletions();
+
+  /**
+   * Verify the existence of the block pool.
+   *
+   * @param bpid block pool ID
+   * @throws IOException if the block pool does not exist.
+   */
+  void verifyBlockPoolExists(String bpid) throws IOException;
+
+  /**
+   * Verify that the block pool does not exist.
+   *
+   * @param bpid block pool ID
+   * @throws IOException if the block pool does exist.
+   */
+  void verifyBlockPoolMissing(String bpid) throws IOException;
 }

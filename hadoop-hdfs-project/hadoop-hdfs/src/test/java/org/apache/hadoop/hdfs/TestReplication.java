@@ -30,7 +30,6 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.Random;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 
@@ -38,7 +37,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -82,19 +80,6 @@ public class TestReplication {
   private static final int numDatanodes = racks.length;
   private static final Log LOG = LogFactory.getLog(
                                        "org.apache.hadoop.hdfs.TestReplication");
-
-  private void writeFile(FileSystem fileSys, Path name, int repl)
-    throws IOException {
-    // create and write a file that contains three blocks of data
-    FSDataOutputStream stm = fileSys.create(name, true, fileSys.getConf()
-        .getInt(CommonConfigurationKeys.IO_FILE_BUFFER_SIZE_KEY, 4096),
-        (short) repl, blockSize);
-    byte[] buffer = new byte[fileSize];
-    Random rand = new Random(seed);
-    rand.nextBytes(buffer);
-    stm.write(buffer);
-    stm.close();
-  }
   
   /* check if there are at least two nodes are on the same rack */
   private void checkFile(FileSystem fileSys, Path name, int repl)
@@ -243,7 +228,8 @@ public class TestReplication {
    */
   public void runReplication(boolean simulated) throws IOException {
     Configuration conf = new HdfsConfiguration();
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY, false);
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
+        false);
     if (simulated) {
       SimulatedFSDataset.setFactory(conf);
     }
@@ -261,19 +247,25 @@ public class TestReplication {
     FileSystem fileSys = cluster.getFileSystem();
     try {
       Path file1 = new Path("/smallblocktest.dat");
-      writeFile(fileSys, file1, 3);
+      //writeFile(fileSys, file1, 3);
+      DFSTestUtil.createFile(fileSys, file1, fileSize, fileSize, blockSize,
+          (short) 3, seed);
       checkFile(fileSys, file1, 3);
       cleanupFile(fileSys, file1);
-      writeFile(fileSys, file1, 10);
+      DFSTestUtil.createFile(fileSys, file1, fileSize, fileSize, blockSize,
+          (short) 10, seed);
       checkFile(fileSys, file1, 10);
       cleanupFile(fileSys, file1);
-      writeFile(fileSys, file1, 4);
+      DFSTestUtil.createFile(fileSys, file1, fileSize, fileSize, blockSize,
+          (short) 4, seed);
       checkFile(fileSys, file1, 4);
       cleanupFile(fileSys, file1);
-      writeFile(fileSys, file1, 1);
+      DFSTestUtil.createFile(fileSys, file1, fileSize, fileSize, blockSize,
+          (short) 1, seed);
       checkFile(fileSys, file1, 1);
       cleanupFile(fileSys, file1);
-      writeFile(fileSys, file1, 2);
+      DFSTestUtil.createFile(fileSys, file1, fileSize, fileSize, blockSize,
+          (short) 2, seed);
       checkFile(fileSys, file1, 2);
       cleanupFile(fileSys, file1);
     } finally {
@@ -420,7 +412,7 @@ public class TestReplication {
       LOG.info("Restarting minicluster after deleting a replica and corrupting 2 crcs");
       conf = new HdfsConfiguration();
       conf.set(DFSConfigKeys.DFS_REPLICATION_KEY, Integer.toString(numDataNodes));
-      conf.set(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
+      conf.set(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
       conf.set("dfs.datanode.block.write.timeout.sec", Integer.toString(5));
       conf.set(DFSConfigKeys.DFS_NAMENODE_SAFEMODE_THRESHOLD_PCT_KEY, "0.75f"); // only 3 copies exist
       
@@ -517,7 +509,7 @@ public class TestReplication {
     try {
       Configuration conf = new HdfsConfiguration();
       conf.setLong(
-          DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 1);
+          DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, 1);
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3)
           .storagesPerDatanode(1).build();
       FileSystem fs = cluster.getFileSystem();
@@ -697,7 +689,7 @@ public class TestReplication {
 
   private long pendingReplicationCount(BlockManager bm) {
     BlockManagerTestUtil.updateState(bm);
-    return bm.getPendingReplicationBlocksCount();
+    return bm.getPendingReconstructionBlocksCount();
   }
 
   private void assertNoReplicationWasPerformed(MiniDFSCluster cluster) {

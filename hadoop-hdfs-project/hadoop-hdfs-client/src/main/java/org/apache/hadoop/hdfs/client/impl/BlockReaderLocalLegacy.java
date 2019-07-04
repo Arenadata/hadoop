@@ -724,11 +724,6 @@ class BlockReaderLocalLegacy implements BlockReader {
   }
 
   @Override
-  public boolean isLocal() {
-    return true;
-  }
-
-  @Override
   public boolean isShortCircuit() {
     return true;
   }
@@ -736,5 +731,15 @@ class BlockReaderLocalLegacy implements BlockReader {
   @Override
   public ClientMmap getClientMmap(EnumSet<ReadOption> opts) {
     return null;
+  }
+
+  @Override
+  public DataChecksum getDataChecksum() {
+    return checksum;
+  }
+
+  @Override
+  public int getNetworkDistance() {
+    return 0;
   }
 }

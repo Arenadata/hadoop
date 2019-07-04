@@ -33,6 +33,7 @@ package hadoop.hdfs;
 
 import "Security.proto";
 import "hdfs.proto";
+import "ReconfigurationProtocol.proto";
 
 /**
  * block - block for which visible length is requested
@@ -102,32 +103,6 @@ message GetBlockLocalPathInfoResponseProto {
 }
 
 /**
- * Query for the disk locations of a number of blocks on this DN.
- * blockPoolId - the pool to query
- * blockIds - list of block IDs to query
- * tokens - list of access tokens corresponding to list of block IDs
- */
-message GetHdfsBlockLocationsRequestProto {
-  // Removed: HDFS-3969
-  // repeated ExtendedBlockProto blocks = 1;
-  repeated hadoop.common.TokenProto tokens = 2;
-
-  required string blockPoolId = 3;
-  repeated sfixed64 blockIds = 4 [ packed = true ];
-}
-
-/**
- * volumeIds - id of each volume, potentially multiple bytes
- * volumeIndexes - for each block, an index into volumeIds specifying the volume
- *               on which it is located. If block is not present on any volume,
- *               index is set to MAX_INT.
- */
-message GetHdfsBlockLocationsResponseProto {
-  repeated bytes volumeIds = 1;
-  repeated uint32 volumeIndexes = 2 [ packed = true ];
-}
-
-/**
  * forUpgrade - if true, clients are advised to wait for restart and quick
  *              upgrade restart is instrumented. Otherwise, datanode does
  *              the regular shutdown.
@@ -156,11 +131,11 @@ message GetDatanodeInfoResponseProto {
   required DatanodeLocalInfoProto localInfo = 1;
 }
 
-/** Asks DataNode to reload configuration file. */
-message StartReconfigurationRequestProto {
+message GetVolumeReportRequestProto {
 }
 
-message StartReconfigurationResponseProto {
+message GetVolumeReportResponseProto {
+  repeated DatanodeVolumeInfoProto volumeInfo = 1;
 }
 
 message TriggerBlockReportRequestProto {
@@ -168,31 +143,6 @@ message TriggerBlockReportRequestProto {
 }
 
 message TriggerBlockReportResponseProto {
-}
-
-/** Query the running status of reconfiguration process */
-message GetReconfigurationStatusRequestProto {
-}
-
-message GetReconfigurationStatusConfigChangeProto {
-  required string name = 1;
-  required string oldValue = 2;
-  optional string newValue = 3;
-  optional string errorMessage = 4;  // It is empty if success.
-}
-
-message GetReconfigurationStatusResponseProto {
-  required int64 startTime = 1;
-  optional int64 endTime = 2;
-  repeated GetReconfigurationStatusConfigChangeProto changes = 3;
-}
-
-message ListReconfigurablePropertiesRequestProto {
-}
-
-/** Query the reconfigurable properties on DataNode. */
-message ListReconfigurablePropertiesResponseProto {
-  repeated string name = 1;
 }
 
 message GetBalancerBandwidthRequestProto {
@@ -203,6 +153,72 @@ message GetBalancerBandwidthRequestProto {
  */
 message GetBalancerBandwidthResponseProto {
   required uint64 bandwidth = 1;
+}
+
+/**
+ * This message allows a client to submit a disk
+ * balancer plan to a data node.
+ */
+message SubmitDiskBalancerPlanRequestProto {
+  required string planID = 1;         // A hash of the plan like SHA-1
+  required string plan = 2;           // Plan file data in Json format
+  optional uint64 planVersion = 3;    // Plan version number
+  optional bool ignoreDateCheck = 4;  // Ignore date checks on this plan.
+  required string planFile = 5;       // Plan file path
+}
+
+/**
+ * Response from the DataNode on Plan Submit request
+ */
+message SubmitDiskBalancerPlanResponseProto {
+}
+
+/**
+ * This message describes a request to cancel an
+ * outstanding disk balancer plan
+ */
+message CancelPlanRequestProto {
+  required string planID = 1;
+}
+
+/**
+ * This is the response for the cancellation request
+ */
+message CancelPlanResponseProto {
+}
+
+
+/**
+ * This message allows a client to query data node to see
+ * if a disk balancer plan is executing and if so what is
+ * the status.
+ */
+message QueryPlanStatusRequestProto {
+}
+
+/**
+ * This message describes a plan if it is in progress
+ */
+message QueryPlanStatusResponseProto {
+  optional uint32 result = 1;
+  optional string planID = 2;
+  optional string currentStatus = 3;
+  optional string planFile = 4;
+}
+
+/**
+  * This message sends a request to data node get a specific setting
+  * that is used by disk balancer.
+  */
+message DiskBalancerSettingRequestProto {
+  required string key = 1;
+}
+
+/**
+ * Response that describes the value of requested disk balancer setting.
+ */
+message DiskBalancerSettingResponseProto {
+  required string value = 1;
 }
 
 /**
@@ -236,13 +252,6 @@ service ClientDatanodeProtocolService {
   rpc getBlockLocalPathInfo(GetBlockLocalPathInfoRequestProto)
       returns(GetBlockLocalPathInfoResponseProto);
 
-  /**
-   * Retrieve additional HDFS-specific metadata about a set of blocks stored
-   * on the local file system.
-   */
-  rpc getHdfsBlockLocations(GetHdfsBlockLocationsRequestProto)
-      returns(GetHdfsBlockLocationsResponseProto);
-
   rpc shutdownDatanode(ShutdownDatanodeRequestProto)
       returns(ShutdownDatanodeResponseProto);
 
@@ -251,6 +260,9 @@ service ClientDatanodeProtocolService {
 
   rpc getDatanodeInfo(GetDatanodeInfoRequestProto)
       returns(GetDatanodeInfoResponseProto);
+
+  rpc getVolumeReport(GetVolumeReportRequestProto)
+      returns(GetVolumeReportResponseProto);
 
   rpc getReconfigurationStatus(GetReconfigurationStatusRequestProto)
       returns(GetReconfigurationStatusResponseProto);
@@ -270,4 +282,26 @@ service ClientDatanodeProtocolService {
    */
   rpc getBalancerBandwidth(GetBalancerBandwidthRequestProto)
       returns(GetBalancerBandwidthResponseProto);
+
+  /**
+   * Submit a disk balancer plan for execution
+   */
+  rpc submitDiskBalancerPlan(SubmitDiskBalancerPlanRequestProto)
+      returns (SubmitDiskBalancerPlanResponseProto);
+  /**
+   * Cancel an executing plan
+   */
+  rpc cancelDiskBalancerPlan(CancelPlanRequestProto)
+      returns (CancelPlanResponseProto);
+
+  /**
+   * Gets the status of an executing Plan
+   */
+  rpc queryDiskBalancerPlan(QueryPlanStatusRequestProto)
+      returns (QueryPlanStatusResponseProto);
+  /**
+   *  Gets run-time settings of Disk Balancer.
+   */
+  rpc getDiskBalancerSetting(DiskBalancerSettingRequestProto)
+      returns(DiskBalancerSettingResponseProto);
 }

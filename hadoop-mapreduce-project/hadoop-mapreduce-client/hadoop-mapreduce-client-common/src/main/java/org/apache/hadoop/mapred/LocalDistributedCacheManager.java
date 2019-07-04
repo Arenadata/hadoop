@@ -35,15 +35,11 @@ import java.util.Map.Entry;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileContext;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
@@ -53,6 +49,7 @@ import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.HadoopExecutors;
 import org.apache.hadoop.yarn.api.records.LocalResource;
 import org.apache.hadoop.yarn.api.records.LocalResourceType;
 import org.apache.hadoop.yarn.util.ConverterUtils;
@@ -60,14 +57,16 @@ import org.apache.hadoop.yarn.util.FSDownload;
 
 import com.google.common.collect.Maps;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A helper class for managing the distributed cache for {@link LocalJobRunner}.
  */
 @SuppressWarnings("deprecation")
 class LocalDistributedCacheManager {
-  public static final Log LOG =
-    LogFactory.getLog(LocalDistributedCacheManager.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(LocalDistributedCacheManager.class);
   
   private List<String> localArchives = new ArrayList<String>();
   private List<String> localFiles = new ArrayList<String>();
@@ -121,7 +120,7 @@ class LocalDistributedCacheManager {
       ThreadFactory tf = new ThreadFactoryBuilder()
       .setNameFormat("LocalDistributedCacheManager Downloader #%d")
       .build();
-      exec = Executors.newCachedThreadPool(tf);
+      exec = HadoopExecutors.newCachedThreadPool(tf);
       Path destPath = localDirAllocator.getLocalPathForWrite(".", conf);
       Map<LocalResource, Future<Path>> resourcesToPaths = Maps.newHashMap();
       for (LocalResource resource : localResources.values()) {
@@ -231,7 +230,7 @@ class LocalDistributedCacheManager {
     final URL[] urls = new URL[localClasspaths.size()];
     for (int i = 0; i < localClasspaths.size(); ++i) {
       urls[i] = new File(localClasspaths.get(i)).toURI().toURL();
-      LOG.info(urls[i]);
+      LOG.info(urls[i].toString());
     }
     return AccessController.doPrivileged(new PrivilegedAction<ClassLoader>() {
       @Override

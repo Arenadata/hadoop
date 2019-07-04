@@ -34,6 +34,7 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYPASSWORD_
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_KEYSTORE_PASSWORD_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SERVER_HTTPS_TRUSTSTORE_PASSWORD_KEY;
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.hamcrest.CoreMatchers.not;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -53,6 +54,7 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
@@ -74,9 +76,7 @@ import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.apache.hadoop.security.alias.JavaKeyStoreProvider;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.hadoop.util.Shell;
 import org.junit.Assert;
-import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -84,9 +84,9 @@ import com.google.common.collect.Sets;
 
 public class TestDFSUtil {
 
-  static final String NS1_NN_ADDR    = "ns1-nn.example.com:9820";
-  static final String NS1_NN1_ADDR   = "ns1-nn1.example.com:9820";
-  static final String NS1_NN2_ADDR   = "ns1-nn2.example.com:9820";
+  static final String NS1_NN_ADDR    = "ns1-nn.example.com:8020";
+  static final String NS1_NN1_ADDR   = "ns1-nn1.example.com:8020";
+  static final String NS1_NN2_ADDR   = "ns1-nn2.example.com:8020";
 
   /**
    * Reset to default UGI settings since some tests change them.
@@ -118,7 +118,7 @@ public class TestDFSUtil {
     l2.setCorrupt(true);
 
     List<LocatedBlock> ls = Arrays.asList(l1, l2);
-    LocatedBlocks lbs = new LocatedBlocks(10, false, ls, l2, true, null);
+    LocatedBlocks lbs = new LocatedBlocks(10, false, ls, l2, true, null, null);
 
     BlockLocation[] bs = DFSUtilClient.locatedBlocks2Locations(lbs);
 
@@ -514,7 +514,7 @@ public class TestDFSUtil {
         NS2_NN2_HOST);
     
     Map<String, Map<String, InetSocketAddress>> map =
-      DFSUtil.getHaNnRpcAddresses(conf);
+        DFSUtilClient.getHaNnRpcAddresses(conf);
 
     assertTrue(HAUtil.isHAEnabled(conf, "ns1"));
     assertTrue(HAUtil.isHAEnabled(conf, "ns2"));
@@ -556,9 +556,9 @@ public class TestDFSUtil {
     
     // One nameservice with two NNs
     final String NS1_NN1_HOST = "ns1-nn1.example.com:8020";
-    final String NS1_NN1_HOST_SVC = "ns1-nn2.example.com:8021";
+    final String NS1_NN1_HOST_SVC = "ns1-nn2.example.com:9821";
     final String NS1_NN2_HOST = "ns1-nn1.example.com:8020";
-    final String NS1_NN2_HOST_SVC = "ns1-nn2.example.com:8021";
+    final String NS1_NN2_HOST_SVC = "ns1-nn2.example.com:9821";
    
     conf.set(DFS_NAMESERVICES, "ns1");
     conf.set(DFSUtil.addKeySuffixes(DFS_HA_NAMENODES_KEY_PREFIX, "ns1"),"nn1,nn2"); 
@@ -643,7 +643,7 @@ public class TestDFSUtil {
 
     final String NS2_NN_ADDR    = "ns2-nn.example.com:8020";
     final String NN1_ADDR       = "nn.example.com:8020";
-    final String NN1_SRVC_ADDR  = "nn.example.com:8021";
+    final String NN1_SRVC_ADDR  = "nn.example.com:9821";
     final String NN2_ADDR       = "nn2.example.com:8020";
 
     conf.set(DFS_NAMESERVICES, "ns1");
@@ -817,7 +817,7 @@ public class TestDFSUtil {
   @Test (timeout=15000)
   public void testLocalhostReverseLookup() {
     // 127.0.0.1 -> localhost reverse resolution does not happen on Windows.
-    Assume.assumeTrue(!Shell.WINDOWS);
+    assumeNotWindows();
 
     // Make sure when config FS_DEFAULT_NAME_KEY using IP address,
     // it will automatically convert it to hostname
@@ -861,7 +861,7 @@ public class TestDFSUtil {
         DFSUtil.getSpnegoKeytabKey(conf, defaultKey));
   }
 
-  @Test(timeout=1000)
+  @Test(timeout=10000)
   public void testDurationToString() throws Exception {
     assertEquals("000:00:00:00.000", DFSUtil.durationToString(0));
     assertEquals("001:01:01:01.000",
@@ -934,8 +934,7 @@ public class TestDFSUtil {
 
   @Test
   public void testGetPassword() throws Exception {
-    File testDir = new File(System.getProperty("test.build.data",
-        "target/test-dir"));
+    File testDir = GenericTestUtils.getTestDir();
 
     Configuration conf = new Configuration();
     final Path jksPath = new Path(testDir.toString(), "test.jks");
@@ -1051,4 +1050,19 @@ public class TestDFSUtil {
         DFSUtilClient.isHDFSEncryptionEnabled(conf));
 
   }
+
+  @Test
+  public void testFileIdPath() throws Throwable {
+    // /.reserved/.inodes/
+    String prefix = Path.SEPARATOR + HdfsConstants.DOT_RESERVED_STRING +
+                    Path.SEPARATOR + HdfsConstants.DOT_INODES_STRING +
+                    Path.SEPARATOR;
+    Random r = new Random();
+    for (int i = 0; i < 100; ++i) {
+      long inode = r.nextLong() & Long.MAX_VALUE;
+      assertEquals(new Path(prefix + inode),
+          DFSUtilClient.makePathFromFileId(inode));
+    }
+  }
+
 }

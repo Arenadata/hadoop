@@ -42,8 +42,6 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.apache.hadoop.hdfs.web.HftpFileSystem;
 import org.apache.hadoop.hdfs.web.WebHdfsConstants;
 import org.apache.hadoop.hdfs.web.WebHdfsTestUtil;
 import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
@@ -121,7 +119,6 @@ public class TestAuditLogs {
     final long precision = 1L;
     conf.setLong(DFSConfigKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_KEY, precision);
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 10000L);
-    conf.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_AUDIT_LOG_ASYNC_KEY, useAsyncLog);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_EDITS_ASYNC_LOGGING, useAsyncEdits);
     util = new DFSTestUtil.Builder().setName("TestAuditAllowed").
@@ -235,30 +232,6 @@ public class TestAuditLogs {
 
     verifyAuditLogs(true);
     assertTrue("failed to stat file", st != null && st.isFile());
-  }
-
-  /** test that access via Hftp puts proper entry in audit log */
-  @Test
-  public void testAuditHftp() throws Exception {
-    final Path file = new Path(fnames[0]);
-
-    final String hftpUri =
-      "hftp://" + conf.get(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY);
-
-    HftpFileSystem hftpFs = null;
-
-    setupAuditLogs();
-    try {
-      hftpFs = (HftpFileSystem) new Path(hftpUri).getFileSystem(conf);
-      InputStream istream = hftpFs.open(file);
-      @SuppressWarnings("unused")
-      int val = istream.read();
-      istream.close();
-
-      verifyAuditLogs(true);
-    } finally {
-      if (hftpFs != null) hftpFs.close();
-    }
   }
 
   /** test that denied access via webhdfs puts proper entry in audit log */

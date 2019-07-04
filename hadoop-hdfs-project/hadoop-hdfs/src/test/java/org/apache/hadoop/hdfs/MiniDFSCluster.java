@@ -55,16 +55,18 @@ import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import com.google.common.base.Supplier;
+import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.Multimap;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -103,7 +105,6 @@ import org.apache.hadoop.hdfs.server.datanode.SecureDataNodeStarter.SecureResour
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
-import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetUtil;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl;
 import org.apache.hadoop.hdfs.server.namenode.EditLogFileOutputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
@@ -112,7 +113,6 @@ import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.tools.DFSAdmin;
-import org.apache.hadoop.hdfs.web.HftpFileSystem;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.DNSToSwitchMapping;
 import org.apache.hadoop.net.NetUtils;
@@ -143,11 +143,17 @@ public class MiniDFSCluster implements AutoCloseable {
   private static final String NAMESERVICE_ID_PREFIX = "nameserviceId";
   private static final Log LOG = LogFactory.getLog(MiniDFSCluster.class);
   /** System property to set the data dir: {@value} */
-  public static final String PROP_TEST_BUILD_DATA = "test.build.data";
+  public static final String PROP_TEST_BUILD_DATA =
+      GenericTestUtils.SYSPROP_TEST_DATA_DIR;
   /** Configuration option to set the data dir: {@value} */
   public static final String HDFS_MINIDFS_BASEDIR = "hdfs.minidfs.basedir";
+  /** Configuration option to set the provided data dir: {@value} */
+  public static final String HDFS_MINIDFS_BASEDIR_PROVIDED =
+      "hdfs.minidfs.basedir.provided";
   public static final String  DFS_NAMENODE_SAFEMODE_EXTENSION_TESTING_KEY
       = DFS_NAMENODE_SAFEMODE_EXTENSION_KEY + ".testing";
+  public static final String  DFS_NAMENODE_DECOMMISSION_INTERVAL_TESTING_KEY
+      = DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY + ".testing";
 
   // Changing this default may break some tests that assume it is 2.
   private static final int DEFAULT_STORAGES_PER_DATANODE = 2;
@@ -190,7 +196,8 @@ public class MiniDFSCluster implements AutoCloseable {
     private boolean checkDataNodeHostConfig = false;
     private Configuration[] dnConfOverlays;
     private boolean skipFsyncForTesting = true;
-    
+    private boolean useConfiguredTopologyMappingClass = false;
+
     public Builder(Configuration conf) {
       this.conf = conf;
       this.storagesPerDatanode =
@@ -284,7 +291,7 @@ public class MiniDFSCluster implements AutoCloseable {
       this.manageNameDfsDirs = val;
       return this;
     }
-
+    
     /**
      * Default: true
      */
@@ -434,7 +441,14 @@ public class MiniDFSCluster implements AutoCloseable {
       this.skipFsyncForTesting = val;
       return this;
     }
-    
+
+    public Builder useConfiguredTopologyMappingClass(
+        boolean useConfiguredTopologyMappingClass) {
+      this.useConfiguredTopologyMappingClass =
+          useConfiguredTopologyMappingClass;
+      return this;
+    }
+
     /**
      * Construct the actual MiniDFSCluster
      */
@@ -457,7 +471,7 @@ public class MiniDFSCluster implements AutoCloseable {
     final int numNameNodes = builder.nnTopology.countNameNodes();
     LOG.info("starting cluster: numNameNodes=" + numNameNodes
         + ", numDataNodes=" + builder.numDataNodes);
-    nameNodes = new NameNodeInfo[numNameNodes];
+
     this.storagesPerDatanode = builder.storagesPerDatanode;
 
     // Duplicate the storageType setting for each DN.
@@ -502,7 +516,8 @@ public class MiniDFSCluster implements AutoCloseable {
                        builder.checkDataNodeAddrConfig,
                        builder.checkDataNodeHostConfig,
                        builder.dnConfOverlays,
-                       builder.skipFsyncForTesting);
+                       builder.skipFsyncForTesting,
+                       builder.useConfiguredTopologyMappingClass);
   }
   
   public class DataNodeProperties {
@@ -527,9 +542,9 @@ public class MiniDFSCluster implements AutoCloseable {
   }
 
   private Configuration conf;
-  private NameNodeInfo[] nameNodes;
+  private Multimap<String, NameNodeInfo> namenodes = ArrayListMultimap.create();
   protected int numDataNodes;
-  protected final ArrayList<DataNodeProperties> dataNodes = 
+  protected final List<DataNodeProperties> dataNodes =
                          new ArrayList<DataNodeProperties>();
   private File base_dir;
   private File data_dir;
@@ -553,10 +568,10 @@ public class MiniDFSCluster implements AutoCloseable {
    * Stores the information related to a namenode in the cluster
    */
   public static class NameNodeInfo {
-    final NameNode nameNode;
-    final Configuration conf;
-    final String nameserviceId;
-    final String nnId;
+    public NameNode nameNode;
+    Configuration conf;
+    String nameserviceId;
+    String nnId;
     StartupOption startOpt;
     NameNodeInfo(NameNode nn, String nameserviceId, String nnId,
         StartupOption startOpt, Configuration conf) {
@@ -570,6 +585,14 @@ public class MiniDFSCluster implements AutoCloseable {
     public void setStartOpt(StartupOption startOpt) {
       this.startOpt = startOpt;
     }
+
+    public String getNameserviceId() {
+      return this.nameserviceId;
+    }
+
+    public String getNamenodeId() {
+      return this.nnId;
+    }
   }
   
   /**
@@ -577,7 +600,6 @@ public class MiniDFSCluster implements AutoCloseable {
    * without a name node (ie when the name node is started elsewhere).
    */
   public MiniDFSCluster() {
-    nameNodes = new NameNodeInfo[0]; // No namenode in the cluster
     storagesPerDatanode = DEFAULT_STORAGES_PER_DATANODE;
     synchronized (MiniDFSCluster.class) {
       instanceId = instanceCount++;
@@ -624,7 +646,8 @@ public class MiniDFSCluster implements AutoCloseable {
                         int numDataNodes,
                         boolean format,
                         String[] racks) throws IOException {
-    this(0, conf, numDataNodes, format, true, true,  null, racks, null, null);
+    this(0, conf, numDataNodes, format, true, true, null,
+        racks, null, null);
   }
   
   /**
@@ -646,7 +669,8 @@ public class MiniDFSCluster implements AutoCloseable {
                         int numDataNodes,
                         boolean format,
                         String[] racks, String[] hosts) throws IOException {
-    this(0, conf, numDataNodes, format, true, true, null, racks, hosts, null);
+    this(0, conf, numDataNodes, format, true, true, null,
+        racks, hosts, null);
   }
   
   /**
@@ -679,8 +703,8 @@ public class MiniDFSCluster implements AutoCloseable {
                         boolean manageDfsDirs,
                         StartupOption operation,
                         String[] racks) throws IOException {
-    this(nameNodePort, conf, numDataNodes, format, manageDfsDirs, manageDfsDirs,
-         operation, racks, null, null);
+    this(nameNodePort, conf, numDataNodes, format, manageDfsDirs,
+        manageDfsDirs, operation, racks, null, null);
   }
 
   /**
@@ -713,8 +737,8 @@ public class MiniDFSCluster implements AutoCloseable {
                         StartupOption operation,
                         String[] racks,
                         long[] simulatedCapacities) throws IOException {
-    this(nameNodePort, conf, numDataNodes, format, manageDfsDirs, manageDfsDirs,
-          operation, racks, null, simulatedCapacities);
+    this(nameNodePort, conf, numDataNodes, format, manageDfsDirs, 
+        manageDfsDirs, operation, racks, null, simulatedCapacities);
   }
   
   /**
@@ -752,19 +776,19 @@ public class MiniDFSCluster implements AutoCloseable {
                         StartupOption operation,
                         String[] racks, String hosts[],
                         long[] simulatedCapacities) throws IOException {
-    this.nameNodes = new NameNodeInfo[1]; // Single namenode in the cluster
     this.storagesPerDatanode = DEFAULT_STORAGES_PER_DATANODE;
     initMiniDFSCluster(conf, numDataNodes, null, format,
                        manageNameDfsDirs, true, manageDataDfsDirs, manageDataDfsDirs,
                        operation, null, racks, hosts,
                        null, simulatedCapacities, null, true, false,
                        MiniDFSNNTopology.simpleSingleNN(nameNodePort, 0),
-                       true, false, false, null, true);
+                       true, false, false, null, true, false);
   }
 
   private void initMiniDFSCluster(
       Configuration conf,
-      int numDataNodes, StorageType[][] storageTypes, boolean format, boolean manageNameDfsDirs,
+      int numDataNodes, StorageType[][] storageTypes, boolean format,
+      boolean manageNameDfsDirs,
       boolean manageNameDfsSharedDirs, boolean enableManagedDfsDirsRedundancy,
       boolean manageDataDfsDirs, StartupOption startOpt,
       StartupOption dnStartOpt, String[] racks,
@@ -775,7 +799,8 @@ public class MiniDFSCluster implements AutoCloseable {
       boolean checkDataNodeAddrConfig,
       boolean checkDataNodeHostConfig,
       Configuration[] dnConfOverlays,
-      boolean skipFsyncForTesting)
+      boolean skipFsyncForTesting,
+      boolean useConfiguredTopologyMappingClass)
   throws IOException {
     boolean success = false;
     try {
@@ -796,13 +821,26 @@ public class MiniDFSCluster implements AutoCloseable {
     
       int replication = conf.getInt(DFS_REPLICATION_KEY, 3);
       conf.setInt(DFS_REPLICATION_KEY, Math.min(replication, numDataNodes));
+      int maintenanceMinReplication = conf.getInt(
+          DFSConfigKeys.DFS_NAMENODE_MAINTENANCE_REPLICATION_MIN_KEY,
+          DFSConfigKeys.DFS_NAMENODE_MAINTENANCE_REPLICATION_MIN_DEFAULT);
+      if (maintenanceMinReplication ==
+          DFSConfigKeys.DFS_NAMENODE_MAINTENANCE_REPLICATION_MIN_DEFAULT) {
+        conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAINTENANCE_REPLICATION_MIN_KEY,
+            Math.min(maintenanceMinReplication, numDataNodes));
+      }
       int safemodeExtension = conf.getInt(
           DFS_NAMENODE_SAFEMODE_EXTENSION_TESTING_KEY, 0);
       conf.setInt(DFS_NAMENODE_SAFEMODE_EXTENSION_KEY, safemodeExtension);
-      conf.setInt(DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY, 3); // 3 second
-      conf.setClass(NET_TOPOLOGY_NODE_SWITCH_MAPPING_IMPL_KEY, 
-                     StaticMapping.class, DNSToSwitchMapping.class);
-    
+      long decommissionInterval = conf.getTimeDuration(
+          DFS_NAMENODE_DECOMMISSION_INTERVAL_TESTING_KEY, 3, TimeUnit.SECONDS);
+      conf.setTimeDuration(DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY,
+          decommissionInterval, TimeUnit.SECONDS);
+      if (!useConfiguredTopologyMappingClass) {
+        conf.setClass(NET_TOPOLOGY_NODE_SWITCH_MAPPING_IMPL_KEY,
+            StaticMapping.class, DNSToSwitchMapping.class);
+      }
+
       // In an HA cluster, in order for the StandbyNode to perform checkpoints,
       // it needs to know the HTTP port of the Active. So, if ephemeral ports
       // are chosen, disable checkpoints for the test.
@@ -826,7 +864,7 @@ public class MiniDFSCluster implements AutoCloseable {
         createNameNodesAndSetConf(
             nnTopology, manageNameDfsDirs, manageNameDfsSharedDirs,
             enableManagedDfsDirsRedundancy,
-            format, startOpt, clusterId, conf);
+            format, startOpt, clusterId);
       } catch (IOException ioe) {
         LOG.error("IOE creating namenodes. Permissions dump:\n" +
             createPermissionsDiagnosisString(data_dir), ioe);
@@ -857,10 +895,49 @@ public class MiniDFSCluster implements AutoCloseable {
         shutdown();
       }
     }
+  }
+  
+  /**
+   * @return a debug string which can help diagnose an error of why
+   * a given directory might have a permissions error in the context
+   * of a test case
+   */
+  private String createPermissionsDiagnosisString(File path) {
+    StringBuilder sb = new StringBuilder();
+    while (path != null) { 
+      sb.append("path '" + path + "': ").append("\n");
+      sb.append("\tabsolute:").append(path.getAbsolutePath()).append("\n");
+      sb.append("\tpermissions: ");
+      sb.append(path.isDirectory() ? "d": "-");
+      sb.append(FileUtil.canRead(path) ? "r" : "-");
+      sb.append(FileUtil.canWrite(path) ? "w" : "-");
+      sb.append(FileUtil.canExecute(path) ? "x" : "-");
+      sb.append("\n");
+      path = path.getParentFile();
+    }
+    return sb.toString();
+  }
 
-    for (NameNodeInfo nn : nameNodes) {
+  private void createNameNodesAndSetConf(MiniDFSNNTopology nnTopology,
+      boolean manageNameDfsDirs, boolean manageNameDfsSharedDirs,
+      boolean enableManagedDfsDirsRedundancy, boolean format,
+      StartupOption operation, String clusterId) throws IOException {
+    // do the basic namenode configuration
+    configureNameNodes(nnTopology, federation, conf);
+
+    int nnCounter = 0;
+    int nsCounter = 0;
+    // configure each NS independently
+    for (MiniDFSNNTopology.NSConf nameservice : nnTopology.getNameservices()) {
+      configureNameService(nameservice, nsCounter++, manageNameDfsSharedDirs,
+          manageNameDfsDirs, enableManagedDfsDirsRedundancy,
+          format, operation, clusterId, nnCounter);
+      nnCounter += nameservice.getNNs().size();
+    }
+
+    for (NameNodeInfo nn : namenodes.values()) {
       Configuration nnConf = nn.conf;
-      for (NameNodeInfo nnInfo : nameNodes) {
+      for (NameNodeInfo nnInfo : namenodes.values()) {
         if (nn.equals(nnInfo)) {
           continue;
         }
@@ -893,32 +970,110 @@ public class MiniDFSCluster implements AutoCloseable {
       destConf.set(key, srcConf.get(key));
     }
   }
-  
+
   /**
-   * @return a debug string which can help diagnose an error of why
-   * a given directory might have a permissions error in the context
-   * of a test case
+   * Do the rest of the NN configuration for things like shared edits,
+   * as well as directory formatting, etc. for a single nameservice
+   * @param nnCounter the count of the number of namenodes already configured/started. Also,
+   *                  acts as the <i>index</i> to the next NN to start (since indicies start at 0).
+   * @throws IOException
    */
-  private String createPermissionsDiagnosisString(File path) {
-    StringBuilder sb = new StringBuilder();
-    while (path != null) { 
-      sb.append("path '" + path + "': ").append("\n");
-      sb.append("\tabsolute:").append(path.getAbsolutePath()).append("\n");
-      sb.append("\tpermissions: ");
-      sb.append(path.isDirectory() ? "d": "-");
-      sb.append(FileUtil.canRead(path) ? "r" : "-");
-      sb.append(FileUtil.canWrite(path) ? "w" : "-");
-      sb.append(FileUtil.canExecute(path) ? "x" : "-");
-      sb.append("\n");
-      path = path.getParentFile();
+  private void configureNameService(MiniDFSNNTopology.NSConf nameservice, int nsCounter,
+      boolean manageNameDfsSharedDirs, boolean manageNameDfsDirs, boolean
+      enableManagedDfsDirsRedundancy, boolean format,
+      StartupOption operation, String clusterId,
+      final int nnCounter) throws IOException{
+    String nsId = nameservice.getId();
+    String lastDefaultFileSystem = null;
+
+    // If HA is enabled on this nameservice, enumerate all the namenodes
+    // in the configuration. Also need to set a shared edits dir
+    int numNNs = nameservice.getNNs().size();
+    if (numNNs > 1 && manageNameDfsSharedDirs) {
+      URI sharedEditsUri = getSharedEditsDir(nnCounter, nnCounter + numNNs - 1);
+      conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY, sharedEditsUri.toString());
+      // Clean out the shared edits dir completely, including all subdirectories.
+      FileUtil.fullyDelete(new File(sharedEditsUri));
     }
-    return sb.toString();
+
+    // Now format first NN and copy the storage directory from that node to the others.
+    int nnIndex = nnCounter;
+    Collection<URI> prevNNDirs = null;
+    for (NNConf nn : nameservice.getNNs()) {
+      initNameNodeConf(conf, nsId, nsCounter, nn.getNnId(), manageNameDfsDirs,
+          manageNameDfsDirs,  nnIndex);
+      Collection<URI> namespaceDirs = FSNamesystem.getNamespaceDirs(conf);
+      if (format) {
+        // delete the existing namespaces
+        for (URI nameDirUri : namespaceDirs) {
+          File nameDir = new File(nameDirUri);
+          if (nameDir.exists() && !FileUtil.fullyDelete(nameDir)) {
+            throw new IOException("Could not fully delete " + nameDir);
+          }
+        }
+
+        // delete the checkpoint directories, if they exist
+        Collection<URI> checkpointDirs = Util.stringCollectionAsURIs(conf
+            .getTrimmedStringCollection(DFS_NAMENODE_CHECKPOINT_DIR_KEY));
+        for (URI checkpointDirUri : checkpointDirs) {
+          File checkpointDir = new File(checkpointDirUri);
+          if (checkpointDir.exists() && !FileUtil.fullyDelete(checkpointDir)) {
+            throw new IOException("Could not fully delete " + checkpointDir);
+          }
+        }
+      }
+
+      boolean formatThisOne = format;
+      // if we are looking at not the first NN
+      if (nnIndex++ > nnCounter && format) {
+        // Don't format the second, third, etc NN in an HA setup - that
+        // would result in it having a different clusterID,
+        // block pool ID, etc. Instead, copy the name dirs
+        // from the previous one.
+        formatThisOne = false;
+        assert (null != prevNNDirs);
+        copyNameDirs(prevNNDirs, namespaceDirs, conf);
+      }
+
+      if (formatThisOne) {
+        // Allow overriding clusterID for specific NNs to test
+        // misconfiguration.
+        if (nn.getClusterId() == null) {
+          StartupOption.FORMAT.setClusterId(clusterId);
+        } else {
+          StartupOption.FORMAT.setClusterId(nn.getClusterId());
+        }
+        DFSTestUtil.formatNameNode(conf);
+      }
+      prevNNDirs = namespaceDirs;
+    }
+
+    // create all the namenodes in the namespace
+    nnIndex = nnCounter;
+    for (NNConf nn : nameservice.getNNs()) {
+      Configuration hdfsConf = new Configuration(conf);
+      initNameNodeConf(hdfsConf, nsId, nsCounter, nn.getNnId(), manageNameDfsDirs,
+          enableManagedDfsDirsRedundancy, nnIndex++);
+      createNameNode(hdfsConf, false, operation,
+          clusterId, nsId, nn.getNnId());
+      // Record the last namenode uri
+      lastDefaultFileSystem = hdfsConf.get(FS_DEFAULT_NAME_KEY);
+    }
+    if (!federation && lastDefaultFileSystem != null) {
+      // Set the default file system to the actual bind address of NN.
+      conf.set(FS_DEFAULT_NAME_KEY, lastDefaultFileSystem);
+    }
   }
 
-  private void createNameNodesAndSetConf(MiniDFSNNTopology nnTopology,
-      boolean manageNameDfsDirs, boolean manageNameDfsSharedDirs,
-      boolean enableManagedDfsDirsRedundancy, boolean format,
-      StartupOption operation, String clusterId,
+  /**
+   * Do the basic NN configuration for the topology. Does not configure things like the shared
+   * edits directories
+   * @param nnTopology
+   * @param federation
+   * @param conf
+   * @throws IOException
+   */
+  public static void configureNameNodes(MiniDFSNNTopology nnTopology, boolean federation,
       Configuration conf) throws IOException {
     Preconditions.checkArgument(nnTopology.countNameNodes() > 0,
         "empty NN topology: no namenodes specified!");
@@ -931,22 +1086,21 @@ public class MiniDFSCluster implements AutoCloseable {
       // NN is started.
       conf.set(FS_DEFAULT_NAME_KEY, "hdfs://127.0.0.1:" + onlyNN.getIpcPort());
     }
-    
+
     List<String> allNsIds = Lists.newArrayList();
     for (MiniDFSNNTopology.NSConf nameservice : nnTopology.getNameservices()) {
       if (nameservice.getId() != null) {
         allNsIds.add(nameservice.getId());
       }
     }
+
     if (!allNsIds.isEmpty()) {
       conf.set(DFS_NAMESERVICES, Joiner.on(",").join(allNsIds));
     }
-    
-    int nnCounter = 0;
+
     for (MiniDFSNNTopology.NSConf nameservice : nnTopology.getNameservices()) {
       String nsId = nameservice.getId();
-      String lastDefaultFileSystem = null;
-      
+
       Preconditions.checkArgument(
           !federation || nsId != null,
           "if there is more than one NS, they must have names");
@@ -965,83 +1119,10 @@ public class MiniDFSCluster implements AutoCloseable {
       // If HA is enabled on this nameservice, enumerate all the namenodes
       // in the configuration. Also need to set a shared edits dir
       if (nnIds.size() > 1) {
-        conf.set(DFSUtil.addKeySuffixes(DFS_HA_NAMENODES_KEY_PREFIX, nameservice.getId()),
-            Joiner.on(",").join(nnIds));
-        if (manageNameDfsSharedDirs) {
-          URI sharedEditsUri = getSharedEditsDir(nnCounter, nnCounter+nnIds.size()-1); 
-          conf.set(DFS_NAMENODE_SHARED_EDITS_DIR_KEY, sharedEditsUri.toString());
-          // Clean out the shared edits dir completely, including all subdirectories.
-          FileUtil.fullyDelete(new File(sharedEditsUri));
-        }
-      }
-
-      // Now format first NN and copy the storage directory from that node to the others.
-      int i = 0;
-      Collection<URI> prevNNDirs = null;
-      int nnCounterForFormat = nnCounter;
-      for (NNConf nn : nameservice.getNNs()) {
-        initNameNodeConf(conf, nsId, nn.getNnId(), manageNameDfsDirs,
-            enableManagedDfsDirsRedundancy, nnCounterForFormat);
-        Collection<URI> namespaceDirs = FSNamesystem.getNamespaceDirs(conf);
-        if (format) {
-          for (URI nameDirUri : namespaceDirs) {
-            File nameDir = new File(nameDirUri);
-            if (nameDir.exists() && !FileUtil.fullyDelete(nameDir)) {
-              throw new IOException("Could not fully delete " + nameDir);
-            }
-          }
-          Collection<URI> checkpointDirs = Util.stringCollectionAsURIs(conf
-              .getTrimmedStringCollection(DFS_NAMENODE_CHECKPOINT_DIR_KEY));
-          for (URI checkpointDirUri : checkpointDirs) {
-            File checkpointDir = new File(checkpointDirUri);
-            if (checkpointDir.exists() && !FileUtil.fullyDelete(checkpointDir)) {
-              throw new IOException("Could not fully delete " + checkpointDir);
-            }
-          }
-        }
-        
-        boolean formatThisOne = format;
-        if (format && i++ > 0) {
-          // Don't format the second NN in an HA setup - that
-          // would result in it having a different clusterID,
-          // block pool ID, etc. Instead, copy the name dirs
-          // from the first one.
-          formatThisOne = false;
-          assert (null != prevNNDirs);
-          copyNameDirs(prevNNDirs, namespaceDirs, conf);
-        }
-        
-        nnCounterForFormat++;
-        if (formatThisOne) {
-          // Allow overriding clusterID for specific NNs to test
-          // misconfiguration.
-          if (nn.getClusterId() == null) {
-            StartupOption.FORMAT.setClusterId(clusterId);
-          } else {
-            StartupOption.FORMAT.setClusterId(nn.getClusterId());
-          }
-          DFSTestUtil.formatNameNode(conf);
-        }
-        prevNNDirs = namespaceDirs;
-      }
-
-      // Start all Namenodes
-      for (NNConf nn : nameservice.getNNs()) {
-        Configuration hdfsConf = new Configuration(conf);
-        initNameNodeConf(hdfsConf, nsId, nn.getNnId(), manageNameDfsDirs,
-            enableManagedDfsDirsRedundancy, nnCounter);
-        createNameNode(nnCounter, hdfsConf, numDataNodes, false, operation,
-            clusterId, nsId, nn.getNnId());
-        // Record the last namenode uri
-        lastDefaultFileSystem = hdfsConf.get(FS_DEFAULT_NAME_KEY);
-        nnCounter++;
-      }
-      if (!federation && lastDefaultFileSystem != null) {
-        // Set the default file system to the actual bind address of NN.
-        conf.set(FS_DEFAULT_NAME_KEY, lastDefaultFileSystem);
+        conf.set(DFSUtil.addKeySuffixes(DFS_HA_NAMENODES_KEY_PREFIX, nameservice.getId()), Joiner
+            .on(",").join(nnIds));
       }
     }
-
   }
   
   public URI getSharedEditsDir(int minNN, int maxNN) throws IOException {
@@ -1055,38 +1136,91 @@ public class MiniDFSCluster implements AutoCloseable {
   }
   
   public NameNodeInfo[] getNameNodeInfos() {
-    return this.nameNodes;
+    return this.namenodes.values().toArray(new NameNodeInfo[0]);
   }
 
-  private void initNameNodeConf(Configuration conf,
-      String nameserviceId, String nnId,
-      boolean manageNameDfsDirs, boolean enableManagedDfsDirsRedundancy,
-      int nnIndex) throws IOException {
+  /**
+   * @param nsIndex index of the namespace id to check
+   * @return all the namenodes bound to the given namespace index
+   */
+  public NameNodeInfo[] getNameNodeInfos(int nsIndex) {
+    int i = 0;
+    for (String ns : this.namenodes.keys()) {
+      if (i++ == nsIndex) {
+        return this.namenodes.get(ns).toArray(new NameNodeInfo[0]);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * @param nameservice id of nameservice to read
+   * @return all the namenodes bound to the given namespace index
+   */
+  public NameNodeInfo[] getNameNodeInfos(String nameservice) {
+    for (String ns : this.namenodes.keys()) {
+      if (nameservice.equals(ns)) {
+        return this.namenodes.get(ns).toArray(new NameNodeInfo[0]);
+      }
+    }
+    return null;
+  }
+
+
+  private void initNameNodeConf(Configuration conf, String nameserviceId, int nsIndex, String nnId,
+      boolean manageNameDfsDirs, boolean enableManagedDfsDirsRedundancy, int nnIndex)
+      throws IOException {
     if (nameserviceId != null) {
       conf.set(DFS_NAMESERVICE_ID, nameserviceId);
     }
     if (nnId != null) {
       conf.set(DFS_HA_NAMENODE_ID_KEY, nnId);
     }
-    
     if (manageNameDfsDirs) {
       if (enableManagedDfsDirsRedundancy) {
-        conf.set(DFS_NAMENODE_NAME_DIR_KEY,
-            fileAsURI(new File(base_dir, "name" + (2*nnIndex + 1)))+","+
-            fileAsURI(new File(base_dir, "name" + (2*nnIndex + 2))));
-        conf.set(DFS_NAMENODE_CHECKPOINT_DIR_KEY,
-            fileAsURI(new File(base_dir, "namesecondary" + (2*nnIndex + 1)))+","+
-            fileAsURI(new File(base_dir, "namesecondary" + (2*nnIndex + 2))));
+        File[] files = getNameNodeDirectory(nsIndex, nnIndex);
+        conf.set(DFS_NAMENODE_NAME_DIR_KEY, fileAsURI(files[0]) + "," + fileAsURI(files[1]));
+        files = getCheckpointDirectory(nsIndex, nnIndex);
+        conf.set(DFS_NAMENODE_CHECKPOINT_DIR_KEY, fileAsURI(files[0]) + "," + fileAsURI(files[1]));
       } else {
-        conf.set(DFS_NAMENODE_NAME_DIR_KEY,
-            fileAsURI(new File(base_dir, "name" + (2*nnIndex + 1))).
-              toString());
-        conf.set(DFS_NAMENODE_CHECKPOINT_DIR_KEY,
-            fileAsURI(new File(base_dir, "namesecondary" + (2*nnIndex + 1))).
-              toString());
+        File[] files = getNameNodeDirectory(nsIndex, nnIndex);
+        conf.set(DFS_NAMENODE_NAME_DIR_KEY, fileAsURI(files[0]).toString());
+        files = getCheckpointDirectory(nsIndex, nnIndex);
+        conf.set(DFS_NAMENODE_CHECKPOINT_DIR_KEY, fileAsURI(files[0]).toString());
       }
     }
   }
+
+  private File[] getNameNodeDirectory(int nameserviceIndex, int nnIndex) {
+    return getNameNodeDirectory(base_dir, nameserviceIndex, nnIndex);
+  }
+
+  public static File[] getNameNodeDirectory(String base_dir, int nsIndex, int nnIndex) {
+    return getNameNodeDirectory(new File(base_dir), nsIndex, nnIndex);
+  }
+
+  public static File[] getNameNodeDirectory(File base_dir, int nsIndex, int nnIndex) {
+    File[] files = new File[2];
+    files[0] = new File(base_dir, "name-" + nsIndex + "-" + (2 * nnIndex + 1));
+    files[1] = new File(base_dir, "name-" + nsIndex + "-" + (2 * nnIndex + 2));
+    return files;
+  }
+
+  public File[] getCheckpointDirectory(int nsIndex, int nnIndex) {
+    return getCheckpointDirectory(base_dir, nsIndex, nnIndex);
+  }
+
+  public static File[] getCheckpointDirectory(String base_dir, int nsIndex, int nnIndex) {
+    return getCheckpointDirectory(new File(base_dir), nsIndex, nnIndex);
+  }
+
+  public static File[] getCheckpointDirectory(File base_dir, int nsIndex, int nnIndex) {
+    File[] files = new File[2];
+    files[0] = new File(base_dir, "namesecondary-" + nsIndex + "-" + (2 * nnIndex + 1));
+    files[1] = new File(base_dir, "namesecondary-" + nsIndex + "-" + (2 * nnIndex + 2));
+    return files;
+  }
+
 
   public static void copyNameDirs(Collection<URI> srcDirs, Collection<URI> dstDirs,
       Configuration dstConf) throws IOException {
@@ -1139,12 +1273,9 @@ public class MiniDFSCluster implements AutoCloseable {
             new String[] {} : new String[] {operation.getName()};
     return args;
   }
-  
-  private void createNameNode(int nnIndex, Configuration hdfsConf,
-      int numDataNodes, boolean format, StartupOption operation,
-      String clusterId, String nameserviceId,
-      String nnId)
-      throws IOException {
+
+  private void createNameNode(Configuration hdfsConf, boolean format, StartupOption operation,
+      String clusterId, String nameserviceId, String nnId) throws IOException {
     // Format and clean out DataNode directories
     if (format) {
       DFSTestUtil.formatNameNode(hdfsConf);
@@ -1152,14 +1283,12 @@ public class MiniDFSCluster implements AutoCloseable {
     if (operation == StartupOption.UPGRADE){
       operation.setClusterId(clusterId);
     }
-    
-    // Start the NameNode after saving the default file system.
+
     String[] args = createArgs(operation);
     NameNode nn =  NameNode.createNameNode(args, hdfsConf);
     if (operation == StartupOption.RECOVER) {
       return;
     }
-    
     // After the NN has started, set back the bound ports into
     // the conf
     hdfsConf.set(DFSUtil.addKeySuffixes(DFS_NAMENODE_RPC_ADDRESS_KEY,
@@ -1180,8 +1309,9 @@ public class MiniDFSCluster implements AutoCloseable {
     copyKeys(hdfsConf, conf, nameserviceId, nnId);
     DFSUtil.setGenericConf(hdfsConf, nameserviceId, nnId,
         DFS_NAMENODE_HTTP_ADDRESS_KEY);
-    nameNodes[nnIndex] = new NameNodeInfo(nn, nameserviceId, nnId,
+    NameNodeInfo info = new NameNodeInfo(nn, nameserviceId, nnId,
         operation, hdfsConf);
+    namenodes.put(nameserviceId, info);
   }
 
   /**
@@ -1197,12 +1327,12 @@ public class MiniDFSCluster implements AutoCloseable {
    */
   public URI getURI(int nnIndex) {
     String hostPort =
-        nameNodes[nnIndex].nameNode.getNameNodeAddressHostPortString();
+        getNN(nnIndex).nameNode.getNameNodeAddressHostPortString();
     URI uri = null;
     try {
       uri = new URI("hdfs://" + hostPort);
     } catch (URISyntaxException e) {
-      NameNode.LOG.warn("unexpected URISyntaxException: " + e );
+      NameNode.LOG.warn("unexpected URISyntaxException", e);
     }
     return uri;
   }
@@ -1215,8 +1345,20 @@ public class MiniDFSCluster implements AutoCloseable {
    * @return Configuration of for the given namenode
    */
   public Configuration getConfiguration(int nnIndex) {
-    return nameNodes[nnIndex].conf;
+    return getNN(nnIndex).conf;
   }
+
+  private NameNodeInfo getNN(int nnIndex) {
+    int count = 0;
+    for (NameNodeInfo nn : namenodes.values()) {
+      if (count == nnIndex) {
+        return nn;
+      }
+      count++;
+    }
+    return null;
+  }
+
 
   /**
    * wait for the given namenode to get out of safemode.
@@ -1258,7 +1400,12 @@ public class MiniDFSCluster implements AutoCloseable {
       if ((storageTypes != null) && (j >= storageTypes.length)) {
         break;
       }
-      File dir = getInstanceStorageDir(dnIndex, j);
+      File dir;
+      if (storageTypes != null && storageTypes[j] == StorageType.PROVIDED) {
+        dir = getProvidedStorageDir(dnIndex, j);
+      } else {
+        dir = getInstanceStorageDir(dnIndex, j);
+      }
       dir.mkdirs();
       if (!dir.isDirectory()) {
         throw new IOException("Mkdirs failed to create directory for DataNode " + dir);
@@ -1397,7 +1544,6 @@ public class MiniDFSCluster implements AutoCloseable {
     }
 
     int curDatanodesNum = dataNodes.size();
-    final int curDatanodesNumSaved = curDatanodesNum;
     // for mincluster's the default initialDelay for BRs is 0
     if (conf.get(DFS_BLOCKREPORT_INITIAL_DELAY_KEY) == null) {
       conf.setLong(DFS_BLOCKREPORT_INITIAL_DELAY_KEY, 0);
@@ -1536,7 +1682,6 @@ public class MiniDFSCluster implements AutoCloseable {
     this.numDataNodes += numDataNodes;
     waitActive();
 
-    
     setDataNodeStorageCapacities(
         curDatanodesNum,
         numDataNodes,
@@ -1548,9 +1693,52 @@ public class MiniDFSCluster implements AutoCloseable {
       storageCap.addAll(Arrays.asList(storageCapacities));
     }
   }
-  
-  
-  
+
+  private synchronized void setDataNodeStorageCapacities(
+      final int curDatanodesNum,
+      final int numDNs,
+      final DataNode[] dns,
+      long[][] storageCapacities) throws IOException {
+    if (storageCapacities != null) {
+      for (int i = curDatanodesNum; i < curDatanodesNum + numDNs; ++i) {
+        final int index = i - curDatanodesNum;
+        setDataNodeStorageCapacities(index, dns[index], storageCapacities);
+      }
+    }
+  }
+
+  private synchronized void setDataNodeStorageCapacities(
+      final int curDnIdx,
+      final DataNode curDn,
+      long[][] storageCapacities) throws IOException {
+
+    if (storageCapacities == null || storageCapacities.length == 0) {
+      return;
+    }
+
+    try {
+      waitDataNodeFullyStarted(curDn);
+    } catch (TimeoutException | InterruptedException e) {
+      throw new IOException(e);
+    }
+
+    try (FsDatasetSpi.FsVolumeReferences volumes = curDn.getFSDataset()
+        .getFsVolumeReferences()) {
+      assert storageCapacities[curDnIdx].length == storagesPerDatanode;
+      assert volumes.size() == storagesPerDatanode;
+
+      int j = 0;
+      for (FsVolumeSpi fvs : volumes) {
+        FsVolumeImpl volume = (FsVolumeImpl) fvs;
+        LOG.info("setCapacityForTesting " + storageCapacities[curDnIdx][j]
+            + " for [" + volume.getStorageType() + "]" + volume.getStorageID());
+        volume.setCapacityForTesting(storageCapacities[curDnIdx][j]);
+        j++;
+      }
+    }
+    DataNodeTestUtils.triggerHeartbeat(curDn);
+  }
+
   /**
    * Modify the config and start up the DataNodes.  The info port for
    * DataNodes is guaranteed to use a free port.
@@ -1628,7 +1816,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * @throws Exception
    */
   public void finalizeCluster(int nnIndex, Configuration conf) throws Exception {
-    finalizeNamenode(nameNodes[nnIndex].nameNode, nameNodes[nnIndex].conf);
+    finalizeNamenode(getNN(nnIndex).nameNode, getNN(nnIndex).conf);
   }
 
   /**
@@ -1639,7 +1827,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * @throws IllegalStateException if the Namenode is not running.
    */
   public void finalizeCluster(Configuration conf) throws Exception {
-    for (NameNodeInfo nnInfo : nameNodes) {
+    for (NameNodeInfo nnInfo : namenodes.values()) {
       if (nnInfo == null) {
         throw new IllegalStateException("Attempting to finalize "
             + "Namenode but it is not running");
@@ -1647,9 +1835,9 @@ public class MiniDFSCluster implements AutoCloseable {
       finalizeNamenode(nnInfo.nameNode, nnInfo.conf);
     }
   }
-  
+
   public int getNumNameNodes() {
-    return nameNodes.length;
+    return namenodes.size();
   }
   
   /**
@@ -1679,7 +1867,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * Gets the NameNode for the index.  May be null.
    */
   public NameNode getNameNode(int nnIndex) {
-    return nameNodes[nnIndex].nameNode;
+    return getNN(nnIndex).nameNode;
   }
   
   /**
@@ -1688,11 +1876,11 @@ public class MiniDFSCluster implements AutoCloseable {
    */
   public FSNamesystem getNamesystem() {
     checkSingleNameNode();
-    return NameNodeAdapter.getNamesystem(nameNodes[0].nameNode);
+    return NameNodeAdapter.getNamesystem(getNN(0).nameNode);
   }
-  
+
   public FSNamesystem getNamesystem(int nnIndex) {
-    return NameNodeAdapter.getNamesystem(nameNodes[nnIndex].nameNode);
+    return NameNodeAdapter.getNamesystem(getNN(nnIndex).nameNode);
   }
 
   /**
@@ -1754,14 +1942,14 @@ public class MiniDFSCluster implements AutoCloseable {
    * caller supplied port is not necessarily the actual port used.
    */     
   public int getNameNodePort(int nnIndex) {
-    return nameNodes[nnIndex].nameNode.getNameNodeAddress().getPort();
+    return getNN(nnIndex).nameNode.getNameNodeAddress().getPort();
   }
 
   /**
    * @return the service rpc port used by the NameNode at the given index.
    */     
   public int getNameNodeServicePort(int nnIndex) {
-    return nameNodes[nnIndex].nameNode.getServiceRpcAddress().getPort();
+    return getNN(nnIndex).nameNode.getServiceRpcAddress().getPort();
   }
     
   /**
@@ -1802,19 +1990,18 @@ public class MiniDFSCluster implements AutoCloseable {
       fileSystems.clear();
     }
     shutdownDataNodes();
-    for (NameNodeInfo nnInfo : nameNodes) {
+    for (NameNodeInfo nnInfo : namenodes.values()) {
       if (nnInfo == null) continue;
       stopAndJoinNameNode(nnInfo.nameNode);
     }
     ShutdownHookManager.get().clearShutdownHooks();
     if (base_dir != null) {
       if (deleteDfsDir) {
-        base_dir.delete();
+        FileUtil.fullyDelete(base_dir);
       } else {
-        base_dir.deleteOnExit();
+        FileUtil.fullyDeleteOnExit(base_dir);
       }
     }
-
   }
   
   /**
@@ -1841,7 +2028,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * Shutdown all the namenodes.
    */
   public synchronized void shutdownNameNodes() {
-    for (int i = 0; i < nameNodes.length; i++) {
+    for (int i = 0; i < namenodes.size(); i++) {
       shutdownNameNode(i);
     }
   }
@@ -1850,12 +2037,11 @@ public class MiniDFSCluster implements AutoCloseable {
    * Shutdown the namenode at a given index.
    */
   public synchronized void shutdownNameNode(int nnIndex) {
-    NameNode nn = nameNodes[nnIndex].nameNode;
-    if (nn != null) {
-      stopAndJoinNameNode(nn);
-      Configuration conf = nameNodes[nnIndex].conf;
-      nameNodes[nnIndex] = new NameNodeInfo(null, null, null, null, conf);
-    }
+    NameNodeInfo info = getNN(nnIndex);
+    stopAndJoinNameNode(info.nameNode);
+    info.nnId = null;
+    info.nameNode = null;
+    info.nameserviceId = null;
   }
 
   /**
@@ -1875,7 +2061,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * Restart all namenodes.
    */
   public synchronized void restartNameNodes() throws IOException {
-    for (int i = 0; i < nameNodes.length; i++) {
+    for (int i = 0; i < namenodes.size(); i++) {
       restartNameNode(i, false);
     }
     waitActive();
@@ -1911,19 +2097,19 @@ public class MiniDFSCluster implements AutoCloseable {
    */
   public synchronized void restartNameNode(int nnIndex, boolean waitActive,
       String... args) throws IOException {
-    String nameserviceId = nameNodes[nnIndex].nameserviceId;
-    String nnId = nameNodes[nnIndex].nnId;
-    StartupOption startOpt = nameNodes[nnIndex].startOpt;
-    Configuration conf = nameNodes[nnIndex].conf;
+    NameNodeInfo info = getNN(nnIndex);
+    StartupOption startOpt = info.startOpt;
+
     shutdownNameNode(nnIndex);
     if (args.length != 0) {
       startOpt = null;
     } else {
       args = createArgs(startOpt);
     }
-    NameNode nn = NameNode.createNameNode(args, conf);
-    nameNodes[nnIndex] = new NameNodeInfo(nn, nameserviceId, nnId, startOpt,
-        conf);
+
+    NameNode nn = NameNode.createNameNode(args, info.conf);
+    info.nameNode = nn;
+    info.setStartOpt(startOpt);
     if (waitActive) {
       waitClusterUp();
       LOG.info("Restarted the namenode");
@@ -1978,6 +2164,16 @@ public class MiniDFSCluster implements AutoCloseable {
     File blockFile = getBlockFile(i, block);
     if (blockFile != null && blockFile.exists()) {
       return DFSTestUtil.readFile(blockFile);
+    }
+    return null;
+  }
+
+  public byte[] readBlockOnDataNodeAsBytes(int i, ExtendedBlock block)
+      throws IOException {
+    assert (i >= 0 && i < dataNodes.size()) : "Invalid datanode "+i;
+    File blockFile = getBlockFile(i, block);
+    if (blockFile != null && blockFile.exists()) {
+      return DFSTestUtil.readFileAsBytes(blockFile);
     }
     return null;
   }
@@ -2073,8 +2269,6 @@ public class MiniDFSCluster implements AutoCloseable {
     int node = -1;
     for (int i = 0; i < dataNodes.size(); i++) {
       DataNode dn = dataNodes.get(i).datanode;
-      LOG.info("DN name=" + dnName + " found DN=" + dn +
-          " with name=" + dn.getDisplayName());
       if (dnName.equals(dn.getDatanodeId().getXferAddr())) {
         node = i;
         break;
@@ -2082,6 +2276,22 @@ public class MiniDFSCluster implements AutoCloseable {
     }
     return stopDataNode(node);
   }
+
+  /*
+   * Restart a DataNode by name.
+   * @return true if DataNode restart is successful else returns false
+   */
+  public synchronized boolean restartDataNode(String dnName)
+      throws IOException {
+    for (int i = 0; i < dataNodes.size(); i++) {
+      DataNode dn = dataNodes.get(i).datanode;
+      if (dnName.equals(dn.getDatanodeId().getXferAddr())) {
+        return restartDataNode(i);
+      }
+    }
+    return false;
+  }
+
 
   /*
    * Shutdown a particular datanode
@@ -2163,51 +2373,6 @@ public class MiniDFSCluster implements AutoCloseable {
     return true;
   }
 
-  private synchronized void setDataNodeStorageCapacities(
-      final int curDatanodesNum,
-      final int numDNs,
-      final DataNode[] dns,
-      long[][] storageCapacities) throws IOException {
-    if (storageCapacities != null) {
-      for (int i = curDatanodesNum; i < curDatanodesNum + numDNs; ++i) {
-        final int index = i - curDatanodesNum;
-        setDataNodeStorageCapacities(index, dns[index], storageCapacities);
-      }
-    }
-  }
-
-  private synchronized void setDataNodeStorageCapacities(
-      final int curDnIdx,
-      final DataNode curDn,
-      long[][] storageCapacities) throws IOException {
-
-    if (storageCapacities == null || storageCapacities.length == 0) {
-      return;
-    }
-
-    try {
-      waitDataNodeFullyStarted(curDn);
-    } catch (TimeoutException | InterruptedException e) {
-      throw new IOException(e);
-    }
-
-    try (FsDatasetSpi.FsVolumeReferences volumes = curDn.getFSDataset()
-        .getFsVolumeReferences()) {
-      assert storageCapacities[curDnIdx].length == storagesPerDatanode;
-      assert volumes.size() == storagesPerDatanode;
-
-      int j = 0;
-      for (FsVolumeSpi fvs : volumes) {
-        FsVolumeImpl volume = (FsVolumeImpl) fvs;
-        LOG.info("setCapacityForTesting " + storageCapacities[curDnIdx][j]
-            + " for [" + volume.getStorageType() + "]" + volume.getStorageID());
-        volume.setCapacityForTesting(storageCapacities[curDnIdx][j]);
-        j++;
-      }
-    }
-    DataNodeTestUtils.triggerHeartbeat(curDn);
-  }
-
   /*
    * Restart a particular datanode, use newly assigned port
    */
@@ -2287,7 +2452,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * or if waiting for safe mode is disabled.
    */
   public boolean isNameNodeUp(int nnIndex) {
-    NameNode nameNode = nameNodes[nnIndex].nameNode;
+    NameNode nameNode = getNN(nnIndex).nameNode;
     if (nameNode == null) {
       return false;
     }
@@ -2305,7 +2470,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * Returns true if all the NameNodes are running and is out of Safe Mode.
    */
   public boolean isClusterUp() {
-    for (int index = 0; index < nameNodes.length; index++) {
+    for (int index = 0; index < namenodes.size(); index++) {
       if (!isNameNodeUp(index)) {
         return false;
       }
@@ -2335,15 +2500,13 @@ public class MiniDFSCluster implements AutoCloseable {
     checkSingleNameNode();
     return getFileSystem(0);
   }
-  
+
   /**
    * Get a client handle to the DFS cluster for the namenode at given index.
    */
   public DistributedFileSystem getFileSystem(int nnIndex) throws IOException {
-    DistributedFileSystem dfs = (DistributedFileSystem) FileSystem.get(
-        getURI(nnIndex), nameNodes[nnIndex].conf);
-    fileSystems.add(dfs);
-    return dfs;
+    return (DistributedFileSystem) addFileSystem(FileSystem.get(getURI(nnIndex),
+        getNN(nnIndex).conf));
   }
 
   /**
@@ -2351,62 +2514,35 @@ public class MiniDFSCluster implements AutoCloseable {
    * This simulating different threads working on different FileSystem instances.
    */
   public FileSystem getNewFileSystemInstance(int nnIndex) throws IOException {
-    FileSystem dfs = FileSystem.newInstance(getURI(nnIndex), nameNodes[nnIndex].conf);
-    fileSystems.add(dfs);
-    return dfs;
+    return addFileSystem(FileSystem.newInstance(getURI(nnIndex), getNN(nnIndex).conf));
   }
-  
+
+  private <T extends FileSystem> T addFileSystem(T fs) {
+    fileSystems.add(fs);
+    return fs;
+  }
+
   /**
    * @return a http URL
    */
   public String getHttpUri(int nnIndex) {
     return "http://"
-        + nameNodes[nnIndex].conf
+        + getNN(nnIndex).conf
             .get(DFS_NAMENODE_HTTP_ADDRESS_KEY);
-  }
-  
-  /**
-   * @return a {@link HftpFileSystem} object.
-   */
-  public HftpFileSystem getHftpFileSystem(int nnIndex) throws IOException {
-    String uri = "hftp://"
-        + nameNodes[nnIndex].conf
-            .get(DFS_NAMENODE_HTTP_ADDRESS_KEY);
-    try {
-      return (HftpFileSystem)FileSystem.get(new URI(uri), conf);
-    } catch (URISyntaxException e) {
-      throw new IOException(e);
-    }
-  }
-
-  /**
-   *  @return a {@link HftpFileSystem} object as specified user. 
-   */
-  public HftpFileSystem getHftpFileSystemAs(final String username,
-      final Configuration conf, final int nnIndex, final String... groups)
-      throws IOException, InterruptedException {
-    final UserGroupInformation ugi = UserGroupInformation.createUserForTesting(
-        username, groups);
-    return ugi.doAs(new PrivilegedExceptionAction<HftpFileSystem>() {
-      @Override
-      public HftpFileSystem run() throws Exception {
-        return getHftpFileSystem(nnIndex);
-      }
-    });
   }
 
   /**
    * Get the directories where the namenode stores its image.
    */
   public Collection<URI> getNameDirs(int nnIndex) {
-    return FSNamesystem.getNamespaceDirs(nameNodes[nnIndex].conf);
+    return FSNamesystem.getNamespaceDirs(getNN(nnIndex).conf);
   }
 
   /**
    * Get the directories where the namenode stores its edits.
    */
   public Collection<URI> getNameEditsDirs(int nnIndex) throws IOException {
-    return FSNamesystem.getNamespaceEditsDirs(nameNodes[nnIndex].conf);
+    return FSNamesystem.getNamespaceEditsDirs(getNN(nnIndex).conf);
   }
   
   public void transitionToActive(int nnIndex) throws IOException,
@@ -2447,11 +2583,12 @@ public class MiniDFSCluster implements AutoCloseable {
 
   /** Wait until the given namenode gets registration from all the datanodes */
   public void waitActive(int nnIndex) throws IOException {
-    if (nameNodes.length == 0 || nameNodes[nnIndex] == null
-        || nameNodes[nnIndex].nameNode == null) {
+    if (namenodes.size() == 0 || getNN(nnIndex) == null || getNN(nnIndex).nameNode == null) {
       return;
     }
-    InetSocketAddress addr = nameNodes[nnIndex].nameNode.getServiceRpcAddress();
+
+    NameNodeInfo info = getNN(nnIndex);
+    InetSocketAddress addr = info.nameNode.getServiceRpcAddress();
     assert addr.getPort() != 0;
     DFSClient client = new DFSClient(addr, conf);
 
@@ -2470,8 +2607,7 @@ public class MiniDFSCluster implements AutoCloseable {
   /** Wait until the given namenode gets first block reports from all the datanodes */
   public void waitFirstBRCompleted(int nnIndex, int timeout) throws
       IOException, TimeoutException, InterruptedException {
-    if (nameNodes.length == 0 || nameNodes[nnIndex] == null
-        || nameNodes[nnIndex].nameNode == null) {
+    if (namenodes.size() == 0 || getNN(nnIndex) == null || getNN(nnIndex).nameNode == null) {
       return;
     }
 
@@ -2496,7 +2632,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * Wait until the cluster is active and running.
    */
   public void waitActive() throws IOException {
-    for (int index = 0; index < nameNodes.length; index++) {
+    for (int index = 0; index < namenodes.size(); index++) {
       int failedCount = 0;
       while (true) {
         try {
@@ -2516,7 +2652,14 @@ public class MiniDFSCluster implements AutoCloseable {
     }
     LOG.info("Cluster is active");
   }
-  
+
+  public void printNNs() {
+    for (int i = 0; i < namenodes.size(); i++) {
+      LOG.info("Have namenode " + i + ", info:" + getNN(i));
+      LOG.info(" has namenode: " + getNN(i).nameNode);
+    }
+  }
+
   private synchronized boolean shouldWait(DatanodeInfo[] dnInfo,
       InetSocketAddress addr) {
     // If a datanode failed to start, then do not wait
@@ -2618,7 +2761,8 @@ public class MiniDFSCluster implements AutoCloseable {
     final DataNode dn = dataNodes.get(dataNodeIndex).datanode;
     final FsDatasetSpi<?> dataSet = DataNodeTestUtils.getFSDataset(dn);
     if (!(dataSet instanceof SimulatedFSDataset)) {
-      throw new IOException("injectBlocks is valid only for SimilatedFSDataset");
+      throw new IOException("injectBlocks is valid only for" +
+          " SimulatedFSDataset");
     }
     if (bpid == null) {
       bpid = getNamesystem().getBlockPoolId();
@@ -2639,7 +2783,8 @@ public class MiniDFSCluster implements AutoCloseable {
     final DataNode dn = dataNodes.get(dataNodeIndex).datanode;
     final FsDatasetSpi<?> dataSet = DataNodeTestUtils.getFSDataset(dn);
     if (!(dataSet instanceof SimulatedFSDataset)) {
-      throw new IOException("injectBlocks is valid only for SimilatedFSDataset");
+      throw new IOException("injectBlocks is valid only for" +
+          " SimulatedFSDataset");
     }
     String bpid = getNamesystem(nameNodeIndex).getBlockPoolId();
     SimulatedFSDataset sdataset = (SimulatedFSDataset) dataSet;
@@ -2704,13 +2849,13 @@ public class MiniDFSCluster implements AutoCloseable {
 
   /**
    * Get the base directory for any DFS cluster whose configuration does
-   * not explicitly set it. This is done by retrieving the system property
-   * {@link #PROP_TEST_BUILD_DATA} (defaulting to "build/test/data" ),
-   * and returning that directory with a subdir of /dfs.
+   * not explicitly set it. This is done via
+   * {@link GenericTestUtils#getTestDir()}.
    * @return a directory for use as a miniDFS filesystem.
    */
   public static String getBaseDirectory() {
-    return System.getProperty(PROP_TEST_BUILD_DATA, "build/test/data") + "/dfs/";
+    return GenericTestUtils.getTestDir("dfs").getAbsolutePath()
+        + File.separator;
   }
 
   /**
@@ -2725,6 +2870,26 @@ public class MiniDFSCluster implements AutoCloseable {
    */
   public File getInstanceStorageDir(int dnIndex, int dirIndex) {
     return new File(base_dir, getStorageDirPath(dnIndex, dirIndex));
+  }
+
+  /**
+   * Get a storage directory for PROVIDED storages.
+   * The PROVIDED directory to return can be set by using the configuration
+   * parameter {@link #HDFS_MINIDFS_BASEDIR_PROVIDED}. If this parameter is
+   * not set, this function behaves exactly the same as
+   * {@link #getInstanceStorageDir(int, int)}. Currently, the two parameters
+   * are ignored as only one PROVIDED storage is supported in HDFS-9806.
+   *
+   * @param dnIndex datanode index (starts from 0)
+   * @param dirIndex directory index
+   * @return Storage directory
+   */
+  public File getProvidedStorageDir(int dnIndex, int dirIndex) {
+    String base = conf.get(HDFS_MINIDFS_BASEDIR_PROVIDED, null);
+    if (base == null) {
+      return getInstanceStorageDir(dnIndex, dirIndex);
+    }
+    return new File(base);
   }
 
   /**
@@ -2840,6 +3005,29 @@ public class MiniDFSCluster implements AutoCloseable {
   }
 
   /**
+   * Return all block files in given directory (recursive search).
+   */
+  public static List<File> getAllBlockFiles(File storageDir) {
+    List<File> results = new ArrayList<File>();
+    File[] files = storageDir.listFiles();
+    if (files == null) {
+      return null;
+    }
+    for (File f : files) {
+      if (f.getName().startsWith(Block.BLOCK_FILE_PREFIX) &&
+          !f.getName().endsWith(Block.METADATA_EXTENSION)) {
+        results.add(f);
+      } else if (f.isDirectory()) {
+        List<File> subdirResults = getAllBlockFiles(f);
+        if (subdirResults != null) {
+          results.addAll(subdirResults);
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
    * Get the latest metadata file correpsonding to a block
    * @param storageDir storage directory
    * @param blk the block
@@ -2940,7 +3128,7 @@ public class MiniDFSCluster implements AutoCloseable {
    * namenode
    */
   private void checkSingleNameNode() {
-    if (nameNodes.length != 1) {
+    if (namenodes.size() != 1) {
       throw new IllegalArgumentException("Namenode index is needed");
     }
   }
@@ -2956,13 +3144,9 @@ public class MiniDFSCluster implements AutoCloseable {
     if(!federation)
       throw new IOException("cannot add namenode to non-federated cluster");
 
-    int nnIndex = nameNodes.length;
-    int numNameNodes = nameNodes.length + 1;
-    NameNodeInfo[] newlist = new NameNodeInfo[numNameNodes];
-    System.arraycopy(nameNodes, 0, newlist, 0, nameNodes.length);
-    nameNodes = newlist;
-    String nameserviceId = NAMESERVICE_ID_PREFIX + (nnIndex + 1);
-    
+    int nameServiceIndex = namenodes.keys().size();
+    String nameserviceId = NAMESERVICE_ID_PREFIX + (namenodes.keys().size() + 1);
+
     String nameserviceIds = conf.get(DFS_NAMESERVICES);
     nameserviceIds += "," + nameserviceId;
     conf.set(DFS_NAMESERVICES, nameserviceIds);
@@ -2970,9 +3154,11 @@ public class MiniDFSCluster implements AutoCloseable {
     String nnId = null;
     initNameNodeAddress(conf, nameserviceId,
         new NNConf(nnId).setIpcPort(namenodePort));
-    initNameNodeConf(conf, nameserviceId, nnId, true, true, nnIndex);
-    createNameNode(nnIndex, conf, numDataNodes, true, null, null,
-        nameserviceId, nnId);
+    // figure out the current number of NNs
+    NameNodeInfo[] infos = this.getNameNodeInfos(nameserviceId);
+    int nnIndex = infos == null ? 0 : infos.length;
+    initNameNodeConf(conf, nameserviceId, nameServiceIndex, nnId, true, true, nnIndex);
+    createNameNode(conf, true, null, null, nameserviceId, nnId);
 
     // Refresh datanodes with the newly started namenode
     for (DataNodeProperties dn : dataNodes) {
@@ -2982,6 +3168,16 @@ public class MiniDFSCluster implements AutoCloseable {
 
     // Wait for new namenode to get registrations from all the datanodes
     waitActive(nnIndex);
+  }
+
+  /**
+   * Sets the timeout for re-issuing a block recovery.
+   */
+  public void setBlockRecoveryTimeout(long timeout) {
+    for (int nnIndex = 0; nnIndex < getNumNameNodes(); nnIndex++) {
+      getNamesystem(nnIndex).getBlockManager().setBlockRecoveryTimeout(
+          timeout);
+    }
   }
   
   protected void setupDatanodeAddress(Configuration conf, boolean setupHostsFile,

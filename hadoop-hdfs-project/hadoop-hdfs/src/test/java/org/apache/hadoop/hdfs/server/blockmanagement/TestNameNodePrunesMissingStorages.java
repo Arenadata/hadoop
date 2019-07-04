@@ -21,6 +21,7 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import com.google.common.base.Supplier;
 import java.util.ArrayList;
 import java.util.Collection;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -35,10 +36,13 @@ import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi.FsVolumeReferences;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.log4j.Level;
@@ -111,7 +115,8 @@ public class TestNameNodePrunesMissingStorages {
       // Stop the DataNode and send fake heartbeat with missing storage.
       cluster.stopDataNode(0);
       cluster.getNameNodeRpc().sendHeartbeat(dnReg, prunedReports, 0L, 0L, 0, 0,
-          0, null, true);
+          0, null, true, SlowPeerReports.EMPTY_REPORT,
+          SlowDiskReports.EMPTY_REPORT);
 
       // Check that the missing storage was pruned.
       assertThat(dnDescriptor.getStorageInfos().length, is(expectedStoragesAfterTest));
@@ -183,9 +188,12 @@ public class TestNameNodePrunesMissingStorages {
       String datanodeUuid;
       // Find the first storage which this block is in.
       try {
+        BlockInfo storedBlock =
+            cluster.getNamesystem().getBlockManager().
+                getStoredBlock(block.getLocalBlock());
         Iterator<DatanodeStorageInfo> storageInfoIter =
             cluster.getNamesystem().getBlockManager().
-                getStorages(block.getLocalBlock()).iterator();
+                blocksMap.getStorages(storedBlock).iterator();
         assertTrue(storageInfoIter.hasNext());
         DatanodeStorageInfo info = storageInfoIter.next();
         storageIdToRemove = info.getStorageID();
@@ -211,13 +219,13 @@ public class TestNameNodePrunesMissingStorages {
         datanodeToRemoveStorageFromIdx++;
       }
       // Find the volume within the datanode which holds that first storage.
-      String volumeDirectoryToRemove = null;
+      StorageLocation volumeLocationToRemove = null;
       try (FsVolumeReferences volumes =
           datanodeToRemoveStorageFrom.getFSDataset().getFsVolumeReferences()) {
         assertEquals(NUM_STORAGES_PER_DN, volumes.size());
         for (FsVolumeSpi volume : volumes) {
           if (volume.getStorageID().equals(storageIdToRemove)) {
-            volumeDirectoryToRemove = volume.getBasePath();
+            volumeLocationToRemove = volume.getStorageLocation();
           }
         }
       };
@@ -225,10 +233,11 @@ public class TestNameNodePrunesMissingStorages {
       // Replace the volume directory with a regular file, which will
       // cause a volume failure.  (If we merely removed the directory,
       // it would be re-initialized with a new storage ID.)
-      assertNotNull(volumeDirectoryToRemove);
+      assertNotNull(volumeLocationToRemove);
       datanodeToRemoveStorageFrom.shutdown();
-      FileUtil.fullyDelete(new File(volumeDirectoryToRemove));
-      FileOutputStream fos = new FileOutputStream(volumeDirectoryToRemove);
+      FileUtil.fullyDelete(new File(volumeLocationToRemove.getUri()));
+      FileOutputStream fos = new FileOutputStream(
+          new File(volumeLocationToRemove.getUri()));
       try {
         fos.write(1);
       } finally {
@@ -321,7 +330,9 @@ public class TestNameNodePrunesMissingStorages {
           dn.getFSDataset().getFsVolumeReferences();
       final String newStorageId = DatanodeStorage.generateUuid();
       try {
-        File currentDir = new File(volumeRefs.get(0).getBasePath(), "current");
+        File currentDir = new File(
+            new File(volumeRefs.get(0).getStorageLocation().getUri()),
+            "current");
         File versionFile = new File(currentDir, "VERSION");
         rewriteVersionFile(versionFile, newStorageId);
       } finally {

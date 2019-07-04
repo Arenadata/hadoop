@@ -42,8 +42,10 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.tools.CopyListingFileStatus;
 import org.apache.hadoop.tools.DistCpConstants;
 import org.apache.hadoop.tools.DistCpOptionSwitch;
@@ -54,6 +56,10 @@ import org.apache.hadoop.util.DataChecksum;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
+
+import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
+import static org.apache.hadoop.test.MetricsAsserts.getLongCounter;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
 
 public class TestCopyMapper {
   private static final Log LOG = LogFactory.getLog(TestCopyMapper.class);
@@ -248,14 +254,28 @@ public class TestCopyMapper {
 
     // do the distcp again with -update and -append option
     CopyMapper copyMapper = new CopyMapper();
-    StubContext stubContext = new StubContext(getConfiguration(), null, 0);
+    Configuration conf = getConfiguration();
+    // set the buffer size to 1/10th the size of the file.
+    conf.setInt(DistCpOptionSwitch.COPY_BUFFER_SIZE.getConfigLabel(),
+        DEFAULT_FILE_SIZE/10);
+    StubContext stubContext = new StubContext(conf, null, 0);
     Mapper<Text, CopyListingFileStatus, Text, Text>.Context context =
         stubContext.getContext();
     // Enable append 
     context.getConfiguration().setBoolean(
         DistCpOptionSwitch.APPEND.getConfigLabel(), true);
     copyMapper.setup(context);
+
+    int numFiles = 0;
+    MetricsRecordBuilder rb =
+        getMetrics(cluster.getDataNodes().get(0).getMetrics().name());
+    String readCounter = "ReadsFromLocalClient";
+    long readsFromClient = getLongCounter(readCounter, rb);
     for (Path path: pathList) {
+      if (fs.getFileStatus(path).isFile()) {
+        numFiles++;
+      }
+
       copyMapper.map(new Text(DistCpUtils.getRelativePath(new Path(SOURCE_PATH), path)),
               new CopyListingFileStatus(cluster.getFileSystem().getFileStatus(
                   path)), context);
@@ -266,8 +286,17 @@ public class TestCopyMapper {
     Assert.assertEquals(nFiles * DEFAULT_FILE_SIZE * 2, stubContext
         .getReporter().getCounter(CopyMapper.Counter.BYTESCOPIED)
         .getValue());
-    Assert.assertEquals(pathList.size(), stubContext.getReporter().
+    Assert.assertEquals(numFiles, stubContext.getReporter().
         getCounter(CopyMapper.Counter.COPY).getValue());
+    rb = getMetrics(cluster.getDataNodes().get(0).getMetrics().name());
+    /*
+     * added as part of HADOOP-15292 to ensure that multiple readBlock()
+     * operations are not performed to read a block from a single Datanode.
+     * assert assumes that there is only one block per file, and that the number
+     * of files appended to in appendSourceData() above is captured by the
+     * variable numFiles.
+     */
+    assertCounter(readCounter, readsFromClient + numFiles, rb);
   }
 
   private void testCopy(boolean preserveChecksum) throws Exception {
@@ -295,7 +324,15 @@ public class TestCopyMapper {
 
     copyMapper.setup(context);
 
-    for (Path path: pathList) {
+    int numFiles = 0;
+    int numDirs = 0;
+    for (Path path : pathList) {
+      if (fs.getFileStatus(path).isDirectory()) {
+        numDirs++;
+      } else {
+        numFiles++;
+      }
+
       copyMapper.map(
           new Text(DistCpUtils.getRelativePath(new Path(SOURCE_PATH), path)),
           new CopyListingFileStatus(fs.getFileStatus(path)), context);
@@ -303,8 +340,10 @@ public class TestCopyMapper {
 
     // Check that the maps worked.
     verifyCopy(fs, preserveChecksum);
-    Assert.assertEquals(pathList.size(), stubContext.getReporter()
+    Assert.assertEquals(numFiles, stubContext.getReporter()
         .getCounter(CopyMapper.Counter.COPY).getValue());
+    Assert.assertEquals(numDirs, stubContext.getReporter()
+        .getCounter(CopyMapper.Counter.DIR_COPY).getValue());
     if (!preserveChecksum) {
       Assert.assertEquals(nFiles * DEFAULT_FILE_SIZE, stubContext
           .getReporter().getCounter(CopyMapper.Counter.BYTESCOPIED)
@@ -372,7 +411,7 @@ public class TestCopyMapper {
               = stubContext.getContext();
 
       Configuration configuration = context.getConfiguration();
-      String workPath = new Path("hftp://localhost:1234/*/*/*/?/")
+      String workPath = new Path("webhdfs://localhost:1234/*/*/*/?/")
               .makeQualified(fs.getUri(), fs.getWorkingDirectory()).toString();
       configuration.set(DistCpConstants.CONF_LABEL_TARGET_WORK_PATH,
               workPath);
@@ -392,6 +431,8 @@ public class TestCopyMapper {
   public void testIgnoreFailures() {
     doTestIgnoreFailures(true);
     doTestIgnoreFailures(false);
+    doTestIgnoreFailuresDoubleWrapped(true);
+    doTestIgnoreFailuresDoubleWrapped(false);
   }
 
   @Test(timeout=40000)
@@ -800,6 +841,89 @@ public class TestCopyMapper {
     }
   }
 
+  /**
+   * This test covers the case where the CopyReadException is double-wrapped and
+   * the mapper should be able to ignore this nested read exception.
+   * @see #doTestIgnoreFailures
+   */
+  private void doTestIgnoreFailuresDoubleWrapped(final boolean ignoreFailures) {
+    try {
+      deleteState();
+      createSourceData();
+
+      final UserGroupInformation tmpUser = UserGroupInformation
+          .createRemoteUser("guest");
+
+      final CopyMapper copyMapper = new CopyMapper();
+
+      final Mapper<Text, CopyListingFileStatus, Text, Text>.Context context =
+          tmpUser.doAs(new PrivilegedAction<
+              Mapper<Text, CopyListingFileStatus, Text, Text>.Context>() {
+            @Override
+            public Mapper<Text, CopyListingFileStatus, Text, Text>.Context
+            run() {
+              try {
+                StubContext stubContext = new StubContext(
+                    getConfiguration(), null, 0);
+                return stubContext.getContext();
+              } catch (Exception e) {
+                LOG.error("Exception encountered when get stub context", e);
+                throw new RuntimeException(e);
+              }
+            }
+          });
+
+      touchFile(SOURCE_PATH + "/src/file");
+      mkdirs(TARGET_PATH);
+      cluster.getFileSystem().setPermission(new Path(SOURCE_PATH + "/src/file"),
+          new FsPermission(FsAction.NONE, FsAction.NONE, FsAction.NONE));
+      cluster.getFileSystem().setPermission(new Path(TARGET_PATH),
+          new FsPermission((short)511));
+
+      context.getConfiguration().setBoolean(
+          DistCpOptionSwitch.IGNORE_FAILURES.getConfigLabel(), ignoreFailures);
+
+      final FileSystem tmpFS = tmpUser.doAs(new PrivilegedAction<FileSystem>() {
+        @Override
+        public FileSystem run() {
+          try {
+            return FileSystem.get(configuration);
+          } catch (IOException e) {
+            LOG.error("Exception encountered when get FileSystem.", e);
+            throw new RuntimeException(e);
+          }
+        }
+      });
+
+      tmpUser.doAs(new PrivilegedAction<Integer>() {
+        @Override
+        public Integer run() {
+          try {
+            copyMapper.setup(context);
+            copyMapper.map(new Text("/src/file"),
+                new CopyListingFileStatus(tmpFS.getFileStatus(
+                    new Path(SOURCE_PATH + "/src/file"))),
+                context);
+            Assert.assertTrue("Should have thrown an IOException if not " +
+                "ignoring failures", ignoreFailures);
+          } catch (IOException e) {
+            LOG.error("Unexpected exception encountered. ", e);
+            Assert.assertFalse("Should not have thrown an IOException if " +
+                "ignoring failures", ignoreFailures);
+            // the IOException is not thrown again as it's expected
+          } catch (Exception e) {
+            LOG.error("Exception encountered when the mapper copies file.", e);
+            throw new RuntimeException(e);
+          }
+          return null;
+        }
+      });
+    } catch (Exception e) {
+      LOG.error("Unexpected exception encountered. ", e);
+      Assert.fail("Test failed: " + e.getMessage());
+    }
+  }
+
   private static void deleteState() throws IOException {
     pathList.clear();
     nFiles = 0;
@@ -814,7 +938,7 @@ public class TestCopyMapper {
   }
 
   @Test(timeout=40000)
-  public void testCopyFailOnBlockSizeDifference() {
+  public void testCopyFailOnBlockSizeDifference() throws Exception {
     try {
       deleteState();
       createSourceDataWithDifferentBlockSize();
@@ -841,12 +965,11 @@ public class TestCopyMapper {
 
       Assert.fail("Copy should have failed because of block-size difference.");
     }
-    catch (Exception exception) {
-      // Check that the exception suggests the use of -pb/-skipCrc.
-      Assert.assertTrue("Failure exception should have suggested the use of -pb.",
-          exception.getCause().getCause().getMessage().contains("pb"));
-      Assert.assertTrue("Failure exception should have suggested the use of -skipCrc.",
-          exception.getCause().getCause().getMessage().contains("skipCrc"));
+    catch (IOException exception) {
+      // Check that the exception suggests the use of -pb/-skipcrccheck.
+      Throwable cause = exception.getCause().getCause();
+      GenericTestUtils.assertExceptionContains("-pb", cause);
+      GenericTestUtils.assertExceptionContains("-skipcrccheck", cause);
     }
   }
 
@@ -1032,5 +1155,82 @@ public class TestCopyMapper {
       Assert.assertTrue("Unexpected exception: " + e.getMessage(), false);
       e.printStackTrace();
     }
+  }
+
+  @Test
+  public void testVerboseLogging() throws Exception {
+    deleteState();
+    createSourceData();
+
+    FileSystem fs = cluster.getFileSystem();
+    CopyMapper copyMapper = new CopyMapper();
+    StubContext stubContext = new StubContext(getConfiguration(), null, 0);
+    Mapper<Text, CopyListingFileStatus, Text, Text>.Context context
+            = stubContext.getContext();
+    copyMapper.setup(context);
+
+    int numFiles = 0;
+    for (Path path : pathList) {
+      if (fs.getFileStatus(path).isFile()) {
+        numFiles++;
+      }
+
+      copyMapper.map(
+          new Text(DistCpUtils.getRelativePath(new Path(SOURCE_PATH), path)),
+          new CopyListingFileStatus(fs.getFileStatus(path)), context);
+    }
+
+    // Check that the maps worked.
+    Assert.assertEquals(numFiles, stubContext.getReporter()
+        .getCounter(CopyMapper.Counter.COPY).getValue());
+
+    testCopyingExistingFiles(fs, copyMapper, context);
+    // verify the verbose log
+    // we shouldn't print verbose log since this option is disabled
+    for (Text value : stubContext.getWriter().values()) {
+      Assert.assertTrue(!value.toString().startsWith("FILE_COPIED:"));
+      Assert.assertTrue(!value.toString().startsWith("FILE_SKIPPED:"));
+    }
+
+    // test with verbose logging
+    deleteState();
+    createSourceData();
+
+    stubContext = new StubContext(getConfiguration(), null, 0);
+    context = stubContext.getContext();
+    copyMapper.setup(context);
+
+    // enables verbose logging
+    context.getConfiguration().setBoolean(
+        DistCpOptionSwitch.VERBOSE_LOG.getConfigLabel(), true);
+    copyMapper.setup(context);
+
+    for (Path path : pathList) {
+      copyMapper.map(
+          new Text(DistCpUtils.getRelativePath(new Path(SOURCE_PATH), path)),
+          new CopyListingFileStatus(fs.getFileStatus(path)), context);
+    }
+
+    Assert.assertEquals(numFiles, stubContext.getReporter()
+        .getCounter(CopyMapper.Counter.COPY).getValue());
+
+    // verify the verbose log of COPY log
+    int numFileCopied = 0;
+    for (Text value : stubContext.getWriter().values()) {
+      if (value.toString().startsWith("FILE_COPIED:")) {
+        numFileCopied++;
+      }
+    }
+    Assert.assertEquals(numFiles, numFileCopied);
+
+    // verify the verbose log of SKIP log
+    int numFileSkipped = 0;
+    testCopyingExistingFiles(fs, copyMapper, context);
+    for (Text value : stubContext.getWriter().values()) {
+      if (value.toString().startsWith("FILE_SKIPPED:")) {
+        numFileSkipped++;
+      }
+    }
+    Assert.assertEquals(numFiles, numFileSkipped);
   }
 }

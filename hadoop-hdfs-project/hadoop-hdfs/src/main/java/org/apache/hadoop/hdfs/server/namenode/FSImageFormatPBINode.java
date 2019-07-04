@@ -39,12 +39,15 @@ import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
 import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.LoaderContext;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.SaverContext;
@@ -74,7 +77,6 @@ public final class FSImageFormatPBINode {
   private final static long USER_GROUP_STRID_MASK = (1 << 24) - 1;
   private final static int USER_STRID_OFFSET = 40;
   private final static int GROUP_STRID_OFFSET = 16;
-  private static final Log LOG = LogFactory.getLog(FSImageFormatPBINode.class);
 
   public static final int ACL_ENTRY_NAME_MASK = (1 << 24) - 1;
   public static final int ACL_ENTRY_NAME_OFFSET = 6;
@@ -101,6 +103,8 @@ public final class FSImageFormatPBINode {
   private static final XAttr.NameSpace[] XATTR_NAMESPACE_VALUES =
       XAttr.NameSpace.values();
   
+
+  private static final Log LOG = LogFactory.getLog(FSImageFormatPBINode.class);
 
   public final static class Loader {
     public static PermissionStatus loadPermission(long id,
@@ -217,7 +221,7 @@ public final class FSImageFormatPBINode {
       final BlockInfo[] blocks = file.getBlocks();
       if (blocks != null) {
         for (int i = 0; i < blocks.length; i++) {
-          file.setBlock(i, bm.addBlockCollection(blocks[i], file));
+          file.setBlock(i, bm.addBlockCollectionWithCheck(blocks[i], file));
         }
       }
     }
@@ -325,28 +329,44 @@ public final class FSImageFormatPBINode {
       assert n.getType() == INodeSection.INode.Type.FILE;
       INodeSection.INodeFile f = n.getFile();
       List<BlockProto> bp = f.getBlocksList();
-      short replication = (short) f.getReplication();
+      BlockType blockType = PBHelperClient.convert(f.getBlockType());
       LoaderContext state = parent.getLoaderContext();
+      boolean isStriped = f.hasErasureCodingPolicyID();
+      assert ((!isStriped) || (isStriped && !f.hasReplication()));
+      Short replication = (!isStriped ? (short) f.getReplication() : null);
+      Byte ecPolicyID = (isStriped ?
+          (byte) f.getErasureCodingPolicyID() : null);
+      ErasureCodingPolicy ecPolicy = isStriped ?
+          fsn.getErasureCodingPolicyManager().getByID(ecPolicyID) : null;
 
       BlockInfo[] blocks = new BlockInfo[bp.size()];
-      for (int i = 0, e = bp.size(); i < e; ++i) {
-        blocks[i] =
-            new BlockInfoContiguous(PBHelperClient.convert(bp.get(i)), replication);
+      for (int i = 0; i < bp.size(); ++i) {
+        BlockProto b = bp.get(i);
+        if (isStriped) {
+          Preconditions.checkState(ecPolicy.getId() > 0,
+              "File with ID " + n.getId() +
+              " has an invalid erasure coding policy ID " + ecPolicy.getId());
+          blocks[i] = new BlockInfoStriped(PBHelperClient.convert(b), ecPolicy);
+        } else {
+          blocks[i] = new BlockInfoContiguous(PBHelperClient.convert(b),
+              replication);
+        }
       }
+
       final PermissionStatus permissions = loadPermission(f.getPermission(),
           parent.getLoaderContext().getStringTable());
 
       final INodeFile file = new INodeFile(n.getId(),
           n.getName().toByteArray(), permissions, f.getModificationTime(),
-          f.getAccessTime(), blocks, replication, f.getPreferredBlockSize(),
-          (byte)f.getStoragePolicyID());
+          f.getAccessTime(), blocks, replication, ecPolicyID,
+          f.getPreferredBlockSize(), (byte)f.getStoragePolicyID(), blockType);
 
       if (f.hasAcl()) {
         int[] entries = AclEntryStatusFormat.toInt(loadAclEntries(
             f.getAcl(), state.getStringTable()));
         file.addAclFeature(new AclFeature(entries));
       }
-      
+
       if (f.hasXAttrs()) {
         file.addXAttrFeature(new XAttrFeature(
             loadXAttrs(f.getXAttrs(), state.getStringTable())));
@@ -360,8 +380,18 @@ public final class FSImageFormatPBINode {
         fsn.leaseManager.addLease(uc.getClientName(), file.getId());
         if (blocks.length > 0) {
           BlockInfo lastBlk = file.getLastBlock();
-          lastBlk.convertToBlockUnderConstruction(
+          // replace the last block of file
+          final BlockInfo ucBlk;
+          if (isStriped) {
+            BlockInfoStriped striped = (BlockInfoStriped) lastBlk;
+            ucBlk = new BlockInfoStriped(striped, ecPolicy);
+          } else {
+            ucBlk = new BlockInfoContiguous(lastBlk,
+                replication);
+          }
+          ucBlk.convertToBlockUnderConstruction(
               HdfsServerConstants.BlockUCState.UNDER_CONSTRUCTION, null);
+          file.setBlock(file.numBlocks() - 1, ucBlk);
         }
       }
       return file;
@@ -373,9 +403,11 @@ public final class FSImageFormatPBINode {
       INodeSection.INodeSymlink s = n.getSymlink();
       final PermissionStatus permissions = loadPermission(s.getPermission(),
           parent.getLoaderContext().getStringTable());
+
       INodeSymlink sym = new INodeSymlink(n.getId(), n.getName().toByteArray(),
           permissions, s.getModificationTime(), s.getAccessTime(),
           s.getTarget().toStringUtf8());
+
       return sym;
     }
 
@@ -477,8 +509,14 @@ public final class FSImageFormatPBINode {
           .setModificationTime(file.getModificationTime())
           .setPermission(buildPermissionStatus(file, state.getStringMap()))
           .setPreferredBlockSize(file.getPreferredBlockSize())
-          .setReplication(file.getFileReplication())
-          .setStoragePolicyID(file.getLocalStoragePolicyID());
+          .setStoragePolicyID(file.getLocalStoragePolicyID())
+          .setBlockType(PBHelperClient.convert(file.getBlockType()));
+
+      if (file.isStriped()) {
+        b.setErasureCodingPolicyID(file.getErasureCodingPolicyID());
+      } else {
+        b.setReplication(file.getFileReplication());
+      }
 
       AclFeature f = file.getAclFeature();
       if (f != null) {
@@ -632,8 +670,9 @@ public final class FSImageFormatPBINode {
     private void save(OutputStream out, INodeFile n) throws IOException {
       INodeSection.INodeFile.Builder b = buildINodeFile(n,
           parent.getSaverContext());
+      BlockInfo[] blocks = n.getBlocks();
 
-      if (n.getBlocks() != null) {
+      if (blocks != null) {
         for (Block block : n.getBlocks()) {
           b.addBlocks(PBHelperClient.convert(block));
         }
@@ -667,7 +706,7 @@ public final class FSImageFormatPBINode {
       r.writeDelimitedTo(out);
     }
 
-    private final INodeSection.INode.Builder buildINodeCommon(INode n) {
+    private INodeSection.INode.Builder buildINodeCommon(INode n) {
       return INodeSection.INode.newBuilder()
           .setId(n.getId())
           .setName(ByteString.copyFrom(n.getLocalNameBytes()));

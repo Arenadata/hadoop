@@ -1,5 +1,4 @@
 /**
-/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,6 +18,7 @@
 
 package org.apache.hadoop.mapreduce.v2.app.webapp;
 
+import static org.apache.hadoop.yarn.webapp.WebServicesTestUtils.assertResponseStatusCode;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -33,6 +33,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskType;
@@ -42,8 +43,9 @@ import org.apache.hadoop.mapreduce.v2.app.job.Job;
 import org.apache.hadoop.mapreduce.v2.app.job.Task;
 import org.apache.hadoop.mapreduce.v2.app.job.TaskAttempt;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
+import org.apache.hadoop.yarn.webapp.GuiceServletConfig;
+import org.apache.hadoop.yarn.webapp.JerseyTestBase;
 import org.apache.hadoop.yarn.webapp.WebServicesTestUtils;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
@@ -56,15 +58,12 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 
 import com.google.inject.Guice;
-import com.google.inject.Injector;
-import com.google.inject.servlet.GuiceServletContextListener;
 import com.google.inject.servlet.ServletModule;
 import com.sun.jersey.api.client.ClientResponse;
+import com.sun.jersey.api.client.ClientResponse.Status;
 import com.sun.jersey.api.client.UniformInterfaceException;
 import com.sun.jersey.api.client.WebResource;
-import com.sun.jersey.api.client.ClientResponse.Status;
 import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
-import com.sun.jersey.test.framework.JerseyTest;
 import com.sun.jersey.test.framework.WebAppDescriptor;
 
 /**
@@ -75,15 +74,15 @@ import com.sun.jersey.test.framework.WebAppDescriptor;
  * /ws/v1/mapreduce/jobs/{jobid}/tasks/{taskid}/attempts/{attemptid}
  * /ws/v1/mapreduce/jobs/{jobid}/tasks/{taskid}/attempts/{attemptid}/counters
  */
-public class TestAMWebServicesAttempts extends JerseyTest {
+public class TestAMWebServicesAttempts extends JerseyTestBase {
 
   private static Configuration conf = new Configuration();
   private static AppContext appContext;
 
-  private Injector injector = Guice.createInjector(new ServletModule() {
+
+  private static class WebServletModule extends ServletModule {
     @Override
     protected void configureServlets() {
-
       appContext = new MockAppContext(0, 1, 2, 1);
       bind(JAXBContextResolver.class);
       bind(AMWebServices.class);
@@ -93,21 +92,19 @@ public class TestAMWebServicesAttempts extends JerseyTest {
 
       serve("/*").with(GuiceContainer.class);
     }
-  });
+  }
 
-  public class GuiceServletConfig extends GuiceServletContextListener {
-
-    @Override
-    protected Injector getInjector() {
-      return injector;
-    }
+  static {
+    GuiceServletConfig.setInjector(
+        Guice.createInjector(new WebServletModule()));
   }
 
   @Before
   @Override
   public void setUp() throws Exception {
     super.setUp();
-
+    GuiceServletConfig.setInjector(
+        Guice.createInjector(new WebServletModule()));
   }
 
   public TestAMWebServicesAttempts() {
@@ -130,7 +127,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
         ClientResponse response = r.path("ws").path("v1").path("mapreduce")
             .path("jobs").path(jobId).path("tasks").path(tid).path("attempts")
             .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-        assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+        assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+            response.getType().toString());
         JSONObject json = response.getEntity(JSONObject.class);
         verifyAMTaskAttempts(json, task);
       }
@@ -149,7 +147,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
         ClientResponse response = r.path("ws").path("v1").path("mapreduce")
             .path("jobs").path(jobId).path("tasks").path(tid).path("attempts/")
             .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-        assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+        assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+            response.getType().toString());
         JSONObject json = response.getEntity(JSONObject.class);
         verifyAMTaskAttempts(json, task);
       }
@@ -168,7 +167,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
         ClientResponse response = r.path("ws").path("v1").path("mapreduce")
             .path("jobs").path(jobId).path("tasks").path(tid).path("attempts")
             .get(ClientResponse.class);
-        assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+        assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+            response.getType().toString());
         JSONObject json = response.getEntity(JSONObject.class);
         verifyAMTaskAttempts(json, task);
       }
@@ -188,7 +188,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
             .path("jobs").path(jobId).path("tasks").path(tid).path("attempts")
             .accept(MediaType.APPLICATION_XML).get(ClientResponse.class);
 
-        assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+        assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+            response.getType().toString());
         String xml = response.getEntity(String.class);
         DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
         DocumentBuilder db = dbf.newDocumentBuilder();
@@ -223,7 +224,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
               .path("jobs").path(jobId).path("tasks").path(tid)
               .path("attempts").path(attid).accept(MediaType.APPLICATION_JSON)
               .get(ClientResponse.class);
-          assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+          assertEquals(MediaType.APPLICATION_JSON_TYPE + "; "
+                  + JettyUtils.UTF_8, response.getType().toString());
           JSONObject json = response.getEntity(JSONObject.class);
           assertEquals("incorrect number of elements", 1, json.length());
           JSONObject info = json.getJSONObject("taskAttempt");
@@ -252,7 +254,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
               .path("jobs").path(jobId).path("tasks").path(tid)
               .path("attempts").path(attid + "/")
               .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-          assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+          assertEquals(MediaType.APPLICATION_JSON_TYPE + "; "
+                  + JettyUtils.UTF_8, response.getType().toString());
           JSONObject json = response.getEntity(JSONObject.class);
           assertEquals("incorrect number of elements", 1, json.length());
           JSONObject info = json.getJSONObject("taskAttempt");
@@ -280,7 +283,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
           ClientResponse response = r.path("ws").path("v1").path("mapreduce")
               .path("jobs").path(jobId).path("tasks").path(tid)
               .path("attempts").path(attid).get(ClientResponse.class);
-          assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+          assertEquals(MediaType.APPLICATION_JSON_TYPE + "; "
+                  + JettyUtils.UTF_8, response.getType().toString());
           JSONObject json = response.getEntity(JSONObject.class);
           assertEquals("incorrect number of elements", 1, json.length());
           JSONObject info = json.getJSONObject("taskAttempt");
@@ -308,7 +312,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
               .path("attempts").path(attid).accept(MediaType.APPLICATION_XML)
               .get(ClientResponse.class);
 
-          assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+          assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+              response.getType().toString());
           String xml = response.getEntity(String.class);
           DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
           DocumentBuilder db = dbf.newDocumentBuilder();
@@ -379,8 +384,9 @@ public class TestAMWebServicesAttempts extends JerseyTest {
           fail("should have thrown exception on invalid uri");
         } catch (UniformInterfaceException ue) {
           ClientResponse response = ue.getResponse();
-          assertEquals(Status.NOT_FOUND, response.getClientResponseStatus());
-          assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+          assertResponseStatusCode(Status.NOT_FOUND, response.getStatusInfo());
+          assertEquals(MediaType.APPLICATION_JSON_TYPE + "; "
+                  + JettyUtils.UTF_8, response.getType().toString());
           JSONObject msg = response.getEntity(JSONObject.class);
           JSONObject exception = msg.getJSONObject("RemoteException");
           assertEquals("incorrect number of elements", 3, exception.length());
@@ -559,7 +565,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
               .path("jobs").path(jobId).path("tasks").path(tid)
               .path("attempts").path(attid).path("counters")
               .accept(MediaType.APPLICATION_JSON).get(ClientResponse.class);
-          assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+          assertEquals(MediaType.APPLICATION_JSON_TYPE + "; "
+                  + JettyUtils.UTF_8, response.getType().toString());
           JSONObject json = response.getEntity(JSONObject.class);
           assertEquals("incorrect number of elements", 1, json.length());
           JSONObject info = json.getJSONObject("jobTaskAttemptCounters");
@@ -587,7 +594,8 @@ public class TestAMWebServicesAttempts extends JerseyTest {
               .path("attempts").path(attid).path("counters")
               .accept(MediaType.APPLICATION_XML).get(ClientResponse.class);
 
-          assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+          assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+              response.getType().toString());
           String xml = response.getEntity(String.class);
           DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
           DocumentBuilder db = dbf.newDocumentBuilder();

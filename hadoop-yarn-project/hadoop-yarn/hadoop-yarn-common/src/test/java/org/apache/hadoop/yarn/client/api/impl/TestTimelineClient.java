@@ -34,12 +34,13 @@ import java.security.PrivilegedExceptionAction;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
-import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.http.HttpConfig.Policy;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
+import org.apache.hadoop.test.TestGenericTestUtils;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineDomain;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEntity;
@@ -61,15 +62,9 @@ public class TestTimelineClient {
 
   private TimelineClientImpl client;
   private TimelineWriter spyTimelineWriter;
-  private static final File testDir = new File(
-      System.getProperty("test.build.data",
-          System.getProperty("java.io.tmpdir")),
-          "TestTimelineClient");
 
   @Before
   public void setup() {
-    FileUtil.fullyDelete(testDir);
-    testDir.mkdirs();
     YarnConfiguration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION, 1.0f);
@@ -78,7 +73,6 @@ public class TestTimelineClient {
 
   @After
   public void tearDown() {
-    FileUtil.fullyDelete(testDir);
     if (client != null) {
       client.stop();
     }
@@ -222,11 +216,11 @@ public class TestTimelineClient {
           + "Timeline server should be off to run this test. ");
     } catch (RuntimeException ce) {
       Assert.assertTrue(
-        "Handler exception for reason other than retry: " + ce.getMessage(),
-        ce.getMessage().contains("Connection retries limit exceeded"));
+          "Handler exception for reason other than retry: " + ce.getMessage(),
+          ce.getMessage().contains("Connection retries limit exceeded"));
       // we would expect this exception here, check if the client has retried
-      Assert.assertTrue("Retry filter didn't perform any retries! ", client
-        .connectionRetry.getRetired());
+      Assert.assertTrue("Retry filter didn't perform any retries! ",
+          client.connector.connectionRetry.getRetired());
     }
   }
 
@@ -248,8 +242,8 @@ public class TestTimelineClient {
     TimelineClientImpl client = createTimelineClient(conf);
     TimelineClientImpl clientFake =
         createTimelineClientFakeTimelineClientRetryOp(conf);
-    TestTimlineDelegationTokenSecretManager dtManager =
-        new TestTimlineDelegationTokenSecretManager();
+    TestTimelineDelegationTokenSecretManager dtManager =
+        new TestTimelineDelegationTokenSecretManager();
     try {
       dtManager.startThreads();
       Thread.sleep(3000);
@@ -325,7 +319,7 @@ public class TestTimelineClient {
             .getMessage().contains("Connection retries limit exceeded"));
     // we would expect this exception here, check if the client has retried
     Assert.assertTrue("Retry filter didn't perform any retries! ",
-        client.connectionRetry.getRetired());
+        client.connector.connectionRetry.getRetired());
   }
 
   public static ClientResponse mockEntityClientResponse(
@@ -340,7 +334,7 @@ public class TestTimelineClient {
     }
     doReturn(response).when(spyTimelineWriter)
         .doPostingObject(any(TimelineEntities.class), any(String.class));
-    when(response.getClientResponseStatus()).thenReturn(status);
+    when(response.getStatusInfo()).thenReturn(status);
     TimelinePutResponse.TimelinePutError error =
         new TimelinePutResponse.TimelinePutError();
     error.setEntityId("test entity id");
@@ -366,7 +360,7 @@ public class TestTimelineClient {
     }
     doReturn(response).when(spyTimelineWriter)
         .doPostingObject(any(TimelineDomain.class), any(String.class));
-    when(response.getClientResponseStatus()).thenReturn(status);
+    when(response.getStatusInfo()).thenReturn(status);
     return response;
   }
 
@@ -426,17 +420,26 @@ public class TestTimelineClient {
   private TimelineClientImpl createTimelineClientFakeTimelineClientRetryOp(
       YarnConfiguration conf) {
     TimelineClientImpl client = new TimelineClientImpl() {
-
       @Override
-      public TimelineClientRetryOp
-          createTimelineClientRetryOpForOperateDelegationToken(
-              final PrivilegedExceptionAction<?> action) throws IOException {
-        TimelineClientRetryOpForOperateDelegationToken op =
-            spy(new TimelineClientRetryOpForOperateDelegationToken(
-            UserGroupInformation.getCurrentUser(), action));
-        doThrow(new SocketTimeoutException("Test socketTimeoutException"))
-            .when(op).run();
-        return op;
+      protected TimelineConnector createTimelineConnector() {
+        TimelineConnector connector =
+            new TimelineConnector(true, authUgi, doAsUser, token) {
+              @Override
+              public TimelineClientRetryOp
+                createRetryOpForOperateDelegationToken(
+                  final PrivilegedExceptionAction<?> action)
+                  throws IOException {
+                TimelineClientRetryOpForOperateDelegationToken op =
+                    spy(new TimelineClientRetryOpForOperateDelegationToken(
+                        UserGroupInformation.getCurrentUser(), action));
+                doThrow(
+                    new SocketTimeoutException("Test socketTimeoutException"))
+                        .when(op).run();
+                return op;
+              }
+            };
+        addIfService(connector);
+        return connector;
       }
     };
     client.init(conf);
@@ -449,7 +452,9 @@ public class TestTimelineClient {
     YarnConfiguration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setInt(YarnConfiguration.TIMELINE_SERVICE_CLIENT_MAX_RETRIES, 0);
+    conf.set(YarnConfiguration.YARN_HTTP_POLICY_KEY, Policy.HTTPS_ONLY.name());
 
+    File testDir = TestGenericTestUtils.getTestDir();
     String sslConfDir =
         KeyStoreTestUtil.getClasspathDir(TestTimelineClient.class);
     KeyStoreTestUtil.setupSSLConfig(testDir.getAbsolutePath(),
@@ -487,10 +492,10 @@ public class TestTimelineClient {
     Assert.assertFalse("Reloader is still alive", reloaderStillAlive);
   }
 
-  private static class TestTimlineDelegationTokenSecretManager extends
+  private static class TestTimelineDelegationTokenSecretManager extends
       AbstractDelegationTokenSecretManager<TimelineDelegationTokenIdentifier> {
 
-    public TestTimlineDelegationTokenSecretManager() {
+    public TestTimelineDelegationTokenSecretManager() {
       super(100000, 100000, 100000, 100000);
     }
 

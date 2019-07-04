@@ -75,6 +75,7 @@ public class TestFailureToReadEdits {
   private static final Random RANDOM = new Random();
 
   private final TestType clusterType;
+  private final boolean useAsyncEditLogging;
   private Configuration conf;
   private MiniDFSCluster cluster;
   private MiniQJMHACluster miniQjmHaCluster; // for QJM case only
@@ -82,24 +83,32 @@ public class TestFailureToReadEdits {
   private NameNode nn1;
   private FileSystem fs;
   
-  private static enum TestType {
+  private enum TestType {
     SHARED_DIR_HA,
     QJM_HA;
   };
   
   /**
-   * Run this suite of tests both for QJM-based HA and for file-based
-   * HA.
+   * Run this suite of tests for {QJM-based, file-based HA} x {async
+   * edit logging enabled, disabled}.
+   *
+   * TODO: Enable the test cases with async edit logging on. See HDFS-12603
+   * and HDFS-12660.
    */
   @Parameters
   public static Iterable<Object[]> data() {
-    return Arrays.asList(new Object[][] {
-        { TestType.SHARED_DIR_HA },
-        { TestType.QJM_HA } });
+    return Arrays.asList(new Object[][]{
+        {TestType.SHARED_DIR_HA, Boolean.FALSE},
+        //{TestType.SHARED_DIR_HA, Boolean.TRUE},
+        {TestType.QJM_HA, Boolean.FALSE},
+        //{TestType.QJM_HA, Boolean.TRUE},
+    });
   }
-  
-  public TestFailureToReadEdits(TestType clusterType) {
+
+  public TestFailureToReadEdits(TestType clusterType, Boolean
+      useAsyncEditLogging) {
     this.clusterType = clusterType;
+    this.useAsyncEditLogging = useAsyncEditLogging;
   }
 
   @Before
@@ -109,6 +118,8 @@ public class TestFailureToReadEdits {
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_NUM_CHECKPOINTS_RETAINED_KEY, 10);
     conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_EDITS_ASYNC_LOGGING,
+        useAsyncEditLogging);
     HAUtil.setAllowStandbyReads(conf, true);
 
     if (clusterType == TestType.SHARED_DIR_HA) {
@@ -187,7 +198,7 @@ public class TestFailureToReadEdits {
     
     // This op should get applied just fine.
     assertTrue(fs.mkdirs(new Path(TEST_DIR2)));
-    
+
     // This is the op the mocking will cause to fail to be read.
     assertTrue(fs.mkdirs(new Path(TEST_DIR3)));
     
@@ -202,27 +213,27 @@ public class TestFailureToReadEdits {
     
     // Null because it was deleted.
     assertNull(NameNodeAdapter.getFileInfo(nn1,
-        TEST_DIR1, false));
+        TEST_DIR1, false, false, false));
     // Should have been successfully created.
     assertTrue(NameNodeAdapter.getFileInfo(nn1,
-        TEST_DIR2, false).isDir());
+        TEST_DIR2, false, false, false).isDirectory());
     // Null because it hasn't been created yet.
     assertNull(NameNodeAdapter.getFileInfo(nn1,
-        TEST_DIR3, false));
-    
+        TEST_DIR3, false, false, false));
+
     // Now let the standby read ALL the edits.
     answer.setThrowExceptionOnRead(false);
     HATestUtil.waitForStandbyToCatchUp(nn0, nn1);
     
     // Null because it was deleted.
     assertNull(NameNodeAdapter.getFileInfo(nn1,
-        TEST_DIR1, false));
+        TEST_DIR1, false, false, false));
     // Should have been successfully created.
     assertTrue(NameNodeAdapter.getFileInfo(nn1,
-        TEST_DIR2, false).isDir());
+        TEST_DIR2, false, false, false).isDirectory());
     // Should now have been successfully created.
     assertTrue(NameNodeAdapter.getFileInfo(nn1,
-        TEST_DIR3, false).isDir());
+        TEST_DIR3, false, false, false).isDirectory());
   }
   
   /**
@@ -329,7 +340,8 @@ public class TestFailureToReadEdits {
     FSEditLog spyEditLog = NameNodeAdapter.spyOnEditLog(nn1);
     LimitedEditLogAnswer answer = new LimitedEditLogAnswer(); 
     doAnswer(answer).when(spyEditLog).selectInputStreams(
-        anyLong(), anyLong(), (MetaRecoveryContext)anyObject(), anyBoolean());
+        anyLong(), anyLong(), (MetaRecoveryContext)anyObject(), anyBoolean(),
+        anyBoolean());
     return answer;
   }
   

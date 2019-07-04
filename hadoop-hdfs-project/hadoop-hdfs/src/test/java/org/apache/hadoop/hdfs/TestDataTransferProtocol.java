@@ -37,7 +37,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
@@ -134,20 +133,13 @@ public class TestDataTransferProtocol {
       LOG.info("Expected: " + expected);
       
       if (eofExpected) {
-        throw new IOException("Did not recieve IOException when an exception " +
+        throw new IOException("Did not receive IOException when an exception " +
                               "is expected while reading from " + datanode); 
       }
       assertEquals(expected, received);
     } finally {
       IOUtils.closeSocket(sock);
     }
-  }
-  
-  void createFile(FileSystem fs, Path path, int fileLen) throws IOException {
-    byte [] arr = new byte[fileLen];
-    FSDataOutputStream out = fs.create(path);
-    out.write(arr);
-    out.close();
   }
   
   void readFile(FileSystem fs, Path path, int fileLen) throws IOException {
@@ -357,7 +349,9 @@ public class TestDataTransferProtocol {
     
     int fileLen = Math.min(conf.getInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 4096), 4096);
     
-    createFile(fileSys, file, fileLen);
+      DFSTestUtil.createFile(fileSys, file, fileLen, fileLen,
+          fileSys.getDefaultBlockSize(file),
+          fileSys.getDefaultReplication(file), 0L);
 
     // get the first blockid for the file
     final ExtendedBlock firstBlock = DFSTestUtil.getFirstBlock(fileSys, file);
@@ -565,6 +559,7 @@ public class TestDataTransferProtocol {
         BlockTokenSecretManager.DUMMY_TOKEN, "cl",
         new DatanodeInfo[1], new StorageType[1], null, stage,
         0, block.getNumBytes(), block.getNumBytes(), newGS,
-        checksum, CachingStrategy.newDefaultStrategy(), false, false, null);
+        checksum, CachingStrategy.newDefaultStrategy(), false, false,
+        null, null, new String[0]);
   }
 }

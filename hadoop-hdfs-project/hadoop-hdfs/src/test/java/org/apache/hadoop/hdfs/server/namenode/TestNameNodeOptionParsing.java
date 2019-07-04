@@ -121,14 +121,6 @@ public class TestNameNodeOptionParsing {
     }
 
     {
-      final String[] args = {"-rollingUpgrade", "downgrade"};
-      final StartupOption opt = NameNode.parseArguments(args);
-      assertEquals(StartupOption.ROLLINGUPGRADE, opt);
-      assertEquals(RollingUpgradeStartupOption.DOWNGRADE, opt.getRollingUpgradeStartupOption());
-      assertTrue(RollingUpgradeStartupOption.DOWNGRADE.matches(opt));
-    }
-
-    {
       final String[] args = {"-rollingUpgrade", "rollback"};
       final StartupOption opt = NameNode.parseArguments(args);
       assertEquals(StartupOption.ROLLINGUPGRADE, opt);
@@ -146,5 +138,30 @@ public class TestNameNodeOptionParsing {
       }
     }
   }
-    
+
+  @Test
+  public void testFormat() {
+    String[] args = new String[] {"-format"};
+    StartupOption opt = NameNode.parseArguments(args);
+    assertEquals(StartupOption.FORMAT, opt);
+    assertEquals(true, opt.getInteractiveFormat());
+    assertEquals(false, opt.getForceFormat());
+
+    args = new String[] {"-format", "-nonInteractive"};
+    opt = NameNode.parseArguments(args);
+    assertEquals(StartupOption.FORMAT, opt);
+    assertEquals(false, opt.getInteractiveFormat());
+    assertEquals(false, opt.getForceFormat());
+
+    args = new String[] {"-format", "-nonInteractive", "-force"};
+    opt = NameNode.parseArguments(args);
+    assertEquals(StartupOption.FORMAT, opt);
+    assertEquals(false, opt.getInteractiveFormat());
+    assertEquals(true, opt.getForceFormat());
+
+    // test error condition
+    args = new String[] {"-nonInteractive"};
+    opt = NameNode.parseArguments(args);
+    assertNull(opt);
+  }
 }

@@ -28,7 +28,6 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.atLeast;
@@ -123,13 +122,15 @@ public class TestRMEmbeddedElector extends ClientBaseWithFixes {
       throws IOException, InterruptedException {
     AdminService as = mock(AdminService.class);
     RMContext rc = mock(RMContext.class);
+    ResourceManager rm = mock(ResourceManager.class);
     Configuration myConf = new Configuration(conf);
 
     myConf.setInt(YarnConfiguration.RM_ZK_TIMEOUT_MS, 50);
+    when(rm.getRMContext()).thenReturn(rc);
     when(rc.getRMAdminService()).thenReturn(as);
 
-    ActiveStandbyElectorBasedElectorService
-        ees = new ActiveStandbyElectorBasedElectorService(rc);
+    ActiveStandbyElectorBasedElectorService ees =
+        new ActiveStandbyElectorBasedElectorService(rm);
     ees.init(myConf);
 
     ees.enterNeutralMode();
@@ -172,8 +173,8 @@ public class TestRMEmbeddedElector extends ClientBaseWithFixes {
 
     Thread.sleep(100);
 
-    verify(as).transitionToActive((StateChangeRequestInfo)any());
-    verify(as, never()).transitionToStandby((StateChangeRequestInfo)any());
+    verify(as).transitionToActive(any());
+    verify(as, never()).transitionToStandby(any());
   }
 
   /**
@@ -192,8 +193,8 @@ public class TestRMEmbeddedElector extends ClientBaseWithFixes {
 
     Thread.sleep(100);
 
-    verify(as, atLeast(1)).transitionToStandby((StateChangeRequestInfo)any());
-    verify(as, atMost(1)).transitionToStandby((StateChangeRequestInfo)any());
+    verify(as, atLeast(1)).transitionToStandby(any());
+    verify(as, atMost(1)).transitionToStandby(any());
   }
 
   /**
@@ -211,8 +212,8 @@ public class TestRMEmbeddedElector extends ClientBaseWithFixes {
 
     Thread.sleep(100);
 
-    verify(as, atLeast(1)).transitionToStandby((StateChangeRequestInfo)any());
-    verify(as, atMost(1)).transitionToStandby((StateChangeRequestInfo)any());
+    verify(as, atLeast(1)).transitionToStandby(any());
+    verify(as, atMost(1)).transitionToStandby(any());
   }
 
   /**
@@ -242,8 +243,8 @@ public class TestRMEmbeddedElector extends ClientBaseWithFixes {
     // going to do, hopefully nothing.
     Thread.sleep(50);
 
-    verify(as).transitionToActive((StateChangeRequestInfo)any());
-    verify(as, never()).transitionToStandby((StateChangeRequestInfo)any());
+    verify(as).transitionToActive(any());
+    verify(as, never()).transitionToStandby(any());
   }
 
   /**
@@ -273,8 +274,8 @@ public class TestRMEmbeddedElector extends ClientBaseWithFixes {
     // going to do, hopefully nothing.
     Thread.sleep(50);
 
-    verify(as, atLeast(1)).transitionToStandby((StateChangeRequestInfo)any());
-    verify(as, atMost(1)).transitionToStandby((StateChangeRequestInfo)any());
+    verify(as, atLeast(1)).transitionToStandby(any());
+    verify(as, atMost(1)).transitionToStandby(any());
   }
 
   private class MockRMWithElector extends MockRM {
@@ -291,7 +292,7 @@ public class TestRMEmbeddedElector extends ClientBaseWithFixes {
 
     @Override
     protected EmbeddedElector createEmbeddedElector() {
-      return new ActiveStandbyElectorBasedElectorService(getRMContext()) {
+      return new ActiveStandbyElectorBasedElectorService(this) {
         @Override
         public void becomeActive() throws
             ServiceFailedException {

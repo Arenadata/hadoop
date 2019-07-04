@@ -50,8 +50,6 @@ import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.server.common.JspHelper;
 import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.namenode.FileChecksumServlets;
-import org.apache.hadoop.hdfs.server.namenode.StreamFile;
 import org.apache.hadoop.hdfs.server.datanode.web.webhdfs.DataNodeUGIProvider;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.http.HttpServer2;
@@ -74,6 +72,7 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_ADMIN;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HTTPS_ADDRESS_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HTTPS_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HTTP_ADDRESS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_HTTP_INTERNAL_PROXY_PORT;
 
 public class DatanodeHttpServer implements Closeable {
   private final HttpServer2 infoServer;
@@ -98,13 +97,15 @@ public class DatanodeHttpServer implements Closeable {
     this.conf = conf;
 
     Configuration confForInfoServer = new Configuration(conf);
-    confForInfoServer.setInt(HttpServer2.HTTP_MAX_THREADS, 10);
+    confForInfoServer.setInt(HttpServer2.HTTP_MAX_THREADS_KEY, 10);
+    int proxyPort =
+        confForInfoServer.getInt(DFS_DATANODE_HTTP_INTERNAL_PROXY_PORT, 0);
     HttpServer2.Builder builder = new HttpServer2.Builder()
         .setName("datanode")
         .setConf(confForInfoServer)
         .setACL(new AccessControlList(conf.get(DFS_ADMIN, " ")))
         .hostName(getHostnameForSpnegoPrincipal(confForInfoServer))
-        .addEndpoint(URI.create("http://localhost:0"))
+        .addEndpoint(URI.create("http://localhost:" + proxyPort))
         .setFindPort(true);
 
     final boolean xFrameEnabled = conf.getBoolean(
@@ -119,10 +120,7 @@ public class DatanodeHttpServer implements Closeable {
 
     this.infoServer = builder.build();
 
-    this.infoServer.addInternalServlet(null, "/streamFile/*", StreamFile.class);
-    this.infoServer.addInternalServlet(null, "/getFileChecksum/*",
-        FileChecksumServlets.GetServlet.class);
-
+    this.infoServer.setAttribute(HttpServer2.CONF_CONTEXT_ATTRIBUTE, conf);
     this.infoServer.setAttribute("datanode", datanode);
     this.infoServer.setAttribute(JspHelper.CURRENT_CONF, conf);
     this.infoServer.addServlet(null, "/blockScannerReport",

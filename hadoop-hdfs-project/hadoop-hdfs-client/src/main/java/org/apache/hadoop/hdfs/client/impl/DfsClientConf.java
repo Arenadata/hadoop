@@ -18,14 +18,15 @@
 package org.apache.hadoop.hdfs.client.impl;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.Options.ChecksumOpt;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.ReplicaAccessorBuilder;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.util.ByteArrayManager;
 import org.apache.hadoop.ipc.Client;
 import org.apache.hadoop.util.DataChecksum;
@@ -62,13 +63,13 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATA_TRANSF
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_USE_DN_HOSTNAME;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_USE_DN_HOSTNAME_DEFAULT;
-import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_USE_LEGACY_BLOCKREADER;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL_DEFAULT;
-import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_USE_LEGACY_BLOCKREADER_DEFAULT;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_WRITE_PACKET_SIZE_DEFAULT;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_WRITE_PACKET_SIZE_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DATANODE_SOCKET_WRITE_TIMEOUT_KEY;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_DEFAULT;
+import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DOMAIN_SOCKET_PATH_DEFAULT;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_DOMAIN_SOCKET_PATH_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_REPLICATION_DEFAULT;
@@ -86,6 +87,7 @@ import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Write;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * DFSClient configuration.
@@ -122,9 +124,6 @@ public class DfsClientConf {
   private final String taskId;
   private final FsPermission uMask;
   private final boolean connectToDnViaHostname;
-  private final boolean hdfsBlocksMetadataEnabled;
-  private final int fileBlockStorageLocationsNumThreads;
-  private final int fileBlockStorageLocationsTimeoutMs;
   private final int retryTimesForGetLastBlockLength;
   private final int retryIntervalForGetLastBlockLength;
   private final long datanodeRestartTimeout;
@@ -136,6 +135,8 @@ public class DfsClientConf {
   private final int hedgedReadThreadpoolSize;
   private final List<Class<? extends ReplicaAccessorBuilder>>
       replicaAccessorBuilderClasses;
+
+  private final int stripedReadThreadpoolSize;
 
   private final boolean dataTransferTcpNoDelay;
 
@@ -234,19 +235,11 @@ public class DfsClientConf {
     uMask = FsPermission.getUMask(conf);
     connectToDnViaHostname = conf.getBoolean(DFS_CLIENT_USE_DN_HOSTNAME,
         DFS_CLIENT_USE_DN_HOSTNAME_DEFAULT);
-    hdfsBlocksMetadataEnabled = conf.getBoolean(
-        HdfsClientConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED,
-        HdfsClientConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED_DEFAULT);
-    fileBlockStorageLocationsNumThreads = conf.getInt(
-        HdfsClientConfigKeys.DFS_CLIENT_FILE_BLOCK_STORAGE_LOCATIONS_NUM_THREADS,
-        HdfsClientConfigKeys.DFS_CLIENT_FILE_BLOCK_STORAGE_LOCATIONS_NUM_THREADS_DEFAULT);
-    fileBlockStorageLocationsTimeoutMs = conf.getInt(
-        HdfsClientConfigKeys.DFS_CLIENT_FILE_BLOCK_STORAGE_LOCATIONS_TIMEOUT_MS,
-        HdfsClientConfigKeys.DFS_CLIENT_FILE_BLOCK_STORAGE_LOCATIONS_TIMEOUT_MS_DEFAULT);
 
-    datanodeRestartTimeout = conf.getLong(
+    datanodeRestartTimeout = conf.getTimeDuration(
         DFS_CLIENT_DATANODE_RESTART_TIMEOUT_KEY,
-        DFS_CLIENT_DATANODE_RESTART_TIMEOUT_DEFAULT) * 1000;
+        DFS_CLIENT_DATANODE_RESTART_TIMEOUT_DEFAULT,
+        TimeUnit.SECONDS) * 1000;
     slowIoWarningThresholdMs = conf.getLong(
         DFS_CLIENT_SLOW_IO_WARNING_THRESHOLD_KEY,
         DFS_CLIENT_SLOW_IO_WARNING_THRESHOLD_DEFAULT);
@@ -260,6 +253,12 @@ public class DfsClientConf {
         HdfsClientConfigKeys.HedgedRead.THREADPOOL_SIZE_KEY,
         HdfsClientConfigKeys.HedgedRead.THREADPOOL_SIZE_DEFAULT);
 
+    stripedReadThreadpoolSize = conf.getInt(
+        HdfsClientConfigKeys.StripedRead.THREADPOOL_SIZE_KEY,
+        HdfsClientConfigKeys.StripedRead.THREADPOOL_SIZE_DEFAULT);
+    Preconditions.checkArgument(stripedReadThreadpoolSize > 0, "The value of " +
+        HdfsClientConfigKeys.StripedRead.THREADPOOL_SIZE_KEY +
+        " must be greater than 0.");
     replicaAccessorBuilderClasses = loadReplicaAccessorBuilderClasses(conf);
   }
 
@@ -513,27 +512,6 @@ public class DfsClientConf {
   }
 
   /**
-   * @return the hdfsBlocksMetadataEnabled
-   */
-  public boolean isHdfsBlocksMetadataEnabled() {
-    return hdfsBlocksMetadataEnabled;
-  }
-
-  /**
-   * @return the fileBlockStorageLocationsNumThreads
-   */
-  public int getFileBlockStorageLocationsNumThreads() {
-    return fileBlockStorageLocationsNumThreads;
-  }
-
-  /**
-   * @return the getFileBlockStorageLocationsTimeoutMs
-   */
-  public int getFileBlockStorageLocationsTimeoutMs() {
-    return fileBlockStorageLocationsTimeoutMs;
-  }
-
-  /**
    * @return the retryTimesForGetLastBlockLength
    */
   public int getRetryTimesForGetLastBlockLength() {
@@ -576,6 +554,13 @@ public class DfsClientConf {
   }
 
   /**
+   * @return the stripedReadThreadpoolSize
+   */
+  public int getStripedReadThreadpoolSize() {
+    return stripedReadThreadpoolSize;
+  }
+
+  /**
    * @return the replicaAccessorBuilderClasses
    */
   public List<Class<? extends ReplicaAccessorBuilder>>
@@ -599,7 +584,6 @@ public class DfsClientConf {
     private final int socketCacheCapacity;
     private final long socketCacheExpiry;
 
-    private final boolean useLegacyBlockReader;
     private final boolean useLegacyBlockReaderLocal;
     private final String domainSocketPath;
     private final boolean skipShortCircuitChecksums;
@@ -611,11 +595,16 @@ public class DfsClientConf {
     private final long shortCircuitStreamsCacheExpiryMs;
     private final int shortCircuitSharedMemoryWatcherInterruptCheckMs;
 
+    // Short Circuit Read Metrics
+    private final boolean scrMetricsEnabled;
+    private final int scrMetricsSamplingPercentage;
+
     private final boolean shortCircuitMmapEnabled;
     private final int shortCircuitMmapCacheSize;
     private final long shortCircuitMmapCacheExpiryMs;
     private final long shortCircuitMmapCacheRetryTimeout;
     private final long shortCircuitCacheStaleThresholdMs;
+    private final long domainSocketDisableIntervalSeconds;
 
     private final long keyProviderCacheExpiryMs;
 
@@ -627,15 +616,26 @@ public class DfsClientConf {
           DFS_CLIENT_SOCKET_CACHE_EXPIRY_MSEC_KEY,
           DFS_CLIENT_SOCKET_CACHE_EXPIRY_MSEC_DEFAULT);
 
-      useLegacyBlockReader = conf.getBoolean(
-          DFS_CLIENT_USE_LEGACY_BLOCKREADER,
-          DFS_CLIENT_USE_LEGACY_BLOCKREADER_DEFAULT);
       useLegacyBlockReaderLocal = conf.getBoolean(
           DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL,
           DFS_CLIENT_USE_LEGACY_BLOCKREADERLOCAL_DEFAULT);
       shortCircuitLocalReads = conf.getBoolean(
           Read.ShortCircuit.KEY,
           Read.ShortCircuit.DEFAULT);
+      int scrSamplingPercentage = conf.getInt(
+          Read.ShortCircuit.METRICS_SAMPLING_PERCENTAGE_KEY,
+          Read.ShortCircuit.METRICS_SAMPLING_PERCENTAGE_DEFAULT);
+      if (scrSamplingPercentage <= 0) {
+        scrMetricsSamplingPercentage = 0;
+        scrMetricsEnabled = false;
+      } else if (scrSamplingPercentage > 100) {
+        scrMetricsSamplingPercentage = 100;
+        scrMetricsEnabled = true;
+      } else {
+        scrMetricsSamplingPercentage = scrSamplingPercentage;
+        scrMetricsEnabled = true;
+      }
+
       domainSocketDataTraffic = conf.getBoolean(
           DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC,
           DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC_DEFAULT);
@@ -682,6 +682,11 @@ public class DfsClientConf {
       shortCircuitSharedMemoryWatcherInterruptCheckMs = conf.getInt(
           DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS,
           DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS_DEFAULT);
+      domainSocketDisableIntervalSeconds = conf.getLong(
+          DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_KEY,
+          DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_DEFAULT);
+      Preconditions.checkArgument(domainSocketDisableIntervalSeconds >= 0,
+          DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_KEY + "can't be negative.");
 
       keyProviderCacheExpiryMs = conf.getLong(
           DFS_CLIENT_KEY_PROVIDER_CACHE_EXPIRY_MS,
@@ -714,14 +719,16 @@ public class DfsClientConf {
       return shortCircuitLocalReads;
     }
 
+    public boolean isScrMetricsEnabled() {
+      return scrMetricsEnabled;
+    }
+
+    public int getScrMetricsSamplingPercentage() {
+      return scrMetricsSamplingPercentage;
+    }
+
     public boolean isDomainSocketDataTraffic() {
       return domainSocketDataTraffic;
-    }
-    /**
-     * @return the useLegacyBlockReader
-     */
-    public boolean isUseLegacyBlockReader() {
-      return useLegacyBlockReader;
     }
 
     /**
@@ -795,6 +802,13 @@ public class DfsClientConf {
     }
 
     /**
+     * @return the domainSocketDisableIntervalSeconds
+     */
+    public long getDomainSocketDisableIntervalSeconds() {
+      return domainSocketDisableIntervalSeconds;
+    }
+
+    /**
      * @return the keyProviderCacheExpiryMs
      */
     public long getKeyProviderCacheExpiryMs() {
@@ -828,7 +842,9 @@ public class DfsClientConf {
           + ", shortCircuitSharedMemoryWatcherInterruptCheckMs = "
           + shortCircuitSharedMemoryWatcherInterruptCheckMs
           + ", keyProviderCacheExpiryMs = "
-          + keyProviderCacheExpiryMs;
+          + keyProviderCacheExpiryMs
+          + ", domainSocketDisableIntervalSeconds = "
+          + domainSocketDisableIntervalSeconds;
     }
   }
 }

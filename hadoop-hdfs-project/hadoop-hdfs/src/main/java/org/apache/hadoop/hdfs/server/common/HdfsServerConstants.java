@@ -25,7 +25,6 @@ import java.util.regex.Pattern;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.DFSUtil;
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
@@ -44,13 +43,6 @@ import org.apache.hadoop.util.StringUtils;
 public interface HdfsServerConstants {
   int MIN_BLOCKS_FOR_WRITE = 1;
 
-  /**
-   * Please see {@link HdfsConstants#LEASE_SOFTLIMIT_PERIOD} and
-   * {@link HdfsConstants#LEASE_HARDLIMIT_PERIOD} for more information.
-   */
-  long LEASE_SOFTLIMIT_PERIOD = HdfsConstants.LEASE_SOFTLIMIT_PERIOD;
-  long LEASE_HARDLIMIT_PERIOD = HdfsConstants.LEASE_HARDLIMIT_PERIOD;
-
   long LEASE_RECOVER_PERIOD = 10 * 1000; // in ms
   // We need to limit the length and depth of a path in the filesystem.
   // HADOOP-438
@@ -61,8 +53,7 @@ public interface HdfsServerConstants {
   // An invalid transaction ID that will never be seen in a real namesystem.
   long INVALID_TXID = -12345;
   // Number of generation stamps reserved for legacy blocks.
-  long RESERVED_GENERATION_STAMPS_V1 =
-      1024L * 1024 * 1024 * 1024;
+  long RESERVED_LEGACY_GENERATION_STAMPS = 1024L * 1024 * 1024 * 1024;
   /**
    * Current layout version for NameNode.
    * Please see {@link NameNodeLayoutVersion.Feature} on adding new layout version.
@@ -97,8 +88,8 @@ public interface HdfsServerConstants {
   }
 
   /** Startup options for rolling upgrade. */
-  public static enum RollingUpgradeStartupOption{
-    ROLLBACK, DOWNGRADE, STARTED;
+  enum RollingUpgradeStartupOption{
+    ROLLBACK, STARTED;
 
     public String getOptionString() {
       return StartupOption.ROLLINGUPGRADE.getName() + " "
@@ -113,6 +104,14 @@ public interface HdfsServerConstants {
     private static final RollingUpgradeStartupOption[] VALUES = values();
 
     static RollingUpgradeStartupOption fromString(String s) {
+      if ("downgrade".equalsIgnoreCase(s)) {
+        throw new IllegalArgumentException(
+            "The \"downgrade\" option is no longer supported"
+                + " since it may incorrectly finalize an ongoing rolling upgrade."
+                + " For downgrade instruction, please see the documentation"
+                + " (http://hadoop.apache.org/docs/current/hadoop-project-dist/"
+                + "hadoop-hdfs/HdfsRollingUpgrade.html#Downgrade).");
+      }
       for(RollingUpgradeStartupOption opt : VALUES) {
         if (opt.name().equalsIgnoreCase(s)) {
           return opt;
@@ -142,7 +141,6 @@ public interface HdfsServerConstants {
     CHECKPOINT("-checkpoint"),
     UPGRADE ("-upgrade"),
     ROLLBACK("-rollback"),
-    FINALIZE("-finalize"),
     ROLLINGUPGRADE("-rollingUpgrade"),
     IMPORT  ("-importCheckpoint"),
     BOOTSTRAPSTANDBY("-bootstrapStandby"),
@@ -363,4 +361,9 @@ public interface HdfsServerConstants {
       "raw.hdfs.crypto.file.encryption.info";
   String SECURITY_XATTR_UNREADABLE_BY_SUPERUSER =
       "security.hdfs.unreadable.by.superuser";
+  String XATTR_ERASURECODING_POLICY =
+      "system.hdfs.erasurecoding.policy";
+
+  long BLOCK_GROUP_INDEX_MASK = 15;
+  byte MAX_BLOCKS_IN_GROUP = 16;
 }

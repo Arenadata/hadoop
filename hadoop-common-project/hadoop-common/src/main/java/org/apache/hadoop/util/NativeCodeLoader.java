@@ -18,12 +18,10 @@
 
 package org.apache.hadoop.util;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A helper to load the native hadoop code i.e. libhadoop.so.
@@ -33,10 +31,10 @@ import org.apache.hadoop.fs.CommonConfigurationKeys;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
-public class NativeCodeLoader {
+public final class NativeCodeLoader {
 
-  private static final Log LOG =
-    LogFactory.getLog(NativeCodeLoader.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(NativeCodeLoader.class);
   
   private static boolean nativeCodeLoaded = false;
   
@@ -64,6 +62,8 @@ public class NativeCodeLoader {
     }
   }
 
+  private NativeCodeLoader() {}
+
   /**
    * Check if native-hadoop code is loaded for this platform.
    * 
@@ -78,36 +78,22 @@ public class NativeCodeLoader {
    * Returns true only if this build was compiled with support for snappy.
    */
   public static native boolean buildSupportsSnappy();
-  
+
+  /**
+   * Returns true only if this build was compiled with support for ISA-L.
+   */
+  public static native boolean buildSupportsIsal();
+
+  /**
+  * Returns true only if this build was compiled with support for ZStandard.
+   */
+  public static native boolean buildSupportsZstd();
+
   /**
    * Returns true only if this build was compiled with support for openssl.
    */
   public static native boolean buildSupportsOpenssl();
 
   public static native String getLibraryName();
-
-  /**
-   * Return if native hadoop libraries, if present, can be used for this job.
-   * @param conf configuration
-   * 
-   * @return <code>true</code> if native hadoop libraries, if present, can be 
-   *         used for this job; <code>false</code> otherwise.
-   */
-  public boolean getLoadNativeLibraries(Configuration conf) {
-    return conf.getBoolean(CommonConfigurationKeys.IO_NATIVE_LIB_AVAILABLE_KEY, 
-                           CommonConfigurationKeys.IO_NATIVE_LIB_AVAILABLE_DEFAULT);
-  }
-  
-  /**
-   * Set if native hadoop libraries, if present, can be used for this job.
-   * 
-   * @param conf configuration
-   * @param loadNativeLibraries can native hadoop libraries be loaded
-   */
-  public void setLoadNativeLibraries(Configuration conf, 
-                                     boolean loadNativeLibraries) {
-    conf.setBoolean(CommonConfigurationKeys.IO_NATIVE_LIB_AVAILABLE_KEY,
-                    loadNativeLibraries);
-  }
 
 }

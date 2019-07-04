@@ -23,8 +23,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
+import com.google.common.collect.Sets;
 import org.apache.commons.lang.ClassUtils;
 import org.apache.hadoop.hdfs.qjournal.server.JournalNodeRpcServer;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer;
@@ -56,7 +59,7 @@ public class TestHDFSPolicyProvider {
   private static final Logger LOG =
       LoggerFactory.getLogger(TestHDFSPolicyProvider.class);
 
-  private static List<Class<?>> policyProviderProtocols;
+  private static Set<Class<?>> policyProviderProtocols;
 
   private static final Comparator<Class<?>> CLASS_NAME_COMPARATOR =
       new Comparator<Class<?>>() {
@@ -74,11 +77,10 @@ public class TestHDFSPolicyProvider {
   @BeforeClass
   public static void initialize() {
     Service[] services = new HDFSPolicyProvider().getServices();
-    policyProviderProtocols = new ArrayList<>(services.length);
+    policyProviderProtocols = new HashSet<>(services.length);
     for (Service service : services) {
       policyProviderProtocols.add(service.getProtocol());
     }
-    Collections.sort(policyProviderProtocols, CLASS_NAME_COMPARATOR);
   }
 
   public TestHDFSPolicyProvider(Class<?> rpcServerClass) {
@@ -97,25 +99,25 @@ public class TestHDFSPolicyProvider {
   @Test
   public void testPolicyProviderForServer() {
     List<?> ifaces = ClassUtils.getAllInterfaces(rpcServerClass);
-    List<Class<?>> serverProtocols = new ArrayList<>(ifaces.size());
+    Set<Class<?>> serverProtocols = new HashSet<>(ifaces.size());
     for (Object obj : ifaces) {
       Class<?> iface = (Class<?>)obj;
       if (iface.getSimpleName().endsWith("Protocol")) {
         serverProtocols.add(iface);
       }
     }
-    Collections.sort(serverProtocols, CLASS_NAME_COMPARATOR);
     LOG.info("Running test {} for RPC server {}.  Found server protocols {} "
         + "and policy provider protocols {}.", testName.getMethodName(),
         rpcServerClass.getName(), serverProtocols, policyProviderProtocols);
     assertFalse("Expected to find at least one protocol in server.",
         serverProtocols.isEmpty());
+    final Set<Class<?>> differenceSet =
+        Sets.difference(serverProtocols, policyProviderProtocols);
     assertTrue(
-        String.format("Expected all protocols for server %s to be defined in "
-            + "%s.  Server contains protocols %s.  Policy provider contains "
-            + "protocols %s.", rpcServerClass.getName(),
-            HDFSPolicyProvider.class.getName(), serverProtocols,
-            policyProviderProtocols),
-        policyProviderProtocols.containsAll(serverProtocols));
+        String.format("Following protocols for server %s are not defined in "
+            + "%s: %s",
+            rpcServerClass.getName(), HDFSPolicyProvider.class.getName(),
+            Arrays.toString(differenceSet.toArray())),
+        differenceSet.isEmpty());
   }
 }

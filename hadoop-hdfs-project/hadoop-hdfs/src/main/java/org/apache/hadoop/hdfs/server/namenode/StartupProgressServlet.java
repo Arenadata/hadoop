@@ -21,14 +21,14 @@ import java.io.IOException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Phase;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgressView;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType;
 import org.apache.hadoop.io.IOUtils;
-import org.codehaus.jackson.JsonFactory;
-import org.codehaus.jackson.JsonGenerator;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 
@@ -52,6 +52,8 @@ public class StartupProgressServlet extends DfsServlet {
   private static final String STEPS = "steps";
   private static final String TOTAL = "total";
 
+  public static final String PATH_SPEC = "/startupProgress";
+
   @Override
   protected void doGet(HttpServletRequest req, HttpServletResponse resp)
       throws IOException {
@@ -59,7 +61,7 @@ public class StartupProgressServlet extends DfsServlet {
     StartupProgress prog = NameNodeHttpServer.getStartupProgressFromContext(
       getServletContext());
     StartupProgressView view = prog.createView();
-    JsonGenerator json = new JsonFactory().createJsonGenerator(resp.getWriter());
+    JsonGenerator json = new JsonFactory().createGenerator(resp.getWriter());
     try {
       json.writeStartObject();
       json.writeNumberField(ELAPSED_TIME, view.getElapsedTime());

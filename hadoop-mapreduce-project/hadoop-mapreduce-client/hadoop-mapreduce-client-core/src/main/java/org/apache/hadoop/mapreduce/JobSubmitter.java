@@ -32,8 +32,10 @@ import java.util.Map;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import com.fasterxml.jackson.core.JsonParseException;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -45,6 +47,8 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.QueueACL;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
 
@@ -59,19 +63,16 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.yarn.api.records.ReservationId;
-import org.codehaus.jackson.JsonParseException;
-import org.codehaus.jackson.map.JsonMappingException;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.map.ObjectReader;
 
 import com.google.common.base.Charsets;
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 class JobSubmitter {
-  protected static final Log LOG = LogFactory.getLog(JobSubmitter.class);
+  protected static final Logger LOG =
+      LoggerFactory.getLogger(JobSubmitter.class);
   private static final ObjectReader READER =
-      new ObjectMapper().reader(Map.class);
+      new ObjectMapper().readerFor(Map.class);
   private static final String SHUFFLE_KEYGEN_ALGORITHM = "HmacSHA1";
   private static final int SHUFFLE_KEY_LENGTH = 64;
   private FileSystem jtFs;
@@ -93,8 +94,12 @@ class JobSubmitter {
    */
   private void copyAndConfigureFiles(Job job, Path jobSubmitDir) 
   throws IOException {
-    JobResourceUploader rUploader = new JobResourceUploader(jtFs);
-    rUploader.uploadFiles(job, jobSubmitDir);
+    Configuration conf = job.getConfiguration();
+    boolean useWildcards = conf.getBoolean(Job.USE_WILDCARD_FOR_LIBJARS,
+        Job.DEFAULT_USE_WILDCARD_FOR_LIBJARS);
+    JobResourceUploader rUploader = new JobResourceUploader(jtFs, useWildcards);
+
+    rUploader.uploadResources(job, jobSubmitDir);
 
     // Get the working directory. If not set, sets it to filesystem working dir
     // This code has been added so that working directory reset before running
@@ -199,6 +204,13 @@ class JobSubmitter {
       conf.setInt(MRJobConfig.NUM_MAPS, maps);
       LOG.info("number of splits:" + maps);
 
+      int maxMaps = conf.getInt(MRJobConfig.JOB_MAX_MAP,
+          MRJobConfig.DEFAULT_JOB_MAX_MAP);
+      if (maxMaps >= 0 && maxMaps < maps) {
+        throw new IllegalArgumentException("The number of map tasks " + maps +
+            " exceeded limit " + maxMaps);
+      }
+
       // write "queue admins of the queue to which job is being submitted"
       // to job file.
       String queue = conf.get(MRJobConfig.QUEUE_NAME,
@@ -287,9 +299,7 @@ class JobSubmitter {
   private void printTokens(JobID jobId,
       Credentials credentials) throws IOException {
     LOG.info("Submitting tokens for job: " + jobId);
-    for (Token<?> token: credentials.getAllTokens()) {
-      LOG.info(token);
-    }
+    LOG.info("Executing with tokens: {}", credentials.getAllTokens());
   }
 
   @SuppressWarnings("unchecked")
@@ -394,7 +404,6 @@ class JobSubmitter {
       LOG.info("loading user's secret keys from " + tokensFileName);
       String localFileName = new Path(tokensFileName).toUri().getPath();
 
-      boolean json_error = false;
       try {
         // read JSON
         Map<String, String> nm = READER.readValue(new File(localFileName));
@@ -403,13 +412,9 @@ class JobSubmitter {
           credentials.addSecretKey(new Text(ent.getKey()), ent.getValue()
               .getBytes(Charsets.UTF_8));
         }
-      } catch (JsonMappingException e) {
-        json_error = true;
-      } catch (JsonParseException e) {
-        json_error = true;
-      }
-      if(json_error)
+      } catch (JsonMappingException | JsonParseException e) {
         LOG.warn("couldn't parse Token Cache JSON file with user secret keys");
+      }
     }
   }
 
@@ -450,7 +455,7 @@ class JobSubmitter {
       // resolve any symlinks in the URI path so using a "current" symlink
       // to point to a specific version shows the specific version
       // in the distributed cache configuration
-      FileSystem fs = FileSystem.get(conf);
+      FileSystem fs = FileSystem.get(uri, conf);
       Path frameworkPath = fs.makeQualified(
           new Path(uri.getScheme(), uri.getAuthority(), uri.getPath()));
       FileContext fc = FileContext.getFileContext(frameworkPath.toUri(), conf);

@@ -106,6 +106,13 @@ final class FSDirAppendOp {
                 + clientMachine);
       }
       final INodeFile file = INodeFile.valueOf(inode, path, true);
+
+      // not support appending file with striped blocks
+      if (file.isStriped()) {
+        throw new UnsupportedOperationException(
+            "Cannot append to files with striped block " + path);
+      }
+
       BlockManager blockManager = fsd.getBlockManager();
       final BlockStoragePolicy lpPolicy = blockManager
           .getStoragePolicy("LAZY_PERSIST");
@@ -141,7 +148,8 @@ final class FSDirAppendOp {
       fsd.writeUnlock();
     }
 
-    HdfsFileStatus stat = FSDirStatAndListingOp.getFileInfo(fsd, iip);
+    HdfsFileStatus stat =
+        FSDirStatAndListingOp.getFileInfo(fsd, iip, false, false);
     if (lb != null) {
       NameNode.stateChangeLog.debug(
           "DIR* NameSystem.appendFile: file {} for {} at {} block {} block"

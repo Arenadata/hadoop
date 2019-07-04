@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.util;
 
+import org.apache.hadoop.io.compress.ZStandardCodec;
+import org.apache.hadoop.io.erasurecode.ErasureCodeNative;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.OpensslCipher;
 import org.apache.hadoop.io.compress.Lz4Codec;
@@ -65,6 +67,8 @@ public class NativeLibraryChecker {
     boolean nativeHadoopLoaded = NativeCodeLoader.isNativeCodeLoaded();
     boolean zlibLoaded = false;
     boolean snappyLoaded = false;
+    boolean isalLoaded = false;
+    boolean zStdLoaded = false;
     // lz4 is linked within libhadoop
     boolean lz4Loaded = nativeHadoopLoaded;
     boolean bzip2Loaded = Bzip2Factory.isNativeBzip2Loaded(conf);
@@ -75,6 +79,8 @@ public class NativeLibraryChecker {
     String hadoopLibraryName = "";
     String zlibLibraryName = "";
     String snappyLibraryName = "";
+    String isalDetail = "";
+    String zstdLibraryName = "";
     String lz4LibraryName = "";
     String bzip2LibraryName = "";
     String winutilsPath = null;
@@ -85,18 +91,33 @@ public class NativeLibraryChecker {
       if (zlibLoaded) {
         zlibLibraryName = ZlibFactory.getLibraryName();
       }
+      zStdLoaded = NativeCodeLoader.buildSupportsZstd() &&
+        ZStandardCodec.isNativeCodeLoaded();
+      if (zStdLoaded && NativeCodeLoader.buildSupportsZstd()) {
+        zstdLibraryName = ZStandardCodec.getLibraryName();
+      }
       snappyLoaded = NativeCodeLoader.buildSupportsSnappy() &&
           SnappyCodec.isNativeCodeLoaded();
       if (snappyLoaded && NativeCodeLoader.buildSupportsSnappy()) {
         snappyLibraryName = SnappyCodec.getLibraryName();
       }
-      if (OpensslCipher.getLoadingFailureReason() != null) {
-        openSslDetail = OpensslCipher.getLoadingFailureReason();
+
+      isalDetail = ErasureCodeNative.getLoadingFailureReason();
+      if (isalDetail != null) {
+        isalLoaded = false;
+      } else {
+        isalDetail = ErasureCodeNative.getLibraryName();
+        isalLoaded = true;
+      }
+
+      openSslDetail = OpensslCipher.getLoadingFailureReason();
+      if (openSslDetail != null) {
         openSslLoaded = false;
       } else {
         openSslDetail = OpensslCipher.getLibraryName();
         openSslLoaded = true;
       }
+
       if (lz4Loaded) {
         lz4LibraryName = Lz4Codec.getLibraryName();
       }
@@ -121,16 +142,20 @@ public class NativeLibraryChecker {
     System.out.println("Native library checking:");
     System.out.printf("hadoop:  %b %s%n", nativeHadoopLoaded, hadoopLibraryName);
     System.out.printf("zlib:    %b %s%n", zlibLoaded, zlibLibraryName);
+    System.out.printf("zstd  :  %b %s%n", zStdLoaded, zstdLibraryName);
     System.out.printf("snappy:  %b %s%n", snappyLoaded, snappyLibraryName);
     System.out.printf("lz4:     %b %s%n", lz4Loaded, lz4LibraryName);
     System.out.printf("bzip2:   %b %s%n", bzip2Loaded, bzip2LibraryName);
     System.out.printf("openssl: %b %s%n", openSslLoaded, openSslDetail);
+    System.out.printf("ISA-L:   %b %s%n", isalLoaded, isalDetail);
+
     if (Shell.WINDOWS) {
       System.out.printf("winutils: %b %s%n", winutilsExists, winutilsPath);
     }
 
     if ((!nativeHadoopLoaded) || (Shell.WINDOWS && (!winutilsExists)) ||
-        (checkAll && !(zlibLoaded && snappyLoaded && lz4Loaded && bzip2Loaded))) {
+        (checkAll && !(zlibLoaded && snappyLoaded && lz4Loaded
+            && bzip2Loaded && isalLoaded && zStdLoaded))) {
       // return 1 to indicated check failed
       ExitUtil.terminate(1);
     }

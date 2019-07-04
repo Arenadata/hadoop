@@ -18,18 +18,20 @@
 package org.apache.hadoop.hdfs.server.namenode;
 
 import java.io.IOException;
+import java.util.Set;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
-import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockUnderConstructionFeature;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
@@ -83,6 +85,13 @@ final class FSDirTruncateOp {
         fsd.checkPathAccess(pc, iip, FsAction.WRITE);
       }
       INodeFile file = INodeFile.valueOf(iip.getLastINode(), src);
+
+      // not support truncating file with striped blocks
+      if (file.isStriped()) {
+        throw new UnsupportedOperationException(
+            "Cannot truncate file with striped block " + src);
+      }
+
       final BlockStoragePolicy lpPolicy = fsd.getBlockManager()
           .getStoragePolicy("LAZY_PERSIST");
 
@@ -95,7 +104,7 @@ final class FSDirTruncateOp {
       final BlockInfo last = file.getLastBlock();
       if (last != null && last.getBlockUCState()
           == BlockUCState.UNDER_RECOVERY) {
-        final Block truncatedBlock = last.getUnderConstructionFeature()
+        final BlockInfo truncatedBlock = last.getUnderConstructionFeature()
             .getTruncateBlock();
         if (truncatedBlock != null) {
           final long truncateLength = file.computeFileSize(false, false)
@@ -178,12 +187,13 @@ final class FSDirTruncateOp {
           "Should be the same block.";
       if (oldBlock.getBlockId() != tBlk.getBlockId()
           && !file.isBlockInLatestSnapshot(oldBlock)) {
+        oldBlock.delete();
         fsd.getBlockManager().removeBlockFromMap(oldBlock);
       }
     }
     assert onBlockBoundary == (truncateBlock == null) :
       "truncateBlock is null iff on block boundary: " + truncateBlock;
-    fsn.removeBlocksAndUpdateSafemodeTotal(collectedBlocks);
+    fsn.getBlockManager().removeBlocksAndUpdateSafemodeTotal(collectedBlocks);
   }
 
   /**
@@ -207,6 +217,7 @@ final class FSDirTruncateOp {
     assert fsn.hasWriteLock();
 
     INodeFile file = iip.getLastINode().asFile();
+    assert !file.isStriped();
     file.recordModification(iip.getLatestSnapshotId());
     file.toUnderConstruction(leaseHolder, clientMachine);
     assert file.isUnderConstruction() : "inode should be under construction.";
@@ -214,11 +225,13 @@ final class FSDirTruncateOp {
         file.getFileUnderConstructionFeature().getClientName(), file.getId());
     boolean shouldRecoverNow = (newBlock == null);
     BlockInfo oldBlock = file.getLastBlock();
+
     boolean shouldCopyOnTruncate = shouldCopyOnTruncate(fsn, file, oldBlock);
     if (newBlock == null) {
-      newBlock = (shouldCopyOnTruncate) ? fsn.createNewBlock() : new Block(
-          oldBlock.getBlockId(), oldBlock.getNumBytes(),
-          fsn.nextGenerationStamp(fsn.getBlockIdManager().isLegacyBlock(
+      newBlock = (shouldCopyOnTruncate) ?
+          fsn.createNewBlock(BlockType.CONTIGUOUS)
+          : new Block(oldBlock.getBlockId(), oldBlock.getNumBytes(),
+          fsn.nextGenerationStamp(fsn.getBlockManager().isLegacyBlock(
               oldBlock)));
     }
 
@@ -246,7 +259,8 @@ final class FSDirTruncateOp {
       oldBlock = file.getLastBlock();
       assert !oldBlock.isComplete() : "oldBlock should be under construction";
       BlockUnderConstructionFeature uc = oldBlock.getUnderConstructionFeature();
-      uc.setTruncateBlock(new Block(oldBlock));
+      uc.setTruncateBlock(new BlockInfoContiguous(oldBlock,
+          oldBlock.getReplication()));
       uc.getTruncateBlock().setNumBytes(oldBlock.getNumBytes() - lastBlockDelta);
       uc.getTruncateBlock().setGenerationStamp(newBlock.getGenerationStamp());
       truncatedBlockUC = oldBlock;
@@ -257,7 +271,7 @@ final class FSDirTruncateOp {
     }
     if (shouldRecoverNow) {
       truncatedBlockUC.getUnderConstructionFeature().initializeBlockRecovery(
-          truncatedBlockUC, newBlock.getGenerationStamp());
+          truncatedBlockUC, newBlock.getGenerationStamp(), true);
     }
 
     return newBlock;
@@ -288,9 +302,9 @@ final class FSDirTruncateOp {
 
     verifyQuotaForTruncate(fsn, iip, file, newLength, delta);
 
-    long remainingLength =
-        file.collectBlocksBeyondMax(newLength, collectedBlocks);
-    file.excludeSnapshotBlocks(latestSnapshot, collectedBlocks);
+    Set<BlockInfo> toRetain = file.getSnapshotBlocksToRetain(latestSnapshot);
+    long remainingLength = file.collectBlocksBeyondMax(newLength,
+        collectedBlocks, toRetain);
     file.setModificationTime(mtime);
     // return whether on a block boundary
     return (remainingLength - newLength) == 0;
@@ -335,9 +349,9 @@ final class FSDirTruncateOp {
    */
   static class TruncateResult {
     private final boolean result;
-    private final HdfsFileStatus stat;
+    private final FileStatus stat;
 
-    public TruncateResult(boolean result, HdfsFileStatus stat) {
+    public TruncateResult(boolean result, FileStatus stat) {
       this.result = result;
       this.stat = stat;
     }
@@ -353,7 +367,7 @@ final class FSDirTruncateOp {
     /**
      * @return file information.
      */
-    HdfsFileStatus getFileStatus() {
+    FileStatus getFileStatus() {
       return stat;
     }
   }

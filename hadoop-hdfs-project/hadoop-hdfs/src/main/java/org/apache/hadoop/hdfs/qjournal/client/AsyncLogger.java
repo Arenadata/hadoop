@@ -49,7 +49,7 @@ interface AsyncLogger {
   
   interface Factory {
     AsyncLogger createLogger(Configuration conf, NamespaceInfo nsInfo,
-        String journalId, InetSocketAddress addr);
+        String journalId, String nameServiceId, InetSocketAddress addr);
   }
 
   /**
@@ -165,7 +165,7 @@ interface AsyncLogger {
 
   public ListenableFuture<Void> doRollback();
 
-  public ListenableFuture<Long> getJournalCTime();
-
   public ListenableFuture<Void> discardSegments(long startTxId);
+
+  public ListenableFuture<Long> getJournalCTime();
 }

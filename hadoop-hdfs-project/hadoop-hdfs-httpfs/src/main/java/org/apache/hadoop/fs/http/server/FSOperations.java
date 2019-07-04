@@ -23,6 +23,7 @@ import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FilterFileSystem;
 import org.apache.hadoop.fs.GlobFilter;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
@@ -39,7 +40,9 @@ import org.apache.hadoop.lib.service.FileSystemAccess;
 import org.apache.hadoop.util.StringUtils;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
+import org.apache.hadoop.fs.permission.FsCreateModes;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -71,15 +74,17 @@ public class FSOperations {
 
   /**
    * @param fileStatuses list of FileStatus objects
+   * @param isFile is the fileStatuses from a file path
    * @return JSON map suitable for wire transport
    */
   @SuppressWarnings({"unchecked"})
-  private static Map<String, Object> toJson(FileStatus[] fileStatuses) {
+  private static Map<String, Object> toJson(FileStatus[] fileStatuses,
+      boolean isFile) {
     Map<String, Object> json = new LinkedHashMap<>();
     Map<String, Object> inner = new LinkedHashMap<>();
     JSONArray statuses = new JSONArray();
     for (FileStatus f : fileStatuses) {
-      statuses.add(toJsonInner(f, false));
+      statuses.add(toJsonInner(f, isFile));
     }
     inner.put(HttpFSFileSystem.FILE_STATUS_JSON, statuses);
     json.put(HttpFSFileSystem.FILE_STATUSES_JSON, inner);
@@ -112,6 +117,31 @@ public class FSOperations {
     if (fileStatus.getPermission().getEncryptedBit()) {
       json.put(HttpFSFileSystem.ENC_BIT_JSON, true);
     }
+    if (fileStatus.getPermission().getErasureCodedBit()) {
+      json.put(HttpFSFileSystem.EC_BIT_JSON, true);
+    }
+    return json;
+  }
+
+  /**
+   * Serializes a DirectoryEntries object into the JSON for a
+   * WebHDFS {@link org.apache.hadoop.hdfs.protocol.DirectoryListing}.
+   * <p>
+   * These two classes are slightly different, due to the impedance
+   * mismatches between the WebHDFS and FileSystem APIs.
+   * @param entries
+   * @param isFile is the entries from a file path
+   * @return json
+   */
+  private static Map<String, Object> toJson(FileSystem.DirectoryEntries
+      entries, boolean isFile) {
+    Map<String, Object> json = new LinkedHashMap<>();
+    Map<String, Object> inner = new LinkedHashMap<>();
+    Map<String, Object> fileStatuses = toJson(entries.getEntries(), isFile);
+    inner.put(HttpFSFileSystem.PARTIAL_LISTING_JSON, fileStatuses);
+    inner.put(HttpFSFileSystem.REMAINING_ENTRIES_JSON, entries.hasMore() ? 1
+        : 0);
+    json.put(HttpFSFileSystem.DIRECTORY_LISTING_JSON, inner);
     return json;
   }
 
@@ -307,7 +337,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -332,7 +362,7 @@ public class FSOperations {
      * Creates a Concat executor.
      *
      * @param path target path to concat to.
-     * @param sources comma seperated absolute paths to use as sources.
+     * @param sources comma separated absolute paths to use as sources.
      */
     public FSConcat(String path, String[] sources) {
       this.sources = new Path[sources.length];
@@ -351,7 +381,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -392,7 +422,7 @@ public class FSOperations {
      *         wait for it to complete before proceeding with further file 
      *         updates.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
@@ -426,7 +456,7 @@ public class FSOperations {
      *
      * @return a Map object (JSON friendly) with the content-summary.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -444,6 +474,7 @@ public class FSOperations {
     private InputStream is;
     private Path path;
     private short permission;
+    private short unmaskedPermission;
     private boolean override;
     private short replication;
     private long blockSize;
@@ -457,12 +488,14 @@ public class FSOperations {
      * @param override if the file should be overriden if it already exist.
      * @param repl the replication factor for the file.
      * @param blockSize the block size for the file.
+     * @param unmaskedPerm unmasked permissions for the file
      */
     public FSCreate(InputStream is, String path, short perm, boolean override,
-                    short repl, long blockSize) {
+                    short repl, long blockSize, short unmaskedPerm) {
       this.is = is;
       this.path = new Path(path);
       this.permission = perm;
+      this.unmaskedPermission = unmaskedPerm;
       this.override = override;
       this.replication = repl;
       this.blockSize = blockSize;
@@ -475,7 +508,7 @@ public class FSOperations {
      *
      * @return The URI of the created file.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -486,6 +519,10 @@ public class FSOperations {
         blockSize = fs.getDefaultBlockSize(path);
       }
       FsPermission fsPermission = new FsPermission(permission);
+      if (unmaskedPermission != -1) {
+        fsPermission = FsCreateModes.create(fsPermission,
+            new FsPermission(unmaskedPermission));
+      }
       int bufferSize = fs.getConf().getInt(HTTPFS_BUFFER_SIZE_KEY,
           HTTP_BUFFER_SIZE_DEFAULT);
       OutputStream os = fs.create(path, fsPermission, override, bufferSize, replication, blockSize, null);
@@ -523,7 +560,7 @@ public class FSOperations {
      * @return <code>true</code> if the delete operation was successful,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
@@ -557,7 +594,7 @@ public class FSOperations {
      *
      * @return a Map object (JSON friendly) with the file checksum.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -614,7 +651,7 @@ public class FSOperations {
      *
      * @return a JSON object with the user home directory.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     @SuppressWarnings("unchecked")
@@ -638,7 +675,7 @@ public class FSOperations {
     /**
      * Creates a list-status executor.
      *
-     * @param path the directory to retrieve the status of its contents.
+     * @param path the directory/file to retrieve the status of its contents.
      * @param filter glob filter to use.
      *
      * @throws IOException thrown if the filter expression is incorrect.
@@ -662,7 +699,7 @@ public class FSOperations {
     @Override
     public Map execute(FileSystem fs) throws IOException {
       FileStatus[] fileStatuses = fs.listStatus(path, filter);
-      return toJson(fileStatuses);
+      return toJson(fileStatuses, fs.getFileStatus(path).isFile());
     }
 
     @Override
@@ -673,6 +710,45 @@ public class FSOperations {
   }
 
   /**
+   * Executor that performs a batched directory listing.
+   */
+  @InterfaceAudience.Private
+  public static class FSListStatusBatch implements FileSystemAccess
+      .FileSystemExecutor<Map> {
+    private final Path path;
+    private final byte[] token;
+
+    public FSListStatusBatch(String path, byte[] token) throws IOException {
+      this.path = new Path(path);
+      this.token = token.clone();
+    }
+
+    /**
+     * Simple wrapper filesystem that exposes the protected batched
+     * listStatus API so we can use it.
+     */
+    private static class WrappedFileSystem extends FilterFileSystem {
+      public WrappedFileSystem(FileSystem f) {
+        super(f);
+      }
+
+      @Override
+      public DirectoryEntries listStatusBatch(Path f, byte[] token) throws
+          FileNotFoundException, IOException {
+        return super.listStatusBatch(f, token);
+      }
+    }
+
+    @Override
+    public Map execute(FileSystem fs) throws IOException {
+      WrappedFileSystem wrappedFS = new WrappedFileSystem(fs);
+      FileSystem.DirectoryEntries entries =
+          wrappedFS.listStatusBatch(path, token);
+      return toJson(entries, wrappedFS.getFileStatus(path).isFile());
+    }
+  }
+
+  /**
    * Executor that performs a mkdirs FileSystemAccess files system operation.
    */
   @InterfaceAudience.Private
@@ -680,16 +756,20 @@ public class FSOperations {
 
     private Path path;
     private short permission;
+    private short unmaskedPermission;
 
     /**
      * Creates a mkdirs executor.
      *
      * @param path directory path to create.
      * @param permission permission to use.
+     * @param unmaskedPermission unmasked permissions for the directory
      */
-    public FSMkdirs(String path, short permission) {
+    public FSMkdirs(String path, short permission,
+        short unmaskedPermission) {
       this.path = new Path(path);
       this.permission = permission;
+      this.unmaskedPermission = unmaskedPermission;
     }
 
     /**
@@ -700,11 +780,15 @@ public class FSOperations {
      * @return <code>true</code> if the mkdirs operation was successful,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
       FsPermission fsPermission = new FsPermission(permission);
+      if (unmaskedPermission != -1) {
+        fsPermission = FsCreateModes.create(fsPermission,
+            new FsPermission(unmaskedPermission));
+      }
       boolean mkdirs = fs.mkdirs(path, fsPermission);
       return toJSON(HttpFSFileSystem.MKDIRS_JSON, mkdirs);
     }
@@ -734,7 +818,7 @@ public class FSOperations {
      *
      * @return The inputstream of the file.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public InputStream execute(FileSystem fs) throws IOException {
@@ -772,7 +856,7 @@ public class FSOperations {
      * @return <code>true</code> if the rename operation was successful,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public JSONObject execute(FileSystem fs) throws IOException {
@@ -811,7 +895,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -848,7 +932,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -1039,6 +1123,29 @@ public class FSOperations {
   }
 
   /**
+   * Executor that performs getting trash root FileSystemAccess
+   * files system operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSTrashRoot
+      implements FileSystemAccess.FileSystemExecutor<JSONObject> {
+    private Path path;
+    public FSTrashRoot(String path) {
+      this.path = new Path(path);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public JSONObject execute(FileSystem fs) throws IOException {
+      Path trashRoot = fs.getTrashRoot(this.path);
+      JSONObject json = new JSONObject();
+      json.put(HttpFSFileSystem.TRASH_DIR_JSON, trashRoot.toUri().getPath());
+      return json;
+    }
+
+  }
+
+  /**
    * Executor that gets the ACL information for a given file.
    */
   @InterfaceAudience.Private
@@ -1098,7 +1205,7 @@ public class FSOperations {
      * @return <code>true</code> if the replication value was set,
      *         <code>false</code> otherwise.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     @SuppressWarnings("unchecked")
@@ -1140,7 +1247,7 @@ public class FSOperations {
      *
      * @return void.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Void execute(FileSystem fs) throws IOException {
@@ -1226,7 +1333,7 @@ public class FSOperations {
      *
      * @return Map a map object (JSON friendly) with the xattr names.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -1265,7 +1372,7 @@ public class FSOperations {
      *
      * @return Map a map object (JSON friendly) with the xattrs.
      *
-     * @throws IOException thrown if an IO error occured.
+     * @throws IOException thrown if an IO error occurred.
      */
     @Override
     public Map execute(FileSystem fs) throws IOException {
@@ -1278,7 +1385,6 @@ public class FSOperations {
       return xAttrsToJSON(xattrs, encoding);
     }
   }
-
 
   /**
    * Executor that performs a getAllStoragePolicies FileSystemAccess files
@@ -1362,6 +1468,110 @@ public class FSOperations {
     @Override
     public Void execute(FileSystem fs) throws IOException {
       fs.unsetStoragePolicy(path);
+      return null;
+    }
+  }
+
+  /**
+   *  Executor that performs a createSnapshot FileSystemAccess operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSCreateSnapshot implements
+      FileSystemAccess.FileSystemExecutor<String> {
+
+    private Path path;
+    private String snapshotName;
+
+    /**
+     * Creates a createSnapshot executor.
+     * @param path directory path to be snapshotted.
+     * @param snapshotName the snapshot name.
+     */
+    public FSCreateSnapshot(String path, String snapshotName) {
+      this.path = new Path(path);
+      this.snapshotName = snapshotName;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return <code>Path</code> the complete path for newly created snapshot
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public String execute(FileSystem fs) throws IOException {
+      Path snapshotPath = fs.createSnapshot(path, snapshotName);
+      JSONObject json = toJSON(HttpFSFileSystem.HOME_DIR_JSON,
+          snapshotPath.toString());
+      return json.toJSONString().replaceAll("\\\\", "");
+    }
+  }
+
+  /**
+   *  Executor that performs a deleteSnapshot FileSystemAccess operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSDeleteSnapshot implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+
+    private Path path;
+    private String snapshotName;
+
+    /**
+     * Creates a deleteSnapshot executor.
+     * @param path path for the snapshot to be deleted.
+     * @param snapshotName snapshot name.
+     */
+    public FSDeleteSnapshot(String path, String snapshotName) {
+      this.path = new Path(path);
+      this.snapshotName = snapshotName;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return void
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      fs.deleteSnapshot(path, snapshotName);
+      return null;
+    }
+  }
+
+  /**
+   *  Executor that performs a renameSnapshot FileSystemAccess operation.
+   */
+  @InterfaceAudience.Private
+  public static class FSRenameSnapshot implements
+      FileSystemAccess.FileSystemExecutor<Void> {
+    private Path path;
+    private String oldSnapshotName;
+    private String snapshotName;
+
+    /**
+     * Creates a renameSnapshot executor.
+     * @param path directory path of the snapshot to be renamed.
+     * @param oldSnapshotName current snapshot name.
+     * @param snapshotName new snapshot name to be set.
+     */
+    public FSRenameSnapshot(String path, String oldSnapshotName,
+                            String snapshotName) {
+      this.path = new Path(path);
+      this.oldSnapshotName = oldSnapshotName;
+      this.snapshotName = snapshotName;
+    }
+
+    /**
+     * Executes the filesystem operation.
+     * @param fs filesystem instance to use.
+     * @return void
+     * @throws IOException thrown if an IO error occurred.
+     */
+    @Override
+    public Void execute(FileSystem fs) throws IOException {
+      fs.renameSnapshot(path, oldSnapshotName, snapshotName);
       return null;
     }
   }

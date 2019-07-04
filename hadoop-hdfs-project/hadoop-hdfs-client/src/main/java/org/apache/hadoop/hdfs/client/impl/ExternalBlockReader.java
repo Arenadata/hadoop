@@ -26,6 +26,7 @@ import org.apache.hadoop.fs.ReadOption;
 import org.apache.hadoop.hdfs.BlockReader;
 import org.apache.hadoop.hdfs.ReplicaAccessor;
 import org.apache.hadoop.hdfs.shortcircuit.ClientMmap;
+import org.apache.hadoop.util.DataChecksum;
 
 /**
  * An ExternalBlockReader uses pluggable ReplicaAccessor objects to read from
@@ -111,11 +112,6 @@ public final class ExternalBlockReader implements BlockReader {
   }
 
   @Override
-  public boolean isLocal() {
-    return accessor.isLocal();
-  }
-
-  @Override
   public boolean isShortCircuit() {
     return accessor.isShortCircuit();
   }
@@ -124,5 +120,15 @@ public final class ExternalBlockReader implements BlockReader {
   public ClientMmap getClientMmap(EnumSet<ReadOption> opts) {
     // For now, pluggable ReplicaAccessors do not support zero-copy.
     return null;
+  }
+
+  @Override
+  public DataChecksum getDataChecksum() {
+    return null;
+  }
+
+  @Override
+  public int getNetworkDistance() {
+    return accessor.getNetworkDistance();
   }
 }

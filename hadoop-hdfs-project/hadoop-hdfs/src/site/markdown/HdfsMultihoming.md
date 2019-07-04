@@ -17,14 +17,7 @@ HDFS Support for Multihomed Networks
 
 This document is targetted to cluster administrators deploying `HDFS` in multihomed networks. Similar support for `YARN`/`MapReduce` is work in progress and will be documented when available.
 
-* [HDFS Support for Multihomed Networks](#HDFS_Support_for_Multihomed_Networks)
-    * [Multihoming Background](#Multihoming_Background)
-    * [Fixing Hadoop Issues In Multihomed Environments](#Fixing_Hadoop_Issues_In_Multihomed_Environments)
-        * [Ensuring HDFS Daemons Bind All Interfaces](#Ensuring_HDFS_Daemons_Bind_All_Interfaces)
-        * [Clients use Hostnames when connecting to DataNodes](#Clients_use_Hostnames_when_connecting_to_DataNodes)
-        * [DataNodes use HostNames when connecting to other DataNodes](#DataNodes_use_HostNames_when_connecting_to_other_DataNodes)
-    * [Multihoming and Hadoop Security](#Multihoming_and_Hadoop_Security)
-        * [Hostname Lookup](#Hostname_Lookup)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Multihoming Background
 ----------------------
@@ -86,7 +79,7 @@ The solution is to have separate setting for server endpoints to force binding t
       <name>dfs.namenode.http-bind-host</name>
       <value>0.0.0.0</value>
       <description>
-        The actual adress the HTTP server will bind to. If this optional address
+        The actual address the HTTP server will bind to. If this optional address
         is set, it overrides only the hostname portion of dfs.namenode.http-address.
         It can also be specified per name node or name service for HA/Federation.
         This is useful for making the name node HTTP server listen on all
@@ -98,7 +91,7 @@ The solution is to have separate setting for server endpoints to force binding t
       <name>dfs.namenode.https-bind-host</name>
       <value>0.0.0.0</value>
       <description>
-        The actual adress the HTTPS server will bind to. If this optional address
+        The actual address the HTTPS server will bind to. If this optional address
         is set, it overrides only the hostname portion of dfs.namenode.https-address.
         It can also be specified per name node or name service for HA/Federation.
         This is useful for making the name node HTTPS server listen on all

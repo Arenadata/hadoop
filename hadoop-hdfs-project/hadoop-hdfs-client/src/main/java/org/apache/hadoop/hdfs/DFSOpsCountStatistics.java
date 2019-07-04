@@ -64,6 +64,7 @@ public class DFSOpsCountStatistics extends StorageStatistics {
     GET_STATUS(CommonStatisticNames.OP_GET_STATUS),
     GET_STORAGE_POLICIES("op_get_storage_policies"),
     GET_STORAGE_POLICY("op_get_storage_policy"),
+    GET_TRASH_ROOT("op_get_trash_root"),
     GET_XATTR("op_get_xattr"),
     LIST_LOCATED_STATUS(CommonStatisticNames.OP_LIST_LOCATED_STATUS),
     LIST_STATUS(CommonStatisticNames.OP_LIST_STATUS),
@@ -86,6 +87,8 @@ public class DFSOpsCountStatistics extends StorageStatistics {
     SET_STORAGE_POLICY("op_set_storagePolicy"),
     SET_TIMES(CommonStatisticNames.OP_SET_TIMES),
     SET_XATTR("op_set_xattr"),
+    GET_SNAPSHOT_DIFF("op_get_snapshot_diff"),
+    GET_SNAPSHOTTABLE_DIRECTORY_LIST("op_get_snapshottable_directory_list"),
     TRUNCATE(CommonStatisticNames.OP_TRUNCATE),
     UNSET_STORAGE_POLICY("op_unset_storage_policy");
 

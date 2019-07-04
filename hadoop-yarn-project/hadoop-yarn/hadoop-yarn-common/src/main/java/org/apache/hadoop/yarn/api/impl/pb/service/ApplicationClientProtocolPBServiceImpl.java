@@ -55,8 +55,12 @@ import org.apache.hadoop.yarn.api.protocolrecords.ReservationListResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationPriorityResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.UpdateApplicationTimeoutsResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAllResourceProfilesResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetAllResourceTypeInfoResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.GetResourceProfileResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.CancelDelegationTokenRequestPBImpl;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.CancelDelegationTokenResponsePBImpl;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.FailApplicationAttemptRequestPBImpl;
@@ -111,8 +115,16 @@ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.SignalContainerRequest
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.SignalContainerResponsePBImpl;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.UpdateApplicationPriorityRequestPBImpl;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.UpdateApplicationPriorityResponsePBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.UpdateApplicationTimeoutsRequestPBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.UpdateApplicationTimeoutsResponsePBImpl;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.SubmitApplicationRequestPBImpl;
 import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.SubmitApplicationResponsePBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetAllResourceProfilesRequestPBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetAllResourceProfilesResponsePBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetAllResourceTypeInfoRequestPBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetAllResourceTypeInfoResponsePBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetResourceProfileRequestPBImpl;
+import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetResourceProfileResponsePBImpl;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.FailApplicationAttemptRequestProto;
@@ -162,8 +174,16 @@ import org.apache.hadoop.yarn.proto.YarnServiceProtos.ReservationListResponsePro
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.SignalContainerResponseProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.UpdateApplicationPriorityRequestProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.UpdateApplicationPriorityResponseProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.UpdateApplicationTimeoutsRequestProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.UpdateApplicationTimeoutsResponseProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.SubmitApplicationRequestProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.SubmitApplicationResponseProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetAllResourceProfilesResponseProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetAllResourceTypeInfoRequestProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetAllResourceTypeInfoResponseProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetAllResourceProfilesRequestProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetResourceProfileRequestProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetResourceProfileResponseProto;
 
 import com.google.protobuf.RpcController;
 import com.google.protobuf.ServiceException;
@@ -607,6 +627,71 @@ public class ApplicationClientProtocolPBServiceImpl implements ApplicationClient
       throw new ServiceException(e);
     } catch (IOException e) {
       throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public UpdateApplicationTimeoutsResponseProto updateApplicationTimeouts(
+      RpcController controller, UpdateApplicationTimeoutsRequestProto proto)
+      throws ServiceException {
+    UpdateApplicationTimeoutsRequestPBImpl request =
+        new UpdateApplicationTimeoutsRequestPBImpl(proto);
+    try {
+      UpdateApplicationTimeoutsResponse response =
+          real.updateApplicationTimeouts(request);
+      return ((UpdateApplicationTimeoutsResponsePBImpl) response).getProto();
+    } catch (YarnException e) {
+      throw new ServiceException(e);
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public GetAllResourceProfilesResponseProto getResourceProfiles(
+      RpcController controller, GetAllResourceProfilesRequestProto proto)
+      throws ServiceException {
+    GetAllResourceProfilesRequestPBImpl req =
+        new GetAllResourceProfilesRequestPBImpl(proto);
+    try {
+      GetAllResourceProfilesResponse resp = real.getResourceProfiles(req);
+      return ((GetAllResourceProfilesResponsePBImpl) resp).getProto();
+    } catch (YarnException ye) {
+      throw new ServiceException(ye);
+    } catch (IOException ie) {
+      throw new ServiceException(ie);
+    }
+  }
+
+  @Override
+  public GetResourceProfileResponseProto getResourceProfile(
+      RpcController controller, GetResourceProfileRequestProto proto)
+      throws ServiceException {
+    GetResourceProfileRequestPBImpl req =
+        new GetResourceProfileRequestPBImpl(proto);
+    try {
+      GetResourceProfileResponse resp = real.getResourceProfile(req);
+      return ((GetResourceProfileResponsePBImpl) resp).getProto();
+    } catch (YarnException ye) {
+      throw new ServiceException(ye);
+    } catch (IOException ie) {
+      throw new ServiceException(ie);
+    }
+  }
+
+  @Override
+  public GetAllResourceTypeInfoResponseProto getResourceTypeInfo(
+      RpcController controller, GetAllResourceTypeInfoRequestProto proto)
+      throws ServiceException {
+    GetAllResourceTypeInfoRequestPBImpl req = new GetAllResourceTypeInfoRequestPBImpl(
+        proto);
+    try {
+      GetAllResourceTypeInfoResponse resp = real.getResourceTypeInfo(req);
+      return ((GetAllResourceTypeInfoResponsePBImpl) resp).getProto();
+    } catch (YarnException ye) {
+      throw new ServiceException(ye);
+    } catch (IOException ie) {
+      throw new ServiceException(ie);
     }
   }
 }

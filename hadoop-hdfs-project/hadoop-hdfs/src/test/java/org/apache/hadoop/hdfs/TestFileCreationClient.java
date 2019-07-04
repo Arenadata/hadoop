@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 package org.apache.hadoop.hdfs;
+
 import static org.junit.Assert.assertEquals;
 
 import org.apache.hadoop.conf.Configuration;
@@ -29,21 +30,20 @@ import org.apache.hadoop.hdfs.server.namenode.LeaseManager;
 import org.apache.hadoop.hdfs.server.protocol.InterDatanodeProtocol;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
 import org.junit.Test;
+import org.slf4j.event.Level;
 
 /**
- * This class tests that a file need not be closed before its
- * data can be read by another client.
+ * This class tests client lease recovery.
  */
 public class TestFileCreationClient {
   static final String DIR = "/" + TestFileCreationClient.class.getSimpleName() + "/";
 
   {
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(LeaseManager.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(FSNamesystem.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(InterDatanodeProtocol.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(LeaseManager.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(FSNamesystem.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(InterDatanodeProtocol.LOG, Level.TRACE);
   }
 
   /** Test lease recovery Triggered by DFSClient. */

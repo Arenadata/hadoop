@@ -77,7 +77,7 @@ public class NameNodeLayoutVersion {
    * support downgrade.
    * </ul>
    */
-  public static enum Feature implements LayoutFeature {
+  public enum Feature implements LayoutFeature {
     ROLLING_UPGRADE(-55, -53, -55, "Support rolling upgrade", false),
     EDITLOG_LENGTH(-56, -56, "Add length field to every edit log op"),
     XATTRS(-57, -57, "Extended attributes"),
@@ -87,7 +87,8 @@ public class NameNodeLayoutVersion {
     BLOCK_STORAGE_POLICY(-60, -60, "Block Storage policy"),
     TRUNCATE(-61, -61, "Truncate"),
     APPEND_NEW_BLOCK(-62, -61, "Support appending to new block"),
-    QUOTA_BY_STORAGE_TYPE(-63, -61, "Support quota for specific storage types");
+    QUOTA_BY_STORAGE_TYPE(-63, -61, "Support quota for specific storage types"),
+    ERASURE_CODING(-64, -61, "Support erasure coding");
 
     private final FeatureInfo info;
 

@@ -25,9 +25,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -40,6 +40,7 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.api.ApplicationInitializationContext;
 import org.apache.hadoop.yarn.server.api.ApplicationTerminationContext;
+import org.apache.hadoop.yarn.server.api.AuxiliaryLocalPathHandler;
 import org.apache.hadoop.yarn.server.api.AuxiliaryService;
 import org.apache.hadoop.yarn.server.api.ContainerInitializationContext;
 import org.apache.hadoop.yarn.server.api.ContainerTerminationContext;
@@ -51,19 +52,22 @@ public class AuxServices extends AbstractService
 
   static final String STATE_STORE_ROOT_NAME = "nm-aux-services";
 
-  private static final Log LOG = LogFactory.getLog(AuxServices.class);
+  private static final Logger LOG =
+       LoggerFactory.getLogger(AuxServices.class);
 
   protected final Map<String,AuxiliaryService> serviceMap;
   protected final Map<String,ByteBuffer> serviceMetaData;
+  private final AuxiliaryLocalPathHandler auxiliaryLocalPathHandler;
 
   private final Pattern p = Pattern.compile("^[A-Za-z_]+[A-Za-z0-9_]*$");
 
-  public AuxServices() {
+  public AuxServices(AuxiliaryLocalPathHandler auxiliaryLocalPathHandler) {
     super(AuxServices.class.getName());
     serviceMap =
       Collections.synchronizedMap(new HashMap<String,AuxiliaryService>());
     serviceMetaData =
       Collections.synchronizedMap(new HashMap<String,ByteBuffer>());
+    this.auxiliaryLocalPathHandler = auxiliaryLocalPathHandler;
     // Obtain services from configuration in init()
   }
 
@@ -118,22 +122,42 @@ public class AuxServices extends AbstractService
                 YarnConfiguration.NM_AUX_SERVICES +" is invalid." +
                 "The valid service name should only contain a-zA-Z0-9_ " +
                 "and can not start with numbers");
-        Class<? extends AuxiliaryService> sClass = conf.getClass(
-              String.format(YarnConfiguration.NM_AUX_SERVICE_FMT, sName), null,
-              AuxiliaryService.class);
-        if (null == sClass) {
-          throw new RuntimeException("No class defined for " + sName);
+        String classKey = String.format(
+            YarnConfiguration.NM_AUX_SERVICE_FMT, sName);
+        String className = conf.get(classKey);
+        final String appClassPath = conf.get(String.format(
+            YarnConfiguration.NM_AUX_SERVICES_CLASSPATH, sName));
+        AuxiliaryService s = null;
+        boolean useCustomerClassLoader = appClassPath != null
+            && !appClassPath.isEmpty() && className != null
+            && !className.isEmpty();
+        if (useCustomerClassLoader) {
+          s = AuxiliaryServiceWithCustomClassLoader.getInstance(
+              conf, className, appClassPath);
+          LOG.info("The aux service:" + sName
+              + " are using the custom classloader");
+        } else {
+          Class<? extends AuxiliaryService> sClass = conf.getClass(
+              classKey, null, AuxiliaryService.class);
+
+          if (sClass == null) {
+            throw new RuntimeException("No class defined for " + sName);
+          }
+          s = ReflectionUtils.newInstance(sClass, conf);
         }
-        AuxiliaryService s = ReflectionUtils.newInstance(sClass, conf);
+        if (s == null) {
+          throw new RuntimeException("No object created for " + sName);
+        }
         // TODO better use s.getName()?
         if(!sName.equals(s.getName())) {
-          LOG.warn("The Auxilurary Service named '"+sName+"' in the "
-                  +"configuration is for "+sClass+" which has "
-                  +"a name of '"+s.getName()+"'. Because these are "
-                  +"not the same tools trying to send ServiceData and read "
-                  +"Service Meta Data may have issues unless the refer to "
-                  +"the name in the config.");
+          LOG.warn("The Auxiliary Service named '"+sName+"' in the "
+              +"configuration is for "+s.getClass()+" which has "
+              +"a name of '"+s.getName()+"'. Because these are "
+              +"not the same tools trying to send ServiceData and read "
+              +"Service Meta Data may have issues unless the refer to "
+              +"the name in the config.");
         }
+        s.setAuxiliaryLocalPathHandler(auxiliaryLocalPathHandler);
         addService(sName, s);
         if (recoveryEnabled) {
           Path storePath = new Path(stateStoreRoot, sName);
@@ -142,7 +166,7 @@ public class AuxServices extends AbstractService
         }
         s.init(conf);
       } catch (RuntimeException e) {
-        LOG.fatal("Failed to initialize " + sName, e);
+        LOG.error("Failed to initialize " + sName, e);
         throw e;
       }
     }
@@ -186,7 +210,7 @@ public class AuxServices extends AbstractService
 
   @Override
   public void stateChanged(Service service) {
-    LOG.fatal("Service " + service.getName() + " changed state: " +
+    LOG.error("Service " + service.getName() + " changed state: " +
         service.getServiceState());
     stop();
   }
@@ -224,7 +248,8 @@ public class AuxServices extends AbstractService
         for (AuxiliaryService serv : serviceMap.values()) {
           try {
             serv.initializeContainer(new ContainerInitializationContext(
-                event.getUser(), event.getContainer().getContainerId(),
+                event.getContainer().getUser(),
+                event.getContainer().getContainerId(),
                 event.getContainer().getResource(), event.getContainer()
                 .getContainerTokenIdentifier().getContainerType()));
           } catch (Throwable th) {

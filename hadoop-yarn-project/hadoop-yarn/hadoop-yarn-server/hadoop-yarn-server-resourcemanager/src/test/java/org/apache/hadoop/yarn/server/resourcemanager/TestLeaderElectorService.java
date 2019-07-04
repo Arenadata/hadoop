@@ -56,7 +56,6 @@ public class TestLeaderElectorService {
   MockRM rm1;
   MockRM rm2;
   TestingCluster zkCluster;
-  @SuppressWarnings("deprecation")
   @Before
   public void setUp() throws Exception {
     Logger rootLogger = LogManager.getRootLogger();

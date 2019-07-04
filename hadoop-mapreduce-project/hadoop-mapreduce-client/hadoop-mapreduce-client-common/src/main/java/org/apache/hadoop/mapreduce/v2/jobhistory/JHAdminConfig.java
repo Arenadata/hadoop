@@ -93,6 +93,10 @@ public class JHAdminConfig {
    **/
   public static final String MR_HISTORY_INTERMEDIATE_DONE_DIR =
     MR_HISTORY_PREFIX + "intermediate-done-dir";
+  public static final String MR_HISTORY_INTERMEDIATE_USER_DONE_DIR_PERMISSIONS =
+      MR_HISTORY_PREFIX + "intermediate-user-done-dir.permissions";
+  public static final short
+      DEFAULT_MR_HISTORY_INTERMEDIATE_USER_DONE_DIR_PERMISSIONS = 0770;
   
   /** Size of the job list cache.*/
   public static final String MR_HISTORY_JOBLIST_CACHE_SIZE =
@@ -225,11 +229,39 @@ public class JHAdminConfig {
       + "jobname.limit";
   public static final int DEFAULT_MR_HS_JOBNAME_LIMIT = 50;
 
+
+  /**
+   * CSRF settings.
+   */
+  public static final String MR_HISTORY_CSRF_PREFIX = MR_HISTORY_PREFIX +
+                                                      "webapp.rest-csrf.";
+  public static final String MR_HISTORY_CSRF_ENABLED = MR_HISTORY_CSRF_PREFIX +
+                                                       "enabled";
+  public static final String MR_HISTORY_CSRF_CUSTOM_HEADER =
+      MR_HISTORY_CSRF_PREFIX + "custom-header";
+  public static final String MR_HISTORY_METHODS_TO_IGNORE =
+      MR_HISTORY_CSRF_PREFIX + "methods-to-ignore";
+
+  /**
+   * XFS settings.
+   */
+  public static final String MR_HISTORY_XFS_PREFIX = MR_HISTORY_PREFIX +
+      "webapp.xfs-filter.";
+  public static final String MR_HISTORY_XFS_OPTIONS = MR_HISTORY_XFS_PREFIX +
+      "xframe-options";
+
   /**
    * Settings for .jhist file format.
    */
   public static final String MR_HS_JHIST_FORMAT =
       MR_HISTORY_PREFIX + "jhist.format";
   public static final String DEFAULT_MR_HS_JHIST_FORMAT =
-      "json";
+      "binary";
+
+  /**
+   * The maximum number of tasks for a job to be loaded in Job History Server.
+   */
+  public static final String MR_HS_LOADED_JOBS_TASKS_MAX =
+      MR_HISTORY_PREFIX + "loadedjob.tasks.max";
+  public static final int DEFAULT_MR_HS_LOADED_JOBS_TASKS_MAX = -1;
 }

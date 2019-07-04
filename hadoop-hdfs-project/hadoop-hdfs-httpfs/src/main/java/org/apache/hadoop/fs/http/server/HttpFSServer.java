@@ -18,12 +18,14 @@
 
 package org.apache.hadoop.fs.http.server;
 
+import com.google.common.base.Charsets;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.XAttrCodec;
 import org.apache.hadoop.fs.XAttrSetFlag;
 import org.apache.hadoop.fs.http.client.HttpFSFileSystem;
+import org.apache.hadoop.fs.http.client.HttpFSUtils;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.AccessTimeParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.AclPermissionParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.BlockSizeParam;
@@ -35,6 +37,7 @@ import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.LenParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.ModifiedTimeParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.NewLengthParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.OffsetParam;
+import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.OldSnapshotNameParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.OperationParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.OverwriteParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.OwnerParam;
@@ -43,10 +46,13 @@ import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.PolicyNameParam
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.RecursiveParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.ReplicationParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.SourcesParam;
+import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.UnmaskedPermissionParam;
+import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.SnapshotNameParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.XAttrEncodingParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.XAttrNameParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.XAttrSetFlagParam;
 import org.apache.hadoop.fs.http.server.HttpFSParametersProvider.XAttrValueParam;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.lib.service.FileSystemAccess;
 import org.apache.hadoop.lib.service.FileSystemAccessException;
 import org.apache.hadoop.lib.service.Groups;
@@ -76,7 +82,6 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.UriBuilder;
 import javax.ws.rs.core.UriInfo;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -168,7 +173,7 @@ public class HttpFSServer {
    * {@link HttpFSExceptionProvider}.
    */
   @GET
-  @Produces(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
   public Response getRoot(@QueryParam(OperationParam.NAME) OperationParam op,
                           @Context Parameters params,
                           @Context HttpServletRequest request)
@@ -197,7 +202,8 @@ public class HttpFSServer {
    */
   @GET
   @Path("{path:.*}")
-  @Produces({MediaType.APPLICATION_OCTET_STREAM, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.APPLICATION_OCTET_STREAM + "; " + JettyUtils.UTF_8,
+      MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8})
   public Response get(@PathParam("path") String path,
                       @QueryParam(OperationParam.NAME) OperationParam op,
                       @Context Parameters params,
@@ -322,6 +328,28 @@ public class HttpFSServer {
       response = Response.ok(json).type(MediaType.APPLICATION_JSON).build();
       break;
     }
+    case LISTSTATUS_BATCH: {
+      String startAfter = params.get(
+          HttpFSParametersProvider.StartAfterParam.NAME,
+          HttpFSParametersProvider.StartAfterParam.class);
+      byte[] token = HttpFSUtils.EMPTY_BYTES;
+      if (startAfter != null) {
+        token = startAfter.getBytes(Charsets.UTF_8);
+      }
+      FSOperations.FSListStatusBatch command = new FSOperations
+          .FSListStatusBatch(path, token);
+      @SuppressWarnings("rawtypes") Map json = fsExecute(user, command);
+      AUDIT_LOG.info("[{}] token [{}]", path, token);
+      response = Response.ok(json).type(MediaType.APPLICATION_JSON).build();
+      break;
+    }
+    case GETTRASHROOT: {
+      FSOperations.FSTrashRoot command = new FSOperations.FSTrashRoot(path);
+      JSONObject json = fsExecute(user, command);
+      AUDIT_LOG.info("[{}]", path);
+      response = Response.ok(json).type(MediaType.APPLICATION_JSON).build();
+      break;
+    }
     case GETALLSTORAGEPOLICY: {
       FSOperations.FSGetAllStoragePolicies command =
           new FSOperations.FSGetAllStoragePolicies();
@@ -364,7 +392,7 @@ public class HttpFSServer {
    */
   @DELETE
   @Path("{path:.*}")
-  @Produces(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
   public Response delete(@PathParam("path") String path,
                          @QueryParam(OperationParam.NAME) OperationParam op,
                          @Context Parameters params,
@@ -384,6 +412,16 @@ public class HttpFSServer {
           new FSOperations.FSDelete(path, recursive);
         JSONObject json = fsExecute(user, command);
         response = Response.ok(json).type(MediaType.APPLICATION_JSON).build();
+        break;
+      }
+      case DELETESNAPSHOT: {
+        String snapshotName = params.get(SnapshotNameParam.NAME,
+            SnapshotNameParam.class);
+        FSOperations.FSDeleteSnapshot command =
+                new FSOperations.FSDeleteSnapshot(path, snapshotName);
+        fsExecute(user, command);
+        AUDIT_LOG.info("[{}] deleted snapshot [{}]", path, snapshotName);
+        response = Response.ok().build();
         break;
       }
       default: {
@@ -415,7 +453,7 @@ public class HttpFSServer {
   @POST
   @Path("{path:.*}")
   @Consumes({"*/*"})
-  @Produces({MediaType.APPLICATION_JSON})
+  @Produces({MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8})
   public Response post(InputStream is,
                        @Context UriInfo uriInfo,
                        @PathParam("path") String path,
@@ -518,7 +556,7 @@ public class HttpFSServer {
   @PUT
   @Path("{path:.*}")
   @Consumes({"*/*"})
-  @Produces({MediaType.APPLICATION_JSON})
+  @Produces({MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8})
   public Response put(InputStream is,
                        @Context UriInfo uriInfo,
                        @PathParam("path") String path,
@@ -541,6 +579,8 @@ public class HttpFSServer {
         } else {
           Short permission = params.get(PermissionParam.NAME,
                                          PermissionParam.class);
+          Short unmaskedPermission = params.get(UnmaskedPermissionParam.NAME,
+              UnmaskedPermissionParam.class);
           Boolean override = params.get(OverwriteParam.NAME,
                                         OverwriteParam.class);
           Short replication = params.get(ReplicationParam.NAME,
@@ -549,13 +589,25 @@ public class HttpFSServer {
                                       BlockSizeParam.class);
           FSOperations.FSCreate command =
             new FSOperations.FSCreate(is, path, permission, override,
-                                      replication, blockSize);
+                replication, blockSize, unmaskedPermission);
           fsExecute(user, command);
           AUDIT_LOG.info(
-            "[{}] permission [{}] override [{}] replication [{}] blockSize [{}]",
-            new Object[]{path, permission, override, replication, blockSize});
+              "[{}] permission [{}] override [{}] "+
+              "replication [{}] blockSize [{}] unmaskedpermission [{}]",
+              new Object[]{path, permission,  override, replication, blockSize,
+                  unmaskedPermission});
           response = Response.status(Response.Status.CREATED).build();
         }
+        break;
+      }
+      case CREATESNAPSHOT: {
+        String snapshotName = params.get(SnapshotNameParam.NAME,
+            SnapshotNameParam.class);
+        FSOperations.FSCreateSnapshot command =
+            new FSOperations.FSCreateSnapshot(path, snapshotName);
+        String json = fsExecute(user, command);
+        AUDIT_LOG.info("[{}] snapshot created as [{}]", path, snapshotName);
+        response = Response.ok(json).type(MediaType.APPLICATION_JSON).build();
         break;
       }
       case SETXATTR: {
@@ -573,6 +625,20 @@ public class HttpFSServer {
         response = Response.ok().build();
         break;
       }
+      case RENAMESNAPSHOT: {
+        String oldSnapshotName = params.get(OldSnapshotNameParam.NAME,
+            OldSnapshotNameParam.class);
+        String snapshotName = params.get(SnapshotNameParam.NAME,
+            SnapshotNameParam.class);
+        FSOperations.FSRenameSnapshot command =
+                new FSOperations.FSRenameSnapshot(path, oldSnapshotName,
+                    snapshotName);
+        fsExecute(user, command);
+        AUDIT_LOG.info("[{}] renamed snapshot [{}] to [{}]", path,
+            oldSnapshotName, snapshotName);
+        response = Response.ok().build();
+        break;
+      }
       case REMOVEXATTR: {
         String xattrName = params.get(XAttrNameParam.NAME, XAttrNameParam.class);
         FSOperations.FSRemoveXAttr command = new FSOperations.FSRemoveXAttr(
@@ -585,10 +651,13 @@ public class HttpFSServer {
       case MKDIRS: {
         Short permission = params.get(PermissionParam.NAME,
                                        PermissionParam.class);
+        Short unmaskedPermission = params.get(UnmaskedPermissionParam.NAME,
+            UnmaskedPermissionParam.class);
         FSOperations.FSMkdirs command =
-          new FSOperations.FSMkdirs(path, permission);
+            new FSOperations.FSMkdirs(path, permission, unmaskedPermission);
         JSONObject json = fsExecute(user, command);
-        AUDIT_LOG.info("[{}] permission [{}]", path, permission);
+        AUDIT_LOG.info("[{}] permission [{}] unmaskedpermission [{}]",
+            path, permission, unmaskedPermission);
         response = Response.ok(json).type(MediaType.APPLICATION_JSON).build();
         break;
       }

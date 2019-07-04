@@ -42,8 +42,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 /**
- * This class tests that a file need not be closed before its
- * data can be read by another client.
+ * This class tests that data nodes are correctly replaced on failure.
  */
 public class TestReplaceDatanodeOnFailure {
   static final Log LOG = LogFactory.getLog(TestReplaceDatanodeOnFailure.class);
@@ -67,7 +66,7 @@ public class TestReplaceDatanodeOnFailure {
     final DatanodeInfo[][] datanodes = new DatanodeInfo[infos.length + 1][];
     datanodes[0] = new DatanodeInfo[0];
     for(int i = 0; i < infos.length; ) {
-      infos[i] = DFSTestUtil.getLocalDatanodeInfo(50020 + i);
+      infos[i] = DFSTestUtil.getLocalDatanodeInfo(9867 + i);
       i++;
       datanodes[i] = new DatanodeInfo[i];
       System.arraycopy(infos, 0, datanodes[i], 0, datanodes[i].length);
@@ -119,7 +118,8 @@ public class TestReplaceDatanodeOnFailure {
   public void testReplaceDatanodeOnFailure() throws Exception {
     final Configuration conf = new HdfsConfiguration();
     // do not consider load factor when selecting a data node
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY, false);
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
+        false);
     //always replace a datanode
     ReplaceDatanodeOnFailure.write(Policy.ALWAYS, true, conf);
 

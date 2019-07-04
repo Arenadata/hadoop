@@ -32,17 +32,18 @@ import org.apache.hadoop.hdfs.web.resources.DoAsParam;
 import org.apache.hadoop.hdfs.web.resources.HttpOpParam;
 import org.apache.hadoop.hdfs.web.resources.LengthParam;
 import org.apache.hadoop.hdfs.web.resources.NamenodeAddressParam;
+import org.apache.hadoop.hdfs.web.resources.NoRedirectParam;
 import org.apache.hadoop.hdfs.web.resources.OffsetParam;
 import org.apache.hadoop.hdfs.web.resources.OverwriteParam;
 import org.apache.hadoop.hdfs.web.resources.PermissionParam;
 import org.apache.hadoop.hdfs.web.resources.ReplicationParam;
+import org.apache.hadoop.hdfs.web.resources.UnmaskedPermissionParam;
 import org.apache.hadoop.hdfs.web.resources.UserParam;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.token.Token;
 
 import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.EnumSet;
 import java.util.List;
@@ -57,8 +58,7 @@ class ParameterParser {
   private final Map<String, List<String>> params;
 
   ParameterParser(QueryStringDecoder decoder, Configuration conf) {
-    this.path = decodeComponent(decoder.path().substring(WEBHDFS_PREFIX_LENGTH),
-        StandardCharsets.UTF_8);
+    this.path = decoder.path().substring(WEBHDFS_PREFIX_LENGTH);
     this.params = decoder.parameters();
     this.conf = conf;
   }
@@ -103,11 +103,22 @@ class ParameterParser {
   }
 
   FsPermission permission() {
-    return new PermissionParam(param(PermissionParam.NAME)).getFsPermission();
+    return new PermissionParam(param(PermissionParam.NAME)).
+        getFileFsPermission();
+  }
+
+  FsPermission unmaskedPermission() {
+    String value = param(UnmaskedPermissionParam.NAME);
+    return value == null ? null :
+        new UnmaskedPermissionParam(value).getFileFsPermission();
   }
 
   boolean overwrite() {
     return new OverwriteParam(param(OverwriteParam.NAME)).getValue();
+  }
+
+  boolean noredirect() {
+    return new NoRedirectParam(param(NoRedirectParam.NAME)).getValue();
   }
 
   Token<DelegationTokenIdentifier> delegationToken() throws IOException {
@@ -131,9 +142,13 @@ class ParameterParser {
   }
 
   public EnumSet<CreateFlag> createFlag() {
-    String cf =
-        decodeComponent(param(CreateFlagParam.NAME), StandardCharsets.UTF_8);
-
+    String cf = "";
+    if (param(CreateFlagParam.NAME) != null) {
+      QueryStringDecoder decoder = new QueryStringDecoder(
+          param(CreateFlagParam.NAME),
+          StandardCharsets.UTF_8);
+      cf = decoder.path();
+    }
     return new CreateFlagParam(cf).getValue();
   }
 
@@ -144,61 +159,6 @@ class ParameterParser {
   private String param(String key) {
     List<String> p = params.get(key);
     return p == null ? null : p.get(0);
-  }
-
-  /**
-   * The following function behaves exactly the same as netty's
-   * <code>QueryStringDecoder#decodeComponent</code> except that it
-   * does not decode the '+' character as space. WebHDFS takes this scheme
-   * to maintain the backward-compatibility for pre-2.7 releases.
-   */
-  private static String decodeComponent(final String s, final Charset charset) {
-    if (s == null) {
-      return "";
-    }
-    final int size = s.length();
-    boolean modified = false;
-    for (int i = 0; i < size; i++) {
-      final char c = s.charAt(i);
-      if (c == '%' || c == '+') {
-        modified = true;
-        break;
-      }
-    }
-    if (!modified) {
-      return s;
-    }
-    final byte[] buf = new byte[size];
-    int pos = 0;  // position in `buf'.
-    for (int i = 0; i < size; i++) {
-      char c = s.charAt(i);
-      if (c == '%') {
-        if (i == size - 1) {
-          throw new IllegalArgumentException("unterminated escape sequence at" +
-                                                 " end of string: " + s);
-        }
-        c = s.charAt(++i);
-        if (c == '%') {
-          buf[pos++] = '%';  // "%%" -> "%"
-          break;
-        }
-        if (i == size - 1) {
-          throw new IllegalArgumentException("partial escape sequence at end " +
-                                                 "of string: " + s);
-        }
-        c = decodeHexNibble(c);
-        final char c2 = decodeHexNibble(s.charAt(++i));
-        if (c == Character.MAX_VALUE || c2 == Character.MAX_VALUE) {
-          throw new IllegalArgumentException(
-              "invalid escape sequence `%" + s.charAt(i - 1) + s.charAt(
-                  i) + "' at index " + (i - 2) + " of: " + s);
-        }
-        c = (char) (c * 16 + c2);
-        // Fall through.
-      }
-      buf[pos++] = (byte) c;
-    }
-    return new String(buf, 0, pos, charset);
   }
 
   /**

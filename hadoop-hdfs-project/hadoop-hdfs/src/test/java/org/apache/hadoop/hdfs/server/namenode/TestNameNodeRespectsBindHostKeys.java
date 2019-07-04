@@ -22,13 +22,13 @@ import static org.junit.Assert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.hamcrest.core.IsNot.not;
 
-import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.junit.Test;
 
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
+import org.apache.hadoop.test.GenericTestUtils;
 
 import java.io.File;
 import java.io.IOException;
@@ -240,12 +240,11 @@ public class TestNameNodeRespectsBindHostKeys {
     }
   }
 
-  private static final String BASEDIR = System.getProperty("test.build.dir",
-      "target/test-dir") + "/" + TestNameNodeRespectsBindHostKeys.class.getSimpleName();
+  private static final String BASEDIR = GenericTestUtils
+      .getTempPath(TestNameNodeRespectsBindHostKeys.class.getSimpleName());
 
   private static void setupSsl() throws Exception {
     Configuration conf = new Configuration();
-    conf.setBoolean(HdfsClientConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
     conf.set(DFSConfigKeys.DFS_HTTP_POLICY_KEY, HttpConfig.Policy.HTTPS_ONLY.name());
     conf.set(DFS_NAMENODE_HTTPS_ADDRESS_KEY, "localhost:0");
     conf.set(DFSConfigKeys.DFS_DATANODE_HTTPS_ADDRESS_KEY, "localhost:0");

@@ -15,30 +15,7 @@
 HDFS High Availability
 ======================
 
-* [HDFS High Availability](#HDFS_High_Availability)
-    * [Purpose](#Purpose)
-    * [Note: Using the Quorum Journal Manager or Conventional Shared Storage](#Note:_Using_the_Quorum_Journal_Manager_or_Conventional_Shared_Storage)
-    * [Background](#Background)
-    * [Architecture](#Architecture)
-    * [Hardware resources](#Hardware_resources)
-    * [Deployment](#Deployment)
-        * [Configuration overview](#Configuration_overview)
-        * [Configuration details](#Configuration_details)
-        * [Deployment details](#Deployment_details)
-        * [Administrative commands](#Administrative_commands)
-    * [Automatic Failover](#Automatic_Failover)
-        * [Introduction](#Introduction)
-        * [Components](#Components)
-        * [Deploying ZooKeeper](#Deploying_ZooKeeper)
-        * [Before you begin](#Before_you_begin)
-        * [Configuring automatic failover](#Configuring_automatic_failover)
-        * [Initializing HA state in ZooKeeper](#Initializing_HA_state_in_ZooKeeper)
-        * [Starting the cluster with start-dfs.sh](#Starting_the_cluster_with_start-dfs.sh)
-        * [Starting the cluster manually](#Starting_the_cluster_manually)
-        * [Securing access to ZooKeeper](#Securing_access_to_ZooKeeper)
-        * [Verifying automatic failover](#Verifying_automatic_failover)
-    * [Automatic Failover FAQ](#Automatic_Failover_FAQ)
-    * [BookKeeper as a Shared storage (EXPERIMENTAL)](#BookKeeper_as_a_Shared_storage_EXPERIMENTAL)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Purpose
 -------
@@ -65,18 +42,18 @@ This impacted the total availability of the HDFS cluster in two major ways:
 * Planned maintenance events such as software or hardware upgrades on the
   NameNode machine would result in windows of cluster downtime.
 
-The HDFS High Availability feature addresses the above problems by providing the option of running two redundant NameNodes in the same cluster in an Active/Passive configuration with a hot standby. This allows a fast failover to a new NameNode in the case that a machine crashes, or a graceful administrator-initiated failover for the purpose of planned maintenance.
+The HDFS High Availability feature addresses the above problems by providing the option of running two (or more, as of Hadoop 3.0.0) redundant NameNodes in the same cluster in an Active/Passive configuration with a hot standby(s). This allows a fast failover to a new NameNode in the case that a machine crashes, or a graceful administrator-initiated failover for the purpose of planned maintenance.
 
 Architecture
 ------------
 
-In a typical HA cluster, two separate machines are configured as NameNodes. At any point in time, exactly one of the NameNodes is in an *Active* state, and the other is in a *Standby* state. The Active NameNode is responsible for all client operations in the cluster, while the Standby is simply acting as a slave, maintaining enough state to provide a fast failover if necessary.
+In a typical HA cluster, two or more separate machines are configured as NameNodes. At any point in time, exactly one of the NameNodes is in an *Active* state, and the others are in a *Standby* state. The Active NameNode is responsible for all client operations in the cluster, while the Standby is simply acting as a slave, maintaining enough state to provide a fast failover if necessary.
 
-In order for the Standby node to keep its state synchronized with the Active node, the current implementation requires that the two nodes both have access to a directory on a shared storage device (eg an NFS mount from a NAS). This restriction will likely be relaxed in future versions.
+In order for the Standby nodes to keep their state synchronized with the Active node, the current implementation requires that the nodes have access to a directory on a shared storage device (eg an NFS mount from a NAS). This restriction will likely be relaxed in future versions.
 
-When any namespace modification is performed by the Active node, it durably logs a record of the modification to an edit log file stored in the shared directory. The Standby node is constantly watching this directory for edits, and as it sees the edits, it applies them to its own namespace. In the event of a failover, the Standby will ensure that it has read all of the edits from the shared storage before promoting itself to the Active state. This ensures that the namespace state is fully synchronized before a failover occurs.
+When any namespace modification is performed by the Active node, it durably logs a record of the modification to an edit log file stored in the shared directory. The Standby nodes are constantly watching this directory for edits, and as it sees the edits, it applies them to its own namespace. In the event of a failover, the Standby will ensure that it has read all of the edits from the shared storage before promoting itself to the Active state. This ensures that the namespace state is fully synchronized before a failover occurs.
 
-In order to provide a fast failover, it is also necessary that the Standby node have up-to-date information regarding the location of blocks in the cluster. In order to achieve this, the DataNodes are configured with the location of both NameNodes, and send block location information and heartbeats to both.
+In order to provide a fast failover, it is also necessary that the Standby nodes have up-to-date information regarding the location of blocks in the cluster. In order to achieve this, the DataNodes are configured with the location of all NameNodes, and send block location information and heartbeats to all the NameNodes.
 
 It is vital for the correct operation of an HA cluster that only one of the NameNodes be Active at a time. Otherwise, the namespace state would quickly diverge between the two, risking data loss or other incorrect results. In order to ensure this property and prevent the so-called "split-brain scenario," the administrator must configure at least one *fencing method* for the shared storage. During a failover, if it cannot be verified that the previous Active node has relinquished its Active state, the fencing process is responsible for cutting off the previous Active's access to the shared edits storage. This prevents it from making any further edits to the namespace, allowing the new Active to safely proceed with failover.
 
@@ -87,9 +64,9 @@ In order to deploy an HA cluster, you should prepare the following:
 
 * **NameNode machines** - the machines on which you run the Active and Standby NameNodes should have equivalent hardware to each other, and equivalent hardware to what would be used in a non-HA cluster.
 
-* **Shared storage** - you will need to have a shared directory which both NameNode machines can have read/write access to. Typically this is a remote filer which supports NFS and is mounted on each of the NameNode machines. Currently only a single shared edits directory is supported. Thus, the availability of the system is limited by the availability of this shared edits directory, and therefore in order to remove all single points of failure there needs to be redundancy for the shared edits directory. Specifically, multiple network paths to the storage, and redundancy in the storage itself (disk, network, and power). Beacuse of this, it is recommended that the shared storage server be a high-quality dedicated NAS appliance rather than a simple Linux server.
+* **Shared storage** - you will need to have a shared directory which the NameNode machines have read/write access to. Typically this is a remote filer which supports NFS and is mounted on each of the NameNode machines. Currently only a single shared edits directory is supported. Thus, the availability of the system is limited by the availability of this shared edits directory, and therefore in order to remove all single points of failure there needs to be redundancy for the shared edits directory. Specifically, multiple network paths to the storage, and redundancy in the storage itself (disk, network, and power). Because of this, it is recommended that the shared storage server be a high-quality dedicated NAS appliance rather than a simple Linux server.
 
-Note that, in an HA cluster, the Standby NameNode also performs checkpoints of the namespace state, and thus it is not necessary to run a Secondary NameNode, CheckpointNode, or BackupNode in an HA cluster. In fact, to do so would be an error. This also allows one who is reconfiguring a non-HA-enabled HDFS cluster to be HA-enabled to reuse the hardware which they had previously dedicated to the Secondary NameNode.
+Note that, in an HA cluster, the Standby NameNodes also perform checkpoints of the namespace state, and thus it is not necessary to run a Secondary NameNode, CheckpointNode, or BackupNode in an HA cluster. In fact, to do so would be an error. This also allows one who is reconfiguring a non-HA-enabled HDFS cluster to be HA-enabled to reuse the hardware which they had previously dedicated to the Secondary NameNode.
 
 Deployment
 ----------
@@ -124,22 +101,20 @@ The order in which you set these configurations is unimportant, but the values y
 
     Configure with a list of comma-separated NameNode IDs. This will be used by
     DataNodes to determine all the NameNodes in the cluster. For example, if you
-    used "mycluster" as the nameservice ID previously, and you wanted to use "nn1"
-    and "nn2" as the individual IDs of the NameNodes, you would configure this as
+    used "mycluster" as the nameservice ID previously, and you wanted to use "nn1","nn2" and "nn3" as the individual IDs of the NameNodes, you would configure this as
     such:
 
         <property>
           <name>dfs.ha.namenodes.mycluster</name>
-          <value>nn1,nn2</value>
+          <value>nn1,nn2,nn3</value>
         </property>
 
-    **Note:** Currently, only a maximum of two NameNodes may be configured per
-    nameservice.
+    **Note:** The minimum number of NameNodes for HA is two, but you can configure more. Its suggested to not exceed 5 - with a recommended 3 NameNodes - due to communication overheads.
 
 *   **dfs.namenode.rpc-address.[nameservice ID].[name node ID]** - the fully-qualified RPC address for each NameNode to listen on
 
     For both of the previously-configured NameNode IDs, set the full address and
-    IPC port of the NameNode processs. Note that this results in two separate
+    IPC port of the NameNode process. Note that this results in two separate
     configuration options. For example:
 
         <property>
@@ -149,6 +124,10 @@ The order in which you set these configurations is unimportant, but the values y
         <property>
           <name>dfs.namenode.rpc-address.mycluster.nn2</name>
           <value>machine2.example.com:8020</value>
+        </property>
+        <property>
+          <name>dfs.namenode.rpc-address.mycluster.nn3</name>
+          <value>machine3.example.com:8020</value>
         </property>
 
     **Note:** You may similarly configure the "**servicerpc-address**" setting if
@@ -161,11 +140,15 @@ The order in which you set these configurations is unimportant, but the values y
 
         <property>
           <name>dfs.namenode.http-address.mycluster.nn1</name>
-          <value>machine1.example.com:50070</value>
+          <value>machine1.example.com:9870</value>
         </property>
         <property>
           <name>dfs.namenode.http-address.mycluster.nn2</name>
-          <value>machine2.example.com:50070</value>
+          <value>machine2.example.com:9870</value>
+        </property>
+        <property>
+          <name>dfs.namenode.http-address.mycluster.nn3</name>
+          <value>machine3.example.com:9870</value>
         </property>
 
     **Note:** If you have Hadoop's security features enabled, you should also set
@@ -174,9 +157,9 @@ The order in which you set these configurations is unimportant, but the values y
 *   **dfs.namenode.shared.edits.dir** - the location of the shared storage directory
 
     This is where one configures the path to the remote shared edits directory
-    which the Standby NameNode uses to stay up-to-date with all the file system
+    which the Standby NameNodes use to stay up-to-date with all the file system
     changes the Active NameNode makes. **You should only configure one of these
-    directories.** This directory should be mounted r/w on both NameNode machines.
+    directories.** This directory should be mounted r/w on the NameNode machines.
     The value of this setting should be the absolute path to this directory on the
     NameNode machines. For example:
 
@@ -206,7 +189,7 @@ The order in which you set these configurations is unimportant, but the values y
     It is critical for correctness of the system that only one NameNode be in the
     Active state at any given time. Thus, during a failover, we first ensure that
     the Active NameNode is either in the Standby state, or the process has
-    terminated, before transitioning the other NameNode to the Active state. In
+    terminated, before transitioning another NameNode to the Active state. In
     order to do this, you must configure at least one **fencing method.** These are
     configured as a carriage-return-separated list, which will be attempted in order
     until one indicates that fencing has succeeded. There are two methods which
@@ -323,7 +306,7 @@ After all of the necessary configuration options have been set, one must initial
 * If you have already formatted the NameNode, or are converting a
   non-HA-enabled cluster to be HA-enabled, you should now copy over the
   contents of your NameNode metadata directories to the other, unformatted
-  NameNode by running the command "*hdfs namenode -bootstrapStandby*" on the
+  NameNodes by running the command "*hdfs namenode -bootstrapStandby*" on the
   unformatted NameNode. Running this command will also ensure that the shared
   edits directory (as configured by **dfs.namenode.shared.edits.dir**) contains
   sufficient edits transactions to be able to start both NameNodes.
@@ -332,7 +315,7 @@ After all of the necessary configuration options have been set, one must initial
   command "*hdfs -initializeSharedEdits*", which will initialize the shared
   edits directory with the edits data from the local NameNode edits directories.
 
-At this point you may start both of your HA NameNodes as you normally would start a NameNode.
+At this point you may start all of your HA NameNodes as you normally would start a NameNode.
 
 You can visit each of the NameNodes' web pages separately by browsing to their configured HTTP addresses. You should notice that next to the configured address will be the HA state of the NameNode (either "standby" or "active".) Whenever an HA NameNode starts, it is initially in the Standby state.
 
@@ -345,6 +328,7 @@ Now that your HA NameNodes are configured and started, you will have access to s
         [-transitionToStandby <serviceId>]
         [-failover [--forcefence] [--forceactive] <serviceId> <serviceId>]
         [-getServiceState <serviceId>]
+        [-getAllServiceState]
         [-checkHealth <serviceId>]
         [-help <command>]
 
@@ -375,6 +359,11 @@ This guide describes high-level uses of each of these subcommands. For specific 
     either "standby" or "active" to STDOUT appropriately. This subcommand might be
     used by cron jobs or monitoring scripts which need to behave differently based
     on whether the NameNode is currently Active or Standby.
+
+*   **getAllServiceState** - returns the state of all the NameNodes
+
+    Connect to the configured NameNodes to determine the current state, print
+    either "standby" or "active" to STDOUT appropriately.
 
 *   **checkHealth** - check the health of the given NameNode
 
@@ -469,7 +458,7 @@ There are also several other configuration parameters which may be set to contro
 
 After the configuration keys have been added, the next step is to initialize required state in ZooKeeper. You can do so by running the following command from one of the NameNode hosts.
 
-    [hdfs]$ $HADOOP_PREFIX/bin/zkfc -formatZK
+    [hdfs]$ $HADOOP_HOME/bin/zkfc -formatZK
 
 This will create a znode in ZooKeeper inside of which the automatic failover system stores its data.
 
@@ -481,7 +470,7 @@ Since automatic failover has been enabled in the configuration, the `start-dfs.s
 
 If you manually manage the services on your cluster, you will need to manually start the `zkfc` daemon on each of the machines that runs a NameNode. You can start the daemon by running:
 
-    [hdfs]$ $HADOOP_PREFIX/sbin/hadoop-daemon.sh --script $HADOOP_PREFIX/bin/hdfs start zkfc
+    [hdfs]$ $HADOOP_HOME/bin/hdfs --daemon start zkfc
 
 ### Securing access to ZooKeeper
 
@@ -498,7 +487,7 @@ In order to secure the information in ZooKeeper, first add the following to your
        <value>@/path/to/zk-acl.txt</value>
      </property>
 
-Please note the '@' character in these values -- this specifies that the configurations are not inline, but rather point to a file on disk.
+Please note the '@' character in these values -- this specifies that the configurations are not inline, but rather point to a file on disk. The authentication info may also be read via a CredentialProvider (pls see the CredentialProviderAPI Guide in the hadoop-common project).
 
 The first configured file specifies a list of ZooKeeper authentications, in the same format as used by the ZK CLI. For example, you may specify something like:
 
@@ -565,117 +554,4 @@ Automatic Failover FAQ
     Even if automatic failover is configured, you may initiate a manual failover
     using the same `hdfs haadmin` command. It will perform a coordinated
     failover.
-
-BookKeeper as a Shared storage (EXPERIMENTAL)
----------------------------------------------
-
-One option for shared storage for the NameNode is BookKeeper. BookKeeper achieves high availability and strong durability guarantees by replicating edit log entries across multiple storage nodes. The edit log can be striped across the storage nodes for high performance. Fencing is supported in the protocol, i.e, BookKeeper will not allow two writers to write the single edit log.
-
-The meta data for BookKeeper is stored in ZooKeeper. In current HA architecture, a Zookeeper cluster is required for ZKFC. The same cluster can be for BookKeeper metadata.
-
-For more details on building a BookKeeper cluster, please refer to the [BookKeeper documentation](http://zookeeper.apache.org/bookkeeper/docs/trunk/bookkeeperConfig.html )
-
-The BookKeeperJournalManager is an implementation of the HDFS JournalManager interface, which allows custom write ahead logging implementations to be plugged into the HDFS NameNode.
-
-*   **BookKeeper Journal Manager**
-
-    To use BookKeeperJournalManager, add the following to hdfs-site.xml.
-
-            <property>
-              <name>dfs.namenode.shared.edits.dir</name>
-              <value>bookkeeper://zk1:2181;zk2:2181;zk3:2181/hdfsjournal</value>
-            </property>
-
-            <property>
-              <name>dfs.namenode.edits.journal-plugin.bookkeeper</name>
-              <value>org.apache.hadoop.contrib.bkjournal.BookKeeperJournalManager</value>
-            </property>
-
-    The URI format for bookkeeper is `bookkeeper://[zkEnsemble]/[rootZnode] [zookkeeper ensemble]`
-    is a list of semi-colon separated, zookeeper host:port
-    pairs. In the example above there are 3 servers, in the ensemble,
-    zk1, zk2 & zk3, each one listening on port 2181.
-
-    `[root znode]` is the path of the zookeeper znode, under which the edit log
-    information will be stored.
-
-    The class specified for the journal-plugin must be available in the NameNode's
-    classpath. We explain how to generate a jar file with the journal manager and
-    its dependencies, and how to put it into the classpath below.
-
-*   **More configuration options**
-
-    *   **dfs.namenode.bookkeeperjournal.output-buffer-size** -
-        Number of bytes a bookkeeper journal stream will buffer before
-        forcing a flush. Default is 1024.
-
-                   <property>
-                     <name>dfs.namenode.bookkeeperjournal.output-buffer-size</name>
-                     <value>1024</value>
-                   </property>
-
-    *   **dfs.namenode.bookkeeperjournal.ensemble-size** -
-    Number of bookkeeper servers in edit log ensembles. This
-    is the number of bookkeeper servers which need to be available
-    for the edit log to be writable. Default is 3.
-
-                   <property>
-                     <name>dfs.namenode.bookkeeperjournal.ensemble-size</name>
-                     <value>3</value>
-                   </property>
-
-    * **dfs.namenode.bookkeeperjournal.quorum-size** -
-    Number of bookkeeper servers in the write quorum. This is the
-    number of bookkeeper servers which must have acknowledged the
-    write of an entry before it is considered written. Default is 2.
-
-                   <property>
-                     <name>dfs.namenode.bookkeeperjournal.quorum-size</name>
-                     <value>2</value>
-                   </property>
-
-    * **dfs.namenode.bookkeeperjournal.digestPw** -
-    Password to use when creating edit log segments.
-
-                   <property>
-                    <name>dfs.namenode.bookkeeperjournal.digestPw</name>
-                    <value>myPassword</value>
-                   </property>
-
-    * **dfs.namenode.bookkeeperjournal.zk.session.timeout** -
-    Session timeout for Zookeeper client from BookKeeper Journal Manager.
-    Hadoop recommends that this value should be less than the ZKFC
-    session timeout value. Default value is 3000.
-
-                   <property>
-                     <name>dfs.namenode.bookkeeperjournal.zk.session.timeout</name>
-                     <value>3000</value>
-                   </property>
-
-*   **Building BookKeeper Journal Manager plugin jar**
-
-    To generate the distribution packages for BK journal, do the following.
-
-    $ mvn clean package -Pdist
-
-    This will generate a jar with the BookKeeperJournalManager,
-    hadoop-hdfs/src/contrib/bkjournal/target/hadoop-hdfs-bkjournal-*VERSION*.jar
-
-    Note that the -Pdist part of the build command is important, this would
-    copy the dependent bookkeeper-server jar under
-    hadoop-hdfs/src/contrib/bkjournal/target/lib.
-
-*   **Putting the BookKeeperJournalManager in the NameNode classpath**
-
-    To run a HDFS namenode using BookKeeper as a backend, copy the bkjournal and
-    bookkeeper-server jar, mentioned above, into the lib directory of hdfs. In the
-    standard distribution of HDFS, this is at $HADOOP\_HDFS\_HOME/share/hadoop/hdfs/lib/
-
-    cp hadoop-hdfs/src/contrib/bkjournal/target/hadoop-hdfs-bkjournal-*VERSION*.jar $HADOOP\_HDFS\_HOME/share/hadoop/hdfs/lib/
-
-*   **Current limitations**
-
-    1) Security in BookKeeper. BookKeeper does not support SASL nor SSL for
-    connections between the NameNode and BookKeeper storage nodes.
-
 

@@ -55,6 +55,8 @@ import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo.Capability;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
+import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
+import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
 import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
@@ -70,6 +72,8 @@ import org.apache.hadoop.security.UserGroupInformation;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.protobuf.RpcController;
 import com.google.protobuf.ServiceException;
+
+import javax.annotation.Nonnull;
 
 /**
  * This class is the client side translator to translate the requests made on
@@ -132,7 +136,9 @@ public class DatanodeProtocolClientSideTranslatorPB implements
       StorageReport[] reports, long cacheCapacity, long cacheUsed,
       int xmitsInProgress, int xceiverCount, int failedVolumes,
       VolumeFailureSummary volumeFailureSummary,
-      boolean requestFullBlockReportLease) throws IOException {
+      boolean requestFullBlockReportLease,
+      @Nonnull SlowPeerReports slowPeers,
+      @Nonnull SlowDiskReports slowDisks) throws IOException {
     HeartbeatRequestProto.Builder builder = HeartbeatRequestProto.newBuilder()
         .setRegistration(PBHelper.convert(registration))
         .setXmitsInProgress(xmitsInProgress).setXceiverCount(xceiverCount)
@@ -148,6 +154,12 @@ public class DatanodeProtocolClientSideTranslatorPB implements
     if (volumeFailureSummary != null) {
       builder.setVolumeFailureSummary(PBHelper.convertVolumeFailureSummary(
           volumeFailureSummary));
+    }
+    if (slowPeers.haveSlowPeers()) {
+      builder.addAllSlowPeers(PBHelper.convertSlowPeerInfo(slowPeers));
+    }
+    if (slowDisks.haveSlowDisks()) {
+      builder.addAllSlowDisks(PBHelper.convertSlowDiskInfo(slowDisks));
     }
     HeartbeatResponseProto resp;
     try {
@@ -174,12 +186,13 @@ public class DatanodeProtocolClientSideTranslatorPB implements
 
   @Override
   public DatanodeCommand blockReport(DatanodeRegistration registration,
-      String poolId, StorageBlockReport[] reports, BlockReportContext context)
+      String poolId, StorageBlockReport[] reports,
+      BlockReportContext context)
         throws IOException {
     BlockReportRequestProto.Builder builder = BlockReportRequestProto
         .newBuilder().setRegistration(PBHelper.convert(registration))
         .setBlockPoolId(poolId);
-    
+
     boolean useBlocksBuffer = registration.getNamespaceInfo()
         .isCapabilitySupported(Capability.STORAGE_BLOCK_REPORT_BUFFERS);
 
@@ -283,7 +296,7 @@ public class DatanodeProtocolClientSideTranslatorPB implements
     ReportBadBlocksRequestProto.Builder builder = ReportBadBlocksRequestProto
         .newBuilder();
     for (int i = 0; i < blocks.length; i++) {
-      builder.addBlocks(i, PBHelperClient.convert(blocks[i]));
+      builder.addBlocks(i, PBHelperClient.convertLocatedBlock(blocks[i]));
     }
     ReportBadBlocksRequestProto req = builder.build();
     try {

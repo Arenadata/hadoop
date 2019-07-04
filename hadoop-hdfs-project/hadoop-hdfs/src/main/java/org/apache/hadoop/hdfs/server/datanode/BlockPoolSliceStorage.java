@@ -20,8 +20,8 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -36,6 +36,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.HardLink;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NodeType;
@@ -146,24 +147,27 @@ public class BlockPoolSliceStorage extends Storage {
    * @throws IOException
    */
   private StorageDirectory loadStorageDirectory(NamespaceInfo nsInfo,
-      File dataDir, StartupOption startOpt,
+      StorageLocation location, StartupOption startOpt,
       List<Callable<StorageDirectory>> callables, Configuration conf)
           throws IOException {
-    StorageDirectory sd = new StorageDirectory(dataDir, null, true);
+    StorageDirectory sd = new StorageDirectory(
+        nsInfo.getBlockPoolID(), null, true, location);
     try {
-      StorageState curState = sd.analyzeStorage(startOpt, this);
+      StorageState curState = sd.analyzeStorage(startOpt, this, true);
       // sd is locked but not opened
       switch (curState) {
       case NORMAL:
         break;
       case NON_EXISTENT:
-        LOG.info("Block pool storage directory " + dataDir + " does not exist");
-        throw new IOException("Storage directory " + dataDir
-            + " does not exist");
+        LOG.info("Block pool storage directory for location {} and block pool"
+            + " id {} does not exist", location, nsInfo.getBlockPoolID());
+        throw new IOException("Storage directory for location " + location +
+            " and block pool id " + nsInfo.getBlockPoolID() +
+            " does not exist");
       case NOT_FORMATTED: // format
-        LOG.info("Block pool storage directory " + dataDir
-            + " is not formatted for " + nsInfo.getBlockPoolID()
-            + ". Formatting ...");
+        LOG.info("Block pool storage directory for location {} and block pool"
+                + " id {} is not formatted. Formatting ...", location,
+            nsInfo.getBlockPoolID());
         format(sd, nsInfo);
         break;
       default:  // recovery part is common
@@ -207,24 +211,22 @@ public class BlockPoolSliceStorage extends Storage {
    * @throws IOException on error
    */
   List<StorageDirectory> loadBpStorageDirectories(NamespaceInfo nsInfo,
-      Collection<File> dataDirs, StartupOption startOpt,
+      StorageLocation location, StartupOption startOpt,
       List<Callable<StorageDirectory>> callables, Configuration conf)
           throws IOException {
     List<StorageDirectory> succeedDirs = Lists.newArrayList();
     try {
-      for (File dataDir : dataDirs) {
-        if (containsStorageDir(dataDir)) {
-          throw new IOException(
-              "BlockPoolSliceStorage.recoverTransitionRead: " +
-                  "attempt to load an used block storage: " + dataDir);
-        }
-        final StorageDirectory sd = loadStorageDirectory(
-            nsInfo, dataDir, startOpt, callables, conf);
-        succeedDirs.add(sd);
+      if (containsStorageDir(location, nsInfo.getBlockPoolID())) {
+        throw new IOException(
+            "BlockPoolSliceStorage.recoverTransitionRead: " +
+                "attempt to load an used block storage: " + location);
       }
+      final StorageDirectory sd = loadStorageDirectory(
+          nsInfo, location, startOpt, callables, conf);
+      succeedDirs.add(sd);
     } catch (IOException e) {
-      LOG.warn("Failed to analyze storage directories for block pool "
-          + nsInfo.getBlockPoolID(), e);
+      LOG.warn("Failed to analyze storage directories for block pool {}",
+          nsInfo.getBlockPoolID(), e);
       throw e;
     }
     return succeedDirs;
@@ -243,12 +245,13 @@ public class BlockPoolSliceStorage extends Storage {
    * @throws IOException on error
    */
   List<StorageDirectory> recoverTransitionRead(NamespaceInfo nsInfo,
-      Collection<File> dataDirs, StartupOption startOpt,
+      StorageLocation location, StartupOption startOpt,
       List<Callable<StorageDirectory>> callables, Configuration conf)
           throws IOException {
-    LOG.info("Analyzing storage directories for bpid " + nsInfo.getBlockPoolID());
+    LOG.info("Analyzing storage directories for bpid {}", nsInfo
+        .getBlockPoolID());
     final List<StorageDirectory> loaded = loadBpStorageDirectories(
-        nsInfo, dataDirs, startOpt, callables, conf);
+        nsInfo, location, startOpt, callables, conf);
     for (StorageDirectory sd : loaded) {
       addStorageDir(sd);
     }
@@ -274,8 +277,8 @@ public class BlockPoolSliceStorage extends Storage {
    * @throws IOException Signals that an I/O exception has occurred.
    */
   private void format(StorageDirectory bpSdir, NamespaceInfo nsInfo) throws IOException {
-    LOG.info("Formatting block pool " + blockpoolID + " directory "
-        + bpSdir.getCurrentDir());
+    LOG.info("Formatting block pool {} directory {}", blockpoolID, bpSdir
+        .getCurrentDir());
     bpSdir.clearDirectory(); // create directory
     this.layoutVersion = HdfsServerConstants.DATANODE_LAYOUT_VERSION;
     this.cTime = nsInfo.getCTime();
@@ -291,12 +294,12 @@ public class BlockPoolSliceStorage extends Storage {
    */
   void remove(File absPathToRemove) {
     Preconditions.checkArgument(absPathToRemove.isAbsolute());
-    LOG.info("Removing block level storage: " + absPathToRemove);
-    for (Iterator<StorageDirectory> it = this.storageDirs.iterator();
+    LOG.info("Removing block level storage: {}", absPathToRemove);
+    for (Iterator<StorageDirectory> it = getStorageDirs().iterator();
          it.hasNext(); ) {
       StorageDirectory sd = it.next();
       if (sd.getRoot().getAbsoluteFile().equals(absPathToRemove)) {
-        it.remove();
+        getStorageDirs().remove(sd);
         break;
       }
     }
@@ -357,6 +360,9 @@ public class BlockPoolSliceStorage extends Storage {
   private boolean doTransition(StorageDirectory sd, NamespaceInfo nsInfo,
       StartupOption startOpt, List<Callable<StorageDirectory>> callables,
       Configuration conf) throws IOException {
+    if (sd.getStorageLocation().getStorageType() == StorageType.PROVIDED) {
+      return false; // regular startup for PROVIDED storage directories
+    }
     if (startOpt == StartupOption.ROLLBACK && sd.getPreviousDir().exists()) {
       Preconditions.checkState(!getTrashRootDir(sd).exists(),
           sd.getPreviousDir() + " and " + getTrashRootDir(sd) + " should not " +
@@ -368,7 +374,7 @@ public class BlockPoolSliceStorage extends Storage {
       // during rolling upgrade rollback. They are deleted during rolling
       // upgrade downgrade.
       int restored = restoreBlockFilesFromTrash(getTrashRootDir(sd));
-      LOG.info("Restored " + restored + " block files from trash.");
+      LOG.info("Restored {} block files from trash.", restored);
     }
     readProperties(sd);
     checkVersionUpgradable(this.layoutVersion);
@@ -392,9 +398,9 @@ public class BlockPoolSliceStorage extends Storage {
     }
     if (this.layoutVersion > HdfsServerConstants.DATANODE_LAYOUT_VERSION) {
       int restored = restoreBlockFilesFromTrash(getTrashRootDir(sd));
-      LOG.info("Restored " + restored + " block files from trash " +
-        "before the layout upgrade. These blocks will be moved to " +
-        "the previous directory during the upgrade");
+      LOG.info("Restored {} block files from trash " +
+          "before the layout upgrade. These blocks will be moved to " +
+          "the previous directory during the upgrade", restored);
     }
     if (this.layoutVersion > HdfsServerConstants.DATANODE_LAYOUT_VERSION
         || this.cTime < nsInfo.getCTime()) {
@@ -436,12 +442,15 @@ public class BlockPoolSliceStorage extends Storage {
         LayoutVersion.Feature.FEDERATION, layoutVersion)) {
       return;
     }
+    // no upgrades for storage directories that are PROVIDED
+    if (bpSd.getRoot() == null) {
+      return;
+    }
     final int oldLV = getLayoutVersion();
-    LOG.info("Upgrading block pool storage directory " + bpSd.getRoot()
-        + ".\n   old LV = " + oldLV
-        + "; old CTime = " + this.getCTime()
-        + ".\n   new LV = " + HdfsServerConstants.DATANODE_LAYOUT_VERSION
-        + "; new CTime = " + nsInfo.getCTime());
+    LOG.info("Upgrading block pool storage directory {}.\n   old LV = {}; old"
+        + " CTime = {}.\n   new LV = {}; new CTime = {}",
+        bpSd.getRoot(), oldLV, this.getCTime(), HdfsServerConstants
+            .DATANODE_LAYOUT_VERSION, nsInfo.getCTime());
     // get <SD>/previous directory
     String dnRoot = getDataNodeStorageRoot(bpSd.getRoot().getCanonicalPath());
     StorageDirectory dnSdStorage = new StorageDirectory(new File(dnRoot));
@@ -497,7 +506,7 @@ public class BlockPoolSliceStorage extends Storage {
     // 4.rename <SD>/current/<bpid>/previous.tmp to
     // <SD>/current/<bpid>/previous
     rename(bpTmpDir, bpPrevDir);
-    LOG.info("Upgrade of " + name + " is complete");
+    LOG.info("Upgrade of {} is complete", name);
   }
 
   /**
@@ -558,8 +567,8 @@ public class BlockPoolSliceStorage extends Storage {
         // Failsafe - we should not hit this case but let's make sure
         // we never overwrite a newer version of a block file with an
         // older version.
-        LOG.info("Not overwriting " + newChild + " with smaller file from " +
-                     "trash directory. This message can be safely ignored.");
+        LOG.info("Not overwriting {} with smaller file from " +
+            "trash directory. This message can be safely ignored.", newChild);
       } else if (!child.renameTo(newChild)) {
         throw new IOException("Failed to rename " + child + " to " + newChild);
       } else {
@@ -586,8 +595,9 @@ public class BlockPoolSliceStorage extends Storage {
       throws IOException {
     File prevDir = bpSd.getPreviousDir();
     // regular startup if previous dir does not exist
-    if (!prevDir.exists())
+    if (prevDir == null || !prevDir.exists()) {
       return;
+    }
     // read attributes out of the VERSION file of previous directory
     BlockPoolSliceStorage prevInfo = new BlockPoolSliceStorage();
     prevInfo.readPreviousVersionProperties(bpSd);
@@ -604,10 +614,10 @@ public class BlockPoolSliceStorage extends Storage {
               + " is newer than the namespace state: LV = "
               + HdfsServerConstants.DATANODE_LAYOUT_VERSION + " CTime = " + nsInfo.getCTime());
     }
-    
-    LOG.info("Rolling back storage directory " + bpSd.getRoot()
-        + ".\n   target LV = " + nsInfo.getLayoutVersion()
-        + "; target CTime = " + nsInfo.getCTime());
+
+    LOG.info("Rolling back storage directory {}.\n   target LV = {}; target "
+            + "CTime = {}", bpSd.getRoot(), nsInfo.getLayoutVersion(),
+        nsInfo.getCTime());
     File tmpDir = bpSd.getRemovedTmp();
     assert !tmpDir.exists() : "removed.tmp directory must not exist.";
     // 1. rename current to tmp
@@ -620,7 +630,7 @@ public class BlockPoolSliceStorage extends Storage {
     
     // 3. delete removed.tmp dir
     deleteDir(tmpDir);
-    LOG.info("Rollback of " + bpSd.getRoot() + " is complete");
+    LOG.info("Rollback of {} is complete", bpSd.getRoot());
   }
 
   /*
@@ -628,6 +638,9 @@ public class BlockPoolSliceStorage extends Storage {
    * that holds the snapshot.
    */
   void doFinalize(File dnCurDir) throws IOException {
+    if (dnCurDir == null) {
+      return; //we do nothing if the directory is null
+    }
     File bpRoot = getBpRoot(blockpoolID, dnCurDir);
     StorageDirectory bpSd = new StorageDirectory(bpRoot);
     // block pool level previous directory
@@ -636,9 +649,9 @@ public class BlockPoolSliceStorage extends Storage {
       return; // already finalized
     }
     final String dataDirPath = bpSd.getRoot().getCanonicalPath();
-    LOG.info("Finalizing upgrade for storage directory " + dataDirPath
-        + ".\n   cur LV = " + this.getLayoutVersion() + "; cur CTime = "
-        + this.getCTime());
+    LOG.info("Finalizing upgrade for storage directory {}.\n   cur LV = {}; "
+            + "cur CTime = {}", dataDirPath, this.getLayoutVersion(),
+        this.getCTime());
     assert bpSd.getCurrentDir().exists() : "Current directory must exist.";
     
     // rename previous to finalized.tmp
@@ -652,9 +665,9 @@ public class BlockPoolSliceStorage extends Storage {
         try {
           deleteDir(tmpDir);
         } catch (IOException ex) {
-          LOG.error("Finalize upgrade for " + dataDirPath + " failed.", ex);
+          LOG.error("Finalize upgrade for {} failed.", dataDirPath, ex);
         }
-        LOG.info("Finalize upgrade for " + dataDirPath + " is complete.");
+        LOG.info("Finalize upgrade for {} is complete.", dataDirPath);
       }
 
       @Override
@@ -680,8 +693,8 @@ public class BlockPoolSliceStorage extends Storage {
         diskLayoutVersion, hardLink, conf);
     DataStorage.linkBlocks(fromDir, toDir, DataStorage.STORAGE_DIR_RBW,
         diskLayoutVersion, hardLink, conf);
-    LOG.info("Linked blocks from " + fromDir + " to " + toDir + ". "
-        + hardLink.linkStats.report());
+    LOG.info("Linked blocks from {} to {}. {}", fromDir, toDir,
+        hardLink.linkStats.report());
   }
 
   /**
@@ -741,7 +754,20 @@ public class BlockPoolSliceStorage extends Storage {
    *
    * @return the trash directory for a given block file that is being deleted.
    */
-  public String getTrashDirectory(File blockFile) {
+  public String getTrashDirectory(ReplicaInfo info) {
+
+    URI blockURI = info.getBlockURI();
+    try{
+      File blockFile = new File(blockURI);
+      return getTrashDirectory(blockFile);
+    } catch (IllegalArgumentException e) {
+      LOG.warn("Failed to get block file for replica {}", info, e);
+    }
+
+    return null;
+  }
+
+  private String getTrashDirectory(File blockFile) {
     if (isTrashAllowed(blockFile)) {
       Matcher matcher = BLOCK_POOL_CURRENT_PATH_PATTERN.matcher(blockFile.getParent());
       String trashDirectory = matcher.replaceFirst("$1$2" + TRASH_ROOT_DIR + "$4");
@@ -763,7 +789,7 @@ public class BlockPoolSliceStorage extends Storage {
   String getRestoreDirectory(File blockFile) {
     Matcher matcher = BLOCK_POOL_TRASH_PATH_PATTERN.matcher(blockFile.getParent());
     String restoreDirectory = matcher.replaceFirst("$1$2" + STORAGE_DIR_CURRENT + "$4");
-    LOG.info("Restoring " + blockFile + " to " + restoreDirectory);
+    LOG.info("Restoring {} to {}", blockFile, restoreDirectory);
     return restoreDirectory;
   }
 
@@ -772,11 +798,11 @@ public class BlockPoolSliceStorage extends Storage {
    */
   public void clearTrash() {
     final List<File> trashRoots = new ArrayList<>();
-    for (StorageDirectory sd : storageDirs) {
+    for (StorageDirectory sd : getStorageDirs()) {
       File trashRoot = getTrashRootDir(sd);
       if (trashRoot.exists() && sd.getPreviousDir().exists()) {
         LOG.error("Trash and PreviousDir shouldn't both exist for storage "
-            + "directory " + sd);
+            + "directory {}", sd);
         assert false;
       } else {
         trashRoots.add(trashRoot);
@@ -789,7 +815,7 @@ public class BlockPoolSliceStorage extends Storage {
       public void run() {
         for(File trashRoot : trashRoots){
           FileUtil.fullyDelete(trashRoot);
-          LOG.info("Cleared trash for storage directory " + trashRoot);
+          LOG.info("Cleared trash for storage directory {}", trashRoot);
         }
       }
 
@@ -810,7 +836,7 @@ public class BlockPoolSliceStorage extends Storage {
   /** trash is enabled if at least one storage directory contains trash root */
   @VisibleForTesting
   public boolean trashEnabled() {
-    for (StorageDirectory sd : storageDirs) {
+    for (StorageDirectory sd : getStorageDirs()) {
       if (getTrashRootDir(sd).exists()) {
         return true;
       }
@@ -825,13 +851,16 @@ public class BlockPoolSliceStorage extends Storage {
   public void setRollingUpgradeMarkers(List<StorageDirectory> dnStorageDirs)
       throws IOException {
     for (StorageDirectory sd : dnStorageDirs) {
+      if (sd.getCurrentDir() == null) {
+        return;
+      }
       File bpRoot = getBpRoot(blockpoolID, sd.getCurrentDir());
       File markerFile = new File(bpRoot, ROLLING_UPGRADE_MARKER_FILE);
       if (!storagesWithRollingUpgradeMarker.contains(bpRoot.toString())) {
         if (!markerFile.exists() && markerFile.createNewFile()) {
-          LOG.info("Created " + markerFile);
+          LOG.info("Created {}", markerFile);
         } else {
-          LOG.info(markerFile + " already exists.");
+          LOG.info("{} already exists.", markerFile);
         }
         storagesWithRollingUpgradeMarker.add(bpRoot.toString());
         storagesWithoutRollingUpgradeMarker.remove(bpRoot.toString());
@@ -847,14 +876,17 @@ public class BlockPoolSliceStorage extends Storage {
   public void clearRollingUpgradeMarkers(List<StorageDirectory> dnStorageDirs)
       throws IOException {
     for (StorageDirectory sd : dnStorageDirs) {
+      if (sd.getCurrentDir() == null) {
+        continue;
+      }
       File bpRoot = getBpRoot(blockpoolID, sd.getCurrentDir());
       File markerFile = new File(bpRoot, ROLLING_UPGRADE_MARKER_FILE);
       if (!storagesWithoutRollingUpgradeMarker.contains(bpRoot.toString())) {
         if (markerFile.exists()) {
-          LOG.info("Deleting " + markerFile);
+          LOG.info("Deleting {}", markerFile);
           doFinalize(sd.getCurrentDir());
           if (!markerFile.delete()) {
-            LOG.warn("Failed to delete " + markerFile);
+            LOG.warn("Failed to delete {}", markerFile);
           }
         }
         storagesWithoutRollingUpgradeMarker.add(bpRoot.toString());

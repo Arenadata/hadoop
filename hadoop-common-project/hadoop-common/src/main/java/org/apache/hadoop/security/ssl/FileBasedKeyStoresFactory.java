@@ -18,12 +18,12 @@
 package org.apache.hadoop.security.ssl;
 
 import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -47,8 +47,8 @@ import java.text.MessageFormat;
 @InterfaceStability.Evolving
 public class FileBasedKeyStoresFactory implements KeyStoresFactory {
 
-  private static final Log LOG =
-    LogFactory.getLog(FileBasedKeyStoresFactory.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(FileBasedKeyStoresFactory.class);
 
   public static final String SSL_KEYSTORE_LOCATION_TPL_KEY =
     "ssl.{0}.keystore.location";
@@ -136,7 +136,7 @@ public class FileBasedKeyStoresFactory implements KeyStoresFactory {
 
     boolean requireClientCert =
       conf.getBoolean(SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY,
-          SSLFactory.DEFAULT_SSL_REQUIRE_CLIENT_CERT);
+          SSLFactory.SSL_REQUIRE_CLIENT_CERT_DEFAULT);
 
     // certificate store
     String keystoreType =
@@ -202,8 +202,10 @@ public class FileBasedKeyStoresFactory implements KeyStoresFactory {
           SSL_TRUSTSTORE_PASSWORD_TPL_KEY);
       String truststorePassword = getPassword(conf, passwordProperty, "");
       if (truststorePassword.isEmpty()) {
-        throw new GeneralSecurityException("The property '" + passwordProperty +
-            "' has not been set in the ssl configuration file.");
+        // An empty trust store password is legal; the trust store password
+        // is only required when writing to a trust store. Otherwise it's
+        // an optional integrity check.
+        truststorePassword = null;
       }
       long truststoreReloadInterval =
           conf.getLong(

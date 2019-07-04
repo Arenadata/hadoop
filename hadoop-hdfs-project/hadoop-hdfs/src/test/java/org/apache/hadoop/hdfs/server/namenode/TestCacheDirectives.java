@@ -295,6 +295,35 @@ public class TestCacheDirectives {
 
     info = new CachePoolInfo("pool2");
     dfs.addCachePool(info);
+
+    // Perform cache pool operations using a closed file system.
+    DistributedFileSystem dfs1 = (DistributedFileSystem) cluster
+        .getNewFileSystemInstance(0);
+    dfs1.close();
+    try {
+      dfs1.listCachePools();
+      fail("listCachePools using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfs1.addCachePool(info);
+      fail("addCachePool using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfs1.modifyCachePool(info);
+      fail("modifyCachePool using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfs1.removeCachePool(poolName);
+      fail("removeCachePool using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
   }
 
   @Test(timeout=60000)
@@ -391,6 +420,9 @@ public class TestCacheDirectives {
         setMode(new FsPermission((short)0777)));
     proto.addCachePool(new CachePoolInfo("pool4").
         setMode(new FsPermission((short)0)));
+    proto.addCachePool(new CachePoolInfo("pool5").
+        setMode(new FsPermission((short)0007))
+        .setOwnerName(unprivilegedUser.getShortUserName()));
 
     CacheDirectiveInfo alpha = new CacheDirectiveInfo.Builder().
         setPath(new Path("/alpha")).
@@ -458,6 +490,18 @@ public class TestCacheDirectives {
     }
 
     long deltaId = addAsUnprivileged(delta);
+
+    try {
+      addAsUnprivileged(new CacheDirectiveInfo.Builder().
+          setPath(new Path("/epsilon")).
+          setPool("pool5").
+          build());
+      fail("expected an error when adding to a pool with " +
+          "mode 007 (no permissions for pool owner).");
+    } catch (AccessControlException e) {
+      GenericTestUtils.
+          assertExceptionContains("Permission denied while accessing pool", e);
+    }
 
     // We expect the following to succeed, because DistributedFileSystem
     // qualifies the path.
@@ -537,6 +581,35 @@ public class TestCacheDirectives {
     dfs.modifyCacheDirective(new CacheDirectiveInfo.Builder(
         directive).setId(id).setReplication((short)2).build());
     dfs.removeCacheDirective(id);
+
+    // Perform cache directive operations using a closed file system.
+    DistributedFileSystem dfs1 = (DistributedFileSystem) cluster
+        .getNewFileSystemInstance(0);
+    dfs1.close();
+    try {
+      dfs1.listCacheDirectives(null);
+      fail("listCacheDirectives using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfs1.addCacheDirective(alpha);
+      fail("addCacheDirective using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfs1.modifyCacheDirective(alpha);
+      fail("modifyCacheDirective using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
+    try {
+      dfs1.removeCacheDirective(alphaId);
+      fail("removeCacheDirective using a closed filesystem!");
+    } catch (IOException ioe) {
+      GenericTestUtils.assertExceptionContains("Filesystem closed", ioe);
+    }
   }
 
   @Test(timeout=60000)

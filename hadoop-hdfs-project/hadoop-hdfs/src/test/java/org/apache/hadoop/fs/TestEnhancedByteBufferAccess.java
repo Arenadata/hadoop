@@ -49,7 +49,6 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
-import org.apache.hadoop.hdfs.client.impl.DfsClientConf;
 import org.apache.hadoop.hdfs.protocol.CacheDirectiveInfo;
 import org.apache.hadoop.hdfs.protocol.CachePoolInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
@@ -359,7 +358,7 @@ public class TestEnhancedByteBufferAccess {
     fsIn.close();
     fsIn = fs.open(TEST_PATH);
     final ShortCircuitCache cache = ClientContext.get(
-        CONTEXT, new DfsClientConf(conf)). getShortCircuitCache();
+        CONTEXT, conf).getShortCircuitCache();
     cache.accept(new CountingVisitor(0, 5, 5, 0));
     results[0] = fsIn.read(null, BLOCK_SIZE,
         EnumSet.of(ReadOption.SKIP_CHECKSUMS));
@@ -559,27 +558,25 @@ public class TestEnhancedByteBufferAccess {
    */
   @Test
   public void testIndirectFallbackReads() throws Exception {
-    final File TEST_DIR = new File(
-      System.getProperty("test.build.data","build/test/data"));
-    final String TEST_PATH = TEST_DIR + File.separator +
-        "indirectFallbackTestFile";
+    final String testPath = GenericTestUtils
+        .getTestDir("indirectFallbackTestFile").getAbsolutePath();
     final int TEST_FILE_LENGTH = 16385;
     final int RANDOM_SEED = 23453;
     FileOutputStream fos = null;
     FileInputStream fis = null;
     try {
-      fos = new FileOutputStream(TEST_PATH);
+      fos = new FileOutputStream(testPath);
       Random random = new Random(RANDOM_SEED);
       byte original[] = new byte[TEST_FILE_LENGTH];
       random.nextBytes(original);
       fos.write(original);
       fos.close();
       fos = null;
-      fis = new FileInputStream(TEST_PATH);
+      fis = new FileInputStream(testPath);
       testFallbackImpl(fis, original);
     } finally {
       IOUtils.cleanup(LOG, fos, fis);
-      new File(TEST_PATH).delete();
+      new File(testPath).delete();
     }
   }
 
@@ -662,7 +659,7 @@ public class TestEnhancedByteBufferAccess {
     final ExtendedBlock firstBlock =
         DFSTestUtil.getFirstBlock(fs, TEST_PATH);
     final ShortCircuitCache cache = ClientContext.get(
-        CONTEXT, new DfsClientConf(conf)). getShortCircuitCache();
+        CONTEXT, conf).getShortCircuitCache();
     waitForReplicaAnchorStatus(cache, firstBlock, true, true, 1);
     // Uncache the replica
     fs.removeCacheDirective(directiveId);

@@ -18,24 +18,33 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.rmapp;
 
-import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.ipc.CallerContext;
 import org.apache.hadoop.yarn.api.protocolrecords.FinishApplicationMasterRequest;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+import org.apache.hadoop.yarn.api.records.ApplicationTimeoutType;
+import org.apache.hadoop.yarn.api.records.CollectorInfo;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.LogAggregationStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.NodeUpdateType;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.api.protocolrecords.LogAggregationReport;
+import org.apache.hadoop.yarn.server.api.records.AppCollectorData;
+import org.apache.hadoop.yarn.server.resourcemanager.placement
+    .ApplicationPlacementContext;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 
@@ -147,10 +156,12 @@ public interface RMApp extends EventHandler<RMAppEvent> {
    * received by the RMApp. Updates can be node becoming lost or becoming
    * healthy etc. The method clears the information from the {@link RMApp}. So
    * each call to this method gives the delta from the previous call.
-   * @param updatedNodes Collection into which the updates are transferred
-   * @return the number of nodes added to the {@link Collection}
+   * @param updatedNodes Map into which the updates are transferred, with each
+   * node updates as the key, and the {@link NodeUpdateType} for that update
+   * as the corresponding value.
+   * @return the number of nodes added to the {@link Map}
    */
-  int pullRMNodeUpdates(Collection<RMNode> updatedNodes);
+  int pullRMNodeUpdates(Map<RMNode, NodeUpdateType> updatedNodes);
 
   /**
    * The finish time of the {@link RMApp}
@@ -176,6 +187,28 @@ public interface RMApp extends EventHandler<RMAppEvent> {
    */
   String getTrackingUrl();
 
+  /**
+   * The timeline collector information for the application. It should be used
+   * only if the timeline service v.2 is enabled.
+   *
+   * @return the data for the application's collector, including collector
+   * address, RM ID, version and collector token. Return null if the timeline
+   * service v.2 is not enabled.
+   */
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
+  AppCollectorData getCollectorData();
+
+  /**
+   * The timeline collector information to be sent to AM. It should be used
+   * only if the timeline service v.2 is enabled.
+   *
+   * @return collector info, including collector address and collector token.
+   * Return null if the timeline service v.2 is not enabled.
+   */
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
+  CollectorInfo getCollectorInfo();
   /**
    * The original tracking url for the application master.
    * @return the original tracking url for the application master.
@@ -244,7 +277,7 @@ public interface RMApp extends EventHandler<RMAppEvent> {
 
   ReservationId getReservationId();
   
-  ResourceRequest getAMResourceRequest();
+  List<ResourceRequest> getAMResourceRequests();
 
   Map<NodeId, LogAggregationReport> getLogAggregationReportsForApp();
 
@@ -257,4 +290,31 @@ public interface RMApp extends EventHandler<RMAppEvent> {
   String getAppNodeLabelExpression();
 
   CallerContext getCallerContext();
+
+  Map<ApplicationTimeoutType, Long> getApplicationTimeouts();
+
+  /**
+   * Get priority of the application.
+   * @return priority
+   */
+  Priority getApplicationPriority();
+
+  /**
+   * To verify whether app has reached in its completing/completed states.
+   *
+   * @return True/False to confirm whether app is in final states
+   */
+  boolean isAppInCompletedStates();
+
+  /**
+   * Get the application -&gt; queue placement context
+   * @return ApplicationPlacementContext
+   */
+  ApplicationPlacementContext getApplicationPlacementContext();
+
+  /**
+   * Get the application scheduling environment variables.
+   * @return Map of envs related to application scheduling preferences.
+   */
+  Map<String, String> getApplicationSchedulingEnvs();
 }

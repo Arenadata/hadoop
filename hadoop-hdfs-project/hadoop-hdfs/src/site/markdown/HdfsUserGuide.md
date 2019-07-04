@@ -15,28 +15,7 @@
 HDFS Users Guide
 ================
 
-* [HDFS Users Guide](#HDFS_Users_Guide)
-    * [Purpose](#Purpose)
-    * [Overview](#Overview)
-    * [Prerequisites](#Prerequisites)
-    * [Web Interface](#Web_Interface)
-    * [Shell Commands](#Shell_Commands)
-        * [DFSAdmin Command](#DFSAdmin_Command)
-    * [Secondary NameNode](#Secondary_NameNode)
-    * [Checkpoint Node](#Checkpoint_Node)
-    * [Backup Node](#Backup_Node)
-    * [Import Checkpoint](#Import_Checkpoint)
-    * [Balancer](#Balancer)
-    * [Rack Awareness](#Rack_Awareness)
-    * [Safemode](#Safemode)
-    * [fsck](#fsck)
-    * [fetchdt](#fetchdt)
-    * [Recovery Mode](#Recovery_Mode)
-    * [Upgrade and Rollback](#Upgrade_and_Rollback)
-    * [DataNode Hot Swap Drive](#DataNode_Hot_Swap_Drive)
-    * [File Permissions and Security](#File_Permissions_and_Security)
-    * [Scalability](#Scalability)
-    * [Related Documentation](#Related_Documentation)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Purpose
 -------
@@ -121,7 +100,7 @@ The rest of this document assumes the user is able to set up and run a HDFS with
 Web Interface
 -------------
 
-NameNode and DataNode each run an internal web server in order to display basic information about the current status of the cluster. With the default configuration, the NameNode front page is at `http://namenode-name:50070/`. It lists the DataNodes in the cluster and basic statistics of the cluster. The web interface can also be used to browse the file system (using "Browse the file system" link on the NameNode front page).
+NameNode and DataNode each run an internal web server in order to display basic information about the current status of the cluster. With the default configuration, the NameNode front page is at `http://namenode-name:9870/`. It lists the DataNodes in the cluster and basic statistics of the cluster. The web interface can also be used to browse the file system (using "Browse the file system" link on the NameNode front page).
 
 Shell Commands
 --------------
@@ -142,12 +121,16 @@ The `bin/hdfs dfsadmin` command supports a few HDFS administration related opera
   during last upgrade.
 
 * `-refreshNodes`: Updates the namenode with the set of datanodes
-  allowed to connect to the namenode. Namenodes re-read datanode
+  allowed to connect to the namenode. By default, Namenodes re-read datanode
   hostnames in the file defined by `dfs.hosts`, `dfs.hosts.exclude`
    Hosts defined in `dfs.hosts` are the datanodes that are part of the
    cluster. If there are entries in `dfs.hosts`, only the hosts in it
    are allowed to register with the namenode. Entries in
    `dfs.hosts.exclude` are datanodes that need to be decommissioned.
+   Alternatively if `dfs.namenode.hosts.provider.classname` is set to
+   `org.apache.hadoop.hdfs.server.blockmanagement.CombinedHostFileManager`,
+   all include and exclude hosts are specified in the JSON file defined by
+   `dfs.hosts`.
    Datanodes complete decommissioning when all the replicas from them
    are replicated to other datanodes. Decommissioned nodes are not
    automatically shutdown and are not chosen for writing for new
@@ -274,7 +257,7 @@ During start up the NameNode loads the file system state from the fsimage and th
 fsck
 ----
 
-HDFS supports the fsck command to check for various inconsistencies. It it is designed for reporting problems with various files, for example, missing blocks for a file or under-replicated blocks. Unlike a traditional fsck utility for native file systems, this command does not correct the errors it detects. Normally NameNode automatically corrects most of the recoverable failures. By default fsck ignores open files but provides an option to select all files during reporting. The HDFS fsck command is not a Hadoop shell command. It can be run as `bin/hdfs fsck`. For command usage, see [fsck](./HDFSCommands.html#fsck). fsck can be run on the whole file system or on a subset of files.
+HDFS supports the fsck command to check for various inconsistencies. It is designed for reporting problems with various files, for example, missing blocks for a file or under-replicated blocks. Unlike a traditional fsck utility for native file systems, this command does not correct the errors it detects. Normally NameNode automatically corrects most of the recoverable failures. By default fsck ignores open files but provides an option to select all files during reporting. The HDFS fsck command is not a Hadoop shell command. It can be run as `bin/hdfs fsck`. For command usage, see [fsck](./HDFSCommands.html#fsck). fsck can be run on the whole file system or on a subset of files.
 
 fetchdt
 -------
@@ -306,7 +289,7 @@ When Hadoop is upgraded on an existing cluster, as with any software upgrade, it
 
 *   Stop the cluster and distribute new version of Hadoop.
 
-*   Run the new version with `-upgrade` option (`bin/start-dfs.sh -upgrade`).
+*   Run the new version with `-upgrade` option (`sbin/start-dfs.sh -upgrade`).
 
 *   Most of the time, cluster works just fine. Once the new HDFS is
     considered working well (may be after a few days of operation),

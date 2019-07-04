@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.server.balancer;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static org.apache.hadoop.hdfs.protocol.BlockType.CONTIGUOUS;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -33,6 +34,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -50,8 +52,8 @@ import org.apache.hadoop.hdfs.server.balancer.Dispatcher.DDatanode.StorageGroup;
 import org.apache.hadoop.hdfs.server.balancer.Dispatcher.Source;
 import org.apache.hadoop.hdfs.server.balancer.Dispatcher.Task;
 import org.apache.hadoop.hdfs.server.balancer.Dispatcher.Util;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyDefault;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicies;
 import org.apache.hadoop.hdfs.server.namenode.UnsupportedActionException;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
@@ -64,7 +66,6 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
-import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.base.Preconditions;
 
@@ -113,7 +114,7 @@ import com.google.common.base.Preconditions;
  * defined in the default configuration file:
  * <pre>
  * <property>
- *   <name>dfs.balance.bandwidthPerSec</name>
+ *   <name>dfs.datanode.balance.bandwidthPerSec</name>
  *   <value>1048576</value>
  * <description>  Specifies the maximum bandwidth that each datanode 
  * can utilize for the balancing purpose in term of the number of bytes 
@@ -218,7 +219,9 @@ public class Balancer {
    */
   private static void checkReplicationPolicyCompatibility(Configuration conf
       ) throws UnsupportedActionException {
-    if (!(BlockPlacementPolicy.getInstance(conf, null, null, null) instanceof 
+    BlockPlacementPolicies placementPolicies =
+        new BlockPlacementPolicies(conf, null, null, null);
+    if (!(placementPolicies.getPolicy(CONTIGUOUS) instanceof
         BlockPlacementPolicyDefault)) {
       throw new UnsupportedActionException(
           "Balancer without BlockPlacementPolicyDefault");
@@ -667,10 +670,13 @@ public class Balancer {
   static int run(Collection<URI> namenodes, final BalancerParameters p,
       Configuration conf) throws IOException, InterruptedException {
     final long sleeptime =
-        conf.getLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY,
-            DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_DEFAULT) * 2000 +
-        conf.getLong(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY,
-            DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_DEFAULT) * 1000;
+        conf.getTimeDuration(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY,
+            DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_DEFAULT,
+            TimeUnit.SECONDS) * 2000 +
+        conf.getTimeDuration(
+            DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+            DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_DEFAULT,
+            TimeUnit.SECONDS) * 1000;
     LOG.info("namenodes  = " + namenodes);
     LOG.info("parameters = " + p);
     LOG.info("included nodes = " + p.getIncludedNodes());

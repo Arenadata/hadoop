@@ -91,7 +91,7 @@ abstract public class FSOutputSummer extends OutputStream {
    * in a checksum chunk are in the buffer.  If the buffer is empty and
    * requested length is at least as large as the size of next checksum chunk
    * size, this method will checksum and write the chunk directly 
-   * to the underlying output stream.  Thus it avoids uneccessary data copy.
+   * to the underlying output stream.  Thus it avoids unnecessary data copy.
    *
    * @param      b     the data.
    * @param      off   the start offset in the data.
@@ -193,6 +193,10 @@ abstract public class FSOutputSummer extends OutputStream {
   /** @return the size for a checksum. */
   protected int getChecksumSize() {
     return sum.getChecksumSize();
+  }
+
+  protected DataChecksum getDataChecksum() {
+    return sum;
   }
 
   protected TraceScope createWriteTraceScope() {

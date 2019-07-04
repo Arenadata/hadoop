@@ -100,7 +100,7 @@ import com.google.common.collect.Lists;
  * caching directives, we will schedule caching and uncaching work.
  */
 @InterfaceAudience.LimitedPrivate({"HDFS"})
-public final class CacheManager {
+public class CacheManager {
   public static final Logger LOG = LoggerFactory.getLogger(CacheManager.class);
 
   private static final float MIN_CACHED_BLOCKS_PERCENT = 0.001f;
@@ -523,7 +523,8 @@ public final class CacheManager {
       CachePool pool = getCachePool(validatePoolName(info));
       checkWritePermission(pc, pool);
       String path = validatePath(info);
-      short replication = validateReplication(info, (short)1);
+      short replication = validateReplication(
+              info, pool.getDefaultReplication());
       long expiryTime = validateExpiryTime(info, pool.getMaxRelativeExpiryMs());
       // Do quota validation if required
       if (!flags.contains(CacheFlag.FORCE)) {
@@ -826,6 +827,13 @@ public final class CacheManager {
         // New limit changes stats, need to set needs refresh
         setNeedsRescan();
       }
+      if (info.getDefaultReplication() != null) {
+        final short defaultReplication = info.getDefaultReplication();
+        pool.setDefaultReplication(defaultReplication);
+        bld.append(prefix).append("set default replication to "
+            + defaultReplication);
+        prefix = "; ";
+      }
       if (info.getMaxRelativeExpiryMs() != null) {
         final Long maxRelativeExpiry = info.getMaxRelativeExpiryMs();
         pool.setMaxRelativeExpiryMs(maxRelativeExpiry);
@@ -1091,6 +1099,10 @@ public final class CacheManager {
 
       if (p.hasMode())
         info.setMode(new FsPermission((short) p.getMode()));
+
+      if (p.hasDefaultReplication()) {
+        info.setDefaultReplication((short) p.getDefaultReplication());
+      }
 
       if (p.hasLimit())
         info.setLimit(p.getLimit());

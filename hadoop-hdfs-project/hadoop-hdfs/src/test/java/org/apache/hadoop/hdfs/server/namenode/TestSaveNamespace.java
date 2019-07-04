@@ -59,6 +59,7 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.GenericTestUtils.DelayAnswer;
 import org.apache.log4j.Level;
+import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.Mockito;
 import org.mockito.internal.util.reflection.Whitebox;
@@ -84,8 +85,8 @@ public class TestSaveNamespace {
   private static final Log LOG = LogFactory.getLog(TestSaveNamespace.class);
 
   private static class FaultySaveImage implements Answer<Void> {
-    int count = 0;
-    boolean throwRTE = true;
+    private int count = 0;
+    private boolean throwRTE = true;
 
     // generate either a RuntimeException or IOException
     public FaultySaveImage(boolean throwRTE) {
@@ -110,13 +111,36 @@ public class TestSaveNamespace {
     }
   }
 
+  private static class FaultyWriteProperties implements Answer<Void> {
+    private int count = 0;
+    private Fault faultType;
+
+    FaultyWriteProperties(Fault faultType) {
+      this.faultType = faultType;
+    }
+
+    @Override
+    public Void answer(InvocationOnMock invocation) throws Throwable {
+      Object[] args = invocation.getArguments();
+      StorageDirectory sd = (StorageDirectory)args[0];
+
+      if (faultType == Fault.WRITE_STORAGE_ALL ||
+          (faultType==Fault.WRITE_STORAGE_ONE && count++==1)) {
+        LOG.info("Injecting fault for sd: " + sd);
+        throw new IOException("Injected fault: writeProperties second time");
+      }
+      LOG.info("Not injecting fault for sd: " + sd);
+      return (Void)invocation.callRealMethod();
+    }
+  }
+
   private enum Fault {
     SAVE_SECOND_FSIMAGE_RTE,
     SAVE_SECOND_FSIMAGE_IOE,
     SAVE_ALL_FSIMAGES,
     WRITE_STORAGE_ALL,
     WRITE_STORAGE_ONE
-  };
+  }
 
   private void saveNamespaceWithInjectedFault(Fault fault) throws Exception {
     Configuration conf = getConf();
@@ -140,40 +164,40 @@ public class TestSaveNamespace {
     case SAVE_SECOND_FSIMAGE_RTE:
       // The spy throws a RuntimeException when writing to the second directory
       doAnswer(new FaultySaveImage(true)).
-        when(spyImage).saveFSImage(
-            (SaveNamespaceContext)anyObject(),
-            (StorageDirectory)anyObject(), (NameNodeFile) anyObject());
+          when(spyImage).saveFSImage(
+          anyObject(),
+          anyObject(), anyObject());
       shouldFail = false;
       break;
     case SAVE_SECOND_FSIMAGE_IOE:
       // The spy throws an IOException when writing to the second directory
       doAnswer(new FaultySaveImage(false)).
-        when(spyImage).saveFSImage(
-            (SaveNamespaceContext)anyObject(),
-            (StorageDirectory)anyObject(), (NameNodeFile) anyObject());
+          when(spyImage).saveFSImage(
+          anyObject(),
+          anyObject(), anyObject());
       shouldFail = false;
       break;
     case SAVE_ALL_FSIMAGES:
       // The spy throws IOException in all directories
       doThrow(new RuntimeException("Injected")).
-      when(spyImage).saveFSImage(
-          (SaveNamespaceContext)anyObject(),
-          (StorageDirectory)anyObject(), (NameNodeFile) anyObject());
+          when(spyImage).saveFSImage(
+          anyObject(),
+          anyObject(), anyObject());
       shouldFail = true;
       break;
     case WRITE_STORAGE_ALL:
       // The spy throws an exception before writing any VERSION files
-      doThrow(new RuntimeException("Injected"))
-        .when(spyStorage).writeAll();
+      doAnswer(new FaultyWriteProperties(Fault.WRITE_STORAGE_ALL))
+          .when(spyStorage).writeProperties(anyObject());
       shouldFail = true;
       break;
     case WRITE_STORAGE_ONE:
       // The spy throws on exception on one particular storage directory
-      doAnswer(new FaultySaveImage(true))
-        .when(spyStorage).writeProperties((StorageDirectory)anyObject());
-      // TODO: unfortunately this fails -- should be improved.
-      // See HDFS-2173.
-      shouldFail = true;
+      doAnswer(new FaultyWriteProperties(Fault.WRITE_STORAGE_ONE))
+        .when(spyStorage).writeProperties(anyObject());
+      shouldFail = false;
+      break;
+    default: fail("Unknown fail type");
       break;
     }
 
@@ -183,12 +207,12 @@ public class TestSaveNamespace {
       // Save namespace - this may fail, depending on fault injected
       fsn.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
       try {
-        fsn.saveNamespace();
+        fsn.saveNamespace(0, 0);
         if (shouldFail) {
           fail("Did not fail!");
         }
       } catch (Exception e) {
-        if (! shouldFail) {
+        if (!shouldFail) {
           throw e;
         } else {
           LOG.info("Test caught expected exception", e);
@@ -255,7 +279,7 @@ public class TestSaveNamespace {
       // Save namespace - should mark the first storage dir as faulty
       // since it's not traversable.
       LOG.info("Doing the first savenamespace.");
-      fsn.saveNamespace();
+      fsn.saveNamespace(0, 0);
       LOG.info("First savenamespace sucessful.");      
       
       assertTrue("Savenamespace should have marked one directory as bad." +
@@ -269,7 +293,7 @@ public class TestSaveNamespace {
       // erroneous directory back to fs.name.dir. This command should
       // be successful.
       LOG.info("Doing the second savenamespace.");
-      fsn.saveNamespace();
+      fsn.saveNamespace(0, 0);
       LOG.warn("Second savenamespace sucessful.");
       assertTrue("Savenamespace should have been successful in removing " +
                  " bad directories from Image."  +
@@ -370,21 +394,20 @@ public class TestSaveNamespace {
     // Replace the FSImage with a spy
     final FSImage originalImage = fsn.getFSImage();
     NNStorage storage = originalImage.getStorage();
-    storage.close(); // unlock any directories that FSNamesystem's initialization may have locked
+    // unlock any directories that
+    // FSNamesystem's initialization may have locked
+    storage.close();
 
     NNStorage spyStorage = spy(storage);
     originalImage.storage = spyStorage;
     FSImage spyImage = spy(originalImage);
     Whitebox.setInternalState(fsn, "fsImage", spyImage);
 
-    spyImage.storage.setStorageDirectories(
-        FSNamesystem.getNamespaceDirs(conf), 
+    spyImage.storage.setStorageDirectories(FSNamesystem.getNamespaceDirs(conf),
         FSNamesystem.getNamespaceEditsDirs(conf));
 
     doThrow(new IOException("Injected fault: saveFSImage")).
-        when(spyImage).saveFSImage(
-            (SaveNamespaceContext)anyObject(),
-            (StorageDirectory)anyObject(), (NameNodeFile) anyObject());
+        when(spyImage).saveFSImage(anyObject(), anyObject(), anyObject());
 
     try {
       doAnEdit(fsn, 1);
@@ -392,7 +415,7 @@ public class TestSaveNamespace {
       // Save namespace
       fsn.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
       try {
-        fsn.saveNamespace();
+        fsn.saveNamespace(0, 0);
         fail("saveNamespace did not fail even when all directories failed!");
       } catch (IOException ioe) {
         LOG.info("Got expected exception", ioe);
@@ -402,7 +425,7 @@ public class TestSaveNamespace {
       if (restoreStorageAfterFailure) {
         Mockito.reset(spyImage);
         spyStorage.setRestoreFailedStorage(true);
-        fsn.saveNamespace();
+        fsn.saveNamespace(0, 0);
         checkEditExists(fsn, 1);
       }
 
@@ -440,7 +463,7 @@ public class TestSaveNamespace {
 
       // Save namespace
       fsn.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
-      fsn.saveNamespace();
+      fsn.saveNamespace(0, 0);
 
       // Now shut down and restart the NN
       fsn.close();
@@ -474,7 +497,7 @@ public class TestSaveNamespace {
       assertEquals(2, fsn.getEditLog().getLastWrittenTxId());
       
       fsn.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
-      fsn.saveNamespace();
+      fsn.saveNamespace(0, 0);
 
       // 2 more txns: END the first segment, BEGIN a new one
       assertEquals(4, fsn.getEditLog().getLastWrittenTxId());
@@ -498,34 +521,6 @@ public class TestSaveNamespace {
     }
   }
   
-  /**
-   * Test for save namespace should succeed when parent directory renamed with
-   * open lease and destination directory exist. 
-   * This test is a regression for HDFS-2827
-   */
-  @Test
-  public void testSaveNamespaceWithRenamedLease() throws Exception {
-    MiniDFSCluster cluster = new MiniDFSCluster.Builder(new Configuration())
-        .numDataNodes(1).build();
-    cluster.waitActive();
-    DistributedFileSystem fs = (DistributedFileSystem) cluster.getFileSystem();
-    OutputStream out = null;
-    try {
-      fs.mkdirs(new Path("/test-target"));
-      out = fs.create(new Path("/test-source/foo")); // don't close
-      fs.rename(new Path("/test-source/"), new Path("/test-target/"));
-
-      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
-      cluster.getNameNodeRpc().saveNamespace();
-      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
-    } finally {
-      IOUtils.cleanup(LOG, out, fs);
-      if (cluster != null) {
-        cluster.shutdown();
-      }
-    }
-  }
-  
   @Test(timeout=20000)
   public void testCancelSaveNamespace() throws Exception {
     Configuration conf = getConf();
@@ -536,7 +531,9 @@ public class TestSaveNamespace {
     // Replace the FSImage with a spy
     final FSImage image = fsn.getFSImage();
     NNStorage storage = image.getStorage();
-    storage.close(); // unlock any directories that FSNamesystem's initialization may have locked
+    // unlock any directories that
+    // FSNamesystem's initialization may have locked
+    storage.close();
     storage.setStorageDirectories(
         FSNamesystem.getNamespaceDirs(conf), 
         FSNamesystem.getNamespaceEditsDirs(conf));
@@ -544,9 +541,10 @@ public class TestSaveNamespace {
     FSNamesystem spyFsn = spy(fsn);
     final FSNamesystem finalFsn = spyFsn;
     DelayAnswer delayer = new GenericTestUtils.DelayAnswer(LOG);
-    BlockIdManager bid = spy(spyFsn.getBlockIdManager());
-    Whitebox.setInternalState(finalFsn, "blockIdManager", bid);
-    doAnswer(delayer).when(bid).getGenerationStampV2();
+    BlockIdManager bid = spy(spyFsn.getBlockManager().getBlockIdManager());
+    Whitebox.setInternalState(finalFsn.getBlockManager(),
+        "blockIdManager", bid);
+    doAnswer(delayer).when(bid).getGenerationStamp();
 
     ExecutorService pool = Executors.newFixedThreadPool(2);
     
@@ -578,8 +576,8 @@ public class TestSaveNamespace {
         // give the cancel call time to run
         Thread.sleep(500);
         
-        // allow saveNamespace to proceed - it should check the cancel flag after
-        // this point and throw an exception
+        // allow saveNamespace to proceed - it should check the cancel flag
+        // after this point and throw an exception
         delayer.proceed();
 
         cancelFuture.get();
@@ -605,6 +603,32 @@ public class TestSaveNamespace {
       fsn.close();
     }
   }
+
+  /**
+   * Test for save namespace should succeed when parent directory renamed with
+   * open lease and destination directory exist. 
+   * This test is a regression for HDFS-2827
+   */
+  @Test (timeout=30000)
+  public void testSaveNamespaceWithRenamedLease() throws Exception {
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(new Configuration())
+        .numDataNodes(1).build();
+    cluster.waitActive();
+    DistributedFileSystem fs = cluster.getFileSystem();
+    OutputStream out = null;
+    try {
+      fs.mkdirs(new Path("/test-target"));
+      out = fs.create(new Path("/test-source/foo")); // don't close
+      fs.rename(new Path("/test-source/"), new Path("/test-target/"));
+
+      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      cluster.getNameNodeRpc().saveNamespace(0, 0);
+      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    } finally {
+      IOUtils.cleanup(LOG, out, fs);
+      cluster.shutdown();
+    }
+  }
   
   @Test (timeout=30000)
   public void testSaveNamespaceWithDanglingLease() throws Exception {
@@ -616,14 +640,13 @@ public class TestSaveNamespace {
       cluster.getNamesystem().leaseManager.addLease("me",
               INodeId.ROOT_INODE_ID + 1);
       fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
-      cluster.getNameNodeRpc().saveNamespace();
+      cluster.getNameNodeRpc().saveNamespace(0, 0);
       fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
     } finally {
-      if (cluster != null) {
-        cluster.shutdown();
-      }
+      cluster.shutdown();
     }
   }
+
 
   @Test
   public void testSkipSnapshotSection() throws Exception {
@@ -649,7 +672,7 @@ public class TestSaveNamespace {
 
       // saveNamespace
       fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
-      cluster.getNameNodeRpc().saveNamespace();
+      cluster.getNameNodeRpc().saveNamespace(0, 0);
       fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
 
       // restart namenode
@@ -666,18 +689,63 @@ public class TestSaveNamespace {
     }
   }
 
+  @Test
+  public void testSaveNamespaceBeforeShutdown() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(0).build();
+    cluster.waitActive();
+    DistributedFileSystem fs = cluster.getFileSystem();
+
+    try {
+      final FSImage fsimage = cluster.getNameNode().getFSImage();
+      final long before = fsimage.getStorage().getMostRecentCheckpointTxId();
+
+      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      // set the timewindow to 1 hour and tx gap to 1000, which means that if
+      // there is a checkpoint during the past 1 hour or the tx number happening
+      // after the latest checkpoint is <= 1000, this saveNamespace request
+      // will be ignored
+      cluster.getNameNodeRpc().saveNamespace(3600, 1000);
+
+      // make sure no new checkpoint was done
+      long after = fsimage.getStorage().getMostRecentCheckpointTxId();
+      Assert.assertEquals(before, after);
+
+      Thread.sleep(1000);
+      // do another checkpoint. this time set the timewindow to 1s
+      // we should see a new checkpoint
+      cluster.getNameNodeRpc().saveNamespace(1, 1000);
+      fs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+
+      after = fsimage.getStorage().getMostRecentCheckpointTxId();
+      Assert.assertTrue(after > before);
+
+      fs.mkdirs(new Path("/foo/bar/baz")); // 3 new tx
+
+      fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      cluster.getNameNodeRpc().saveNamespace(3600, 5); // 3 + end/start segment
+      long after2 = fsimage.getStorage().getMostRecentCheckpointTxId();
+      // no checkpoint should be made
+      Assert.assertEquals(after, after2);
+      cluster.getNameNodeRpc().saveNamespace(3600, 3);
+      after2 = fsimage.getStorage().getMostRecentCheckpointTxId();
+      // a new checkpoint should be done
+      Assert.assertTrue(after2 > after);
+    } finally {
+      cluster.shutdown();
+    }
+  }
+
   private void doAnEdit(FSNamesystem fsn, int id) throws IOException {
     // Make an edit
-    fsn.mkdirs(
-      "/test" + id,
-      new PermissionStatus("test", "Test",
-          new FsPermission((short)0777)),
-          true);
+    fsn.mkdirs("/test" + id, new PermissionStatus("test", "Test",
+        new FsPermission((short)0777)), true);
   }
 
   private void checkEditExists(FSNamesystem fsn, int id) throws IOException {
     // Make sure the image loaded including our edit.
-    assertNotNull(fsn.getFileInfo("/test" + id, false));
+    assertNotNull(fsn.getFileInfo("/test" + id, false, false, false));
   }
 
   private Configuration getConf() throws IOException {
@@ -690,8 +758,9 @@ public class TestSaveNamespace {
     conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY, "0.0.0.0:0");
     conf.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY, nameDirs);
     conf.set(DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_KEY, nameDirs);
-    conf.set(DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY, "0.0.0.0:0");
-    conf.setBoolean(DFSConfigKeys.DFS_PERMISSIONS_ENABLED_KEY, false); 
+    conf.set(DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY,
+        "0.0.0.0:0");
+    conf.setBoolean(DFSConfigKeys.DFS_PERMISSIONS_ENABLED_KEY, false);
     return conf;
   }
 }

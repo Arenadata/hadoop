@@ -22,6 +22,9 @@ import java.io.DataInput;
 import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -33,6 +36,7 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.LogAggregationContext;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -43,6 +47,7 @@ import org.apache.hadoop.yarn.api.records.impl.pb.ProtoUtils;
 import org.apache.hadoop.yarn.api.records.impl.pb.ResourcePBImpl;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.proto.YarnProtos.ContainerTypeProto;
+import org.apache.hadoop.yarn.proto.YarnProtos.ExecutionTypeProto;
 import org.apache.hadoop.yarn.proto.YarnSecurityTokenProtos.ContainerTokenIdentifierProto;
 import org.apache.hadoop.yarn.server.api.ContainerType;
 
@@ -112,14 +117,79 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
       ContainerType containerType) {
     this(containerID, 0, hostName, appSubmitter, r, expiryTimeStamp,
         masterKeyId, rmIdentifier, priority, creationTime,
-        logAggregationContext, nodeLabelExpression, containerType);
+        logAggregationContext, nodeLabelExpression, containerType,
+        ExecutionType.GUARANTEED, -1, null);
   }
 
   public ContainerTokenIdentifier(ContainerId containerID, int containerVersion,
       String hostName, String appSubmitter, Resource r, long expiryTimeStamp,
       int masterKeyId, long rmIdentifier, Priority priority, long creationTime,
       LogAggregationContext logAggregationContext, String nodeLabelExpression,
-      ContainerType containerType) {
+      ContainerType containerType, ExecutionType executionType) {
+
+    this(containerID, containerVersion, hostName, appSubmitter, r,
+        expiryTimeStamp, masterKeyId, rmIdentifier, priority, creationTime,
+        logAggregationContext, nodeLabelExpression, containerType,
+        executionType, -1, null);
+  }
+
+  /**
+   * Convenience Constructor for existing clients.
+   *
+   * @param containerID containerID
+   * @param containerVersion containerVersion
+   * @param hostName hostName
+   * @param appSubmitter appSubmitter
+   * @param r resource
+   * @param expiryTimeStamp expiryTimeStamp
+   * @param masterKeyId masterKeyId
+   * @param rmIdentifier rmIdentifier
+   * @param priority priority
+   * @param creationTime creationTime
+   * @param logAggregationContext logAggregationContext
+   * @param nodeLabelExpression nodeLabelExpression
+   * @param containerType containerType
+   * @param executionType executionType
+   * @param allocationRequestId allocationRequestId
+   */
+  public ContainerTokenIdentifier(ContainerId containerID, int containerVersion,
+      String hostName, String appSubmitter, Resource r, long expiryTimeStamp,
+      int masterKeyId, long rmIdentifier, Priority priority, long creationTime,
+      LogAggregationContext logAggregationContext, String nodeLabelExpression,
+      ContainerType containerType, ExecutionType executionType,
+      long allocationRequestId) {
+    this(containerID, containerVersion, hostName, appSubmitter, r,
+        expiryTimeStamp, masterKeyId, rmIdentifier, priority, creationTime,
+        logAggregationContext, nodeLabelExpression, containerType,
+        executionType, allocationRequestId, null);
+  }
+
+  /**
+   * Create a Container Token Identifier.
+   *
+   * @param containerID containerID
+   * @param containerVersion containerVersion
+   * @param hostName hostName
+   * @param appSubmitter appSubmitter
+   * @param r resource
+   * @param expiryTimeStamp expiryTimeStamp
+   * @param masterKeyId masterKeyId
+   * @param rmIdentifier rmIdentifier
+   * @param priority priority
+   * @param creationTime creationTime
+   * @param logAggregationContext logAggregationContext
+   * @param nodeLabelExpression nodeLabelExpression
+   * @param containerType containerType
+   * @param executionType executionType
+   * @param allocationRequestId allocationRequestId
+   * @param allocationTags Set of allocation Tags.
+   */
+  public ContainerTokenIdentifier(ContainerId containerID, int containerVersion,
+      String hostName, String appSubmitter, Resource r, long expiryTimeStamp,
+      int masterKeyId, long rmIdentifier, Priority priority, long creationTime,
+      LogAggregationContext logAggregationContext, String nodeLabelExpression,
+      ContainerType containerType, ExecutionType executionType,
+      long allocationRequestId, Set<String> allocationTags) {
     ContainerTokenIdentifierProto.Builder builder =
         ContainerTokenIdentifierProto.newBuilder();
     if (containerID != null) {
@@ -129,7 +199,7 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
     builder.setNmHostAddr(hostName);
     builder.setAppSubmitter(appSubmitter);
     if (r != null) {
-      builder.setResource(((ResourcePBImpl)r).getProto());
+      builder.setResource(ProtoUtils.convertToProtoFormat(r));
     }
     builder.setExpiryTimeStamp(expiryTimeStamp);
     builder.setMasterKeyId(masterKeyId);
@@ -148,7 +218,11 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
       builder.setNodeLabelExpression(nodeLabelExpression);
     }
     builder.setContainerType(convertToProtoFormat(containerType));
-
+    builder.setExecutionType(convertToProtoFormat(executionType));
+    builder.setAllocationRequestId(allocationRequestId);
+    if (allocationTags != null) {
+      builder.addAllAllocationTags(allocationTags);
+    }
     proto = builder.build();
   }
 
@@ -199,7 +273,7 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
     return proto.getCreationTime();
   }
   /**
-   * Get the RMIdentifier of RM in which containers are allocated
+   * Get the RMIdentifier of RM in which containers are allocated.
    * @return RMIdentifier
    */
   public long getRMIdentifier() {
@@ -217,6 +291,17 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
     return convertFromProtoFormat(proto.getContainerType());
   }
 
+  /**
+   * Get the ExecutionType of container to allocate
+   * @return ExecutionType
+   */
+  public ExecutionType getExecutionType(){
+    if (!proto.hasExecutionType()) {
+      return null;
+    }
+    return convertFromProtoFormat(proto.getExecutionType());
+  }
+
   public ContainerTokenIdentifierProto getProto() {
     return proto;
   }
@@ -226,6 +311,10 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
       return null;
     }
     return new LogAggregationContextPBImpl(proto.getLogAggregationContext());
+  }
+
+  public long getAllocationRequestId() {
+    return proto.getAllocationRequestId();
   }
 
   @Override
@@ -275,6 +364,13 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
     return CommonNodeLabelsManager.NO_LABEL;
   }
 
+  public Set<String> getAllcationTags() {
+    if (proto.getAllocationTagsList() != null) {
+      return new HashSet<>(proto.getAllocationTagsList());
+    }
+    return Collections.emptySet();
+  }
+
   // TODO: Needed?
   @InterfaceAudience.Private
   public static class Renewer extends Token.TrivialRenewer {
@@ -311,5 +407,14 @@ public class ContainerTokenIdentifier extends TokenIdentifier {
   private ContainerType convertFromProtoFormat(
       ContainerTypeProto containerType) {
     return ProtoUtils.convertFromProtoFormat(containerType);
+  }
+
+  private ExecutionTypeProto convertToProtoFormat(ExecutionType executionType) {
+    return ProtoUtils.convertToProtoFormat(executionType);
+  }
+
+  private ExecutionType convertFromProtoFormat(
+      ExecutionTypeProto executionType) {
+    return ProtoUtils.convertFromProtoFormat(executionType);
   }
 }

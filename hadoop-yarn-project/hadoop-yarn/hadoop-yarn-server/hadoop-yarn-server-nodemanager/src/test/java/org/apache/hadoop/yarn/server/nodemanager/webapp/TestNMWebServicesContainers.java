@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.webapp;
 
+import static org.apache.hadoop.yarn.webapp.WebServicesTestUtils.assertResponseStatusCode;
 import static org.apache.hadoop.yarn.util.StringHelper.ujoin;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -38,7 +39,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import com.sun.jersey.api.client.filter.LoggingFilter;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.util.NodeHealthScriptRunner;
+import org.apache.hadoop.http.JettyUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NodeId;
@@ -58,6 +59,7 @@ import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
+import org.apache.hadoop.yarn.webapp.GuiceServletConfig;
 import org.apache.hadoop.yarn.webapp.JerseyTestBase;
 import org.apache.hadoop.yarn.webapp.WebApp;
 import org.apache.hadoop.yarn.webapp.WebServicesTestUtils;
@@ -73,8 +75,6 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 
 import com.google.inject.Guice;
-import com.google.inject.Injector;
-import com.google.inject.servlet.GuiceServletContextListener;
 import com.google.inject.servlet.ServletModule;
 import com.sun.jersey.api.client.ClientResponse;
 import com.sun.jersey.api.client.ClientResponse.Status;
@@ -97,7 +97,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
   private static File testLogDir = new File("target",
       TestNMWebServicesContainers.class.getSimpleName() + "LogDir");
 
-  private Injector injector = Guice.createInjector(new ServletModule() {
+  private static class WebServletModule extends ServletModule {
     @Override
     protected void configureServlets() {
       resourceView = new ResourceView() {
@@ -137,7 +137,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       dirsHandler = healthChecker.getDiskHandler();
       aclsManager = new ApplicationACLsManager(conf);
       nmContext = new NodeManager.NMContext(null, null, dirsHandler,
-          aclsManager, null) {
+          aclsManager, null, false, conf) {
         public NodeId getNodeId() {
           return NodeId.newInstance("testhost.foo.com", 8042);
         };
@@ -158,20 +158,19 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
 
       serve("/*").with(GuiceContainer.class);
     }
-  });
+  }
 
-  public class GuiceServletConfig extends GuiceServletContextListener {
-
-    @Override
-    protected Injector getInjector() {
-      return injector;
-    }
+  static {
+    GuiceServletConfig.setInjector(
+        Guice.createInjector(new WebServletModule()));
   }
 
   @Before
   @Override
   public void setUp() throws Exception {
     super.setUp();
+    GuiceServletConfig.setInjector(
+        Guice.createInjector(new WebServletModule()));
     testRootDir.mkdirs();
     testLogDir.mkdir();
   }
@@ -196,9 +195,11 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("node")
         .path("containers").accept(MediaType.APPLICATION_JSON)
         .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
-    assertEquals("apps isn't NULL", JSONObject.NULL, json.get("containers"));
+    assertEquals("apps isn't empty",
+        new JSONObject().toString(), json.get("containers").toString());
   }
 
   private HashMap<String, String> addAppContainers(Application app) 
@@ -270,7 +271,8 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
 
     ClientResponse response = r.path("ws").path("v1").path("node").path(path)
         .accept(media).get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     JSONObject json = response.getEntity(JSONObject.class);
     JSONObject info = json.getJSONObject("containers");
     assertEquals("incorrect number of elements", 1, info.length());
@@ -314,7 +316,8 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
     for (String id : hash.keySet()) {
       ClientResponse response = r.path("ws").path("v1").path("node")
           .path("containers").path(id).accept(media).get(ClientResponse.class);
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject json = response.getEntity(JSONObject.class);
       verifyNodeContainerInfo(json.getJSONObject("container"), nmContext
           .getContainers().get(ContainerId.fromString(id)));
@@ -337,8 +340,9 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       fail("should have thrown exception on invalid user query");
     } catch (UniformInterfaceException ue) {
       ClientResponse response = ue.getResponse();
-      assertEquals(Status.BAD_REQUEST, response.getClientResponseStatus());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -371,8 +375,9 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       fail("should have thrown exception on invalid user query");
     } catch (UniformInterfaceException ue) {
       ClientResponse response = ue.getResponse();
-      assertEquals(Status.BAD_REQUEST, response.getClientResponseStatus());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertResponseStatusCode(Status.BAD_REQUEST, response.getStatusInfo());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -405,8 +410,9 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       fail("should have thrown exception on invalid user query");
     } catch (UniformInterfaceException ue) {
       ClientResponse response = ue.getResponse();
-      assertEquals(Status.NOT_FOUND, response.getClientResponseStatus());
-      assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getType());
+      assertResponseStatusCode(Status.NOT_FOUND, response.getStatusInfo());
+      assertEquals(MediaType.APPLICATION_JSON_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       JSONObject msg = response.getEntity(JSONObject.class);
       JSONObject exception = msg.getJSONObject("RemoteException");
       assertEquals("incorrect number of elements", 3, exception.length());
@@ -440,7 +446,8 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
       ClientResponse response = r.path("ws").path("v1").path("node")
           .path("containers").path(id).accept(MediaType.APPLICATION_XML)
           .get(ClientResponse.class);
-      assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+      assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+          response.getType().toString());
       String xml = response.getEntity(String.class);
       DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
       DocumentBuilder db = dbf.newDocumentBuilder();
@@ -468,7 +475,8 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
     ClientResponse response = r.path("ws").path("v1").path("node")
         .path("containers").accept(MediaType.APPLICATION_XML)
         .get(ClientResponse.class);
-    assertEquals(MediaType.APPLICATION_XML_TYPE, response.getType());
+    assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
+        response.getType().toString());
     String xml = response.getEntity(String.class);
     DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
     DocumentBuilder db = dbf.newDocumentBuilder();
@@ -507,7 +515,7 @@ public class TestNMWebServicesContainers extends JerseyTestBase {
 
   public void verifyNodeContainerInfo(JSONObject info, Container cont)
       throws JSONException, Exception {
-    assertEquals("incorrect number of elements", 10, info.length());
+    assertEquals("incorrect number of elements", 11, info.length());
 
     verifyNodeContainerInfoGeneric(cont, info.getString("id"),
         info.getString("state"), info.getString("user"),

@@ -48,8 +48,8 @@ import org.junit.Test;
 
 public class TestFetchImage {
   
-  private static final File FETCHED_IMAGE_FILE = new File(
-      System.getProperty("test.build.dir"), "target/fetched-image-dir");
+  private static final File FETCHED_IMAGE_FILE =
+      GenericTestUtils.getTestDir("target/fetched-image-dir");
   // Shamelessly stolen from NNStorage.
   private static final Pattern IMAGE_REGEX = Pattern.compile("fsimage_(\\d+)");
 
@@ -130,11 +130,11 @@ public class TestFetchImage {
       cluster.getNameNodeRpc(nnIndex).setSafeMode(
           SafeModeAction.SAFEMODE_ENTER,
           false);
-      cluster.getNameNodeRpc(nnIndex).saveNamespace();
+      cluster.getNameNodeRpc(nnIndex).saveNamespace(0, 0);
       cluster.getNameNodeRpc(nnIndex).setSafeMode(
           SafeModeAction.SAFEMODE_LEAVE,
           false);
-
+      
       runFetchImage(dfsAdmin, cluster);
     }
   }

@@ -52,7 +52,7 @@ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
-import org.apache.log4j.Level;
+import org.slf4j.event.Level;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -67,7 +67,7 @@ import org.mockito.stubbing.Answer;
 @RunWith(Parameterized.class)
 public class TestEditLogRace {
   static {
-    GenericTestUtils.setLogLevel(FSEditLog.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(FSEditLog.LOG, Level.DEBUG);
   }
 
   @Parameters
@@ -329,7 +329,7 @@ public class TestEditLogRace {
 
 
         LOG.info("Save " + i + ": saving namespace");
-        namesystem.saveNamespace();
+        namesystem.saveNamespace(0, 0);
         LOG.info("Save " + i + ": leaving safemode");
 
         long savedImageTxId = fsimage.getStorage().getMostRecentCheckpointTxId();
@@ -344,7 +344,7 @@ public class TestEditLogRace {
         assertEquals(fsimage.getStorage().getMostRecentCheckpointTxId(),
                      editLog.getLastWrittenTxId() - 1);
 
-        namesystem.leaveSafeMode();
+        namesystem.leaveSafeMode(false);
         LOG.info("Save " + i + ": complete");
       }
     } finally {
@@ -461,7 +461,7 @@ public class TestEditLogRace {
       assertTrue(et - st > (BLOCK_TIME - 1)*1000);
 
       // Once we're in safe mode, save namespace.
-      namesystem.saveNamespace();
+      namesystem.saveNamespace(0, 0);
 
       LOG.info("Joining on edit thread...");
       doAnEditThread.join();
@@ -545,7 +545,7 @@ public class TestEditLogRace {
       assertTrue(et - st < (BLOCK_TIME/2)*1000);
 
       // Once we're in safe mode, save namespace.
-      namesystem.saveNamespace();
+      namesystem.saveNamespace(0, 0);
 
       LOG.info("Joining on edit thread...");
       doAnEditThread.join();

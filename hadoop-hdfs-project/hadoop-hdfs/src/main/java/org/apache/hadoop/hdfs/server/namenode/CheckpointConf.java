@@ -26,6 +26,8 @@ import org.apache.hadoop.conf.Configuration;
 
 import com.google.common.collect.ImmutableList;
 
+import java.util.concurrent.TimeUnit;
+
 @InterfaceAudience.Private
 public class CheckpointConf {
   private static final Log LOG = LogFactory.getLog(CheckpointConf.class);
@@ -44,19 +46,27 @@ public class CheckpointConf {
 
   /** The output dir for legacy OIV image */
   private final String legacyOivImageDir;
-  
+
+  /**
+  * multiplier on the checkpoint period to allow other nodes to do the checkpointing, when not the
+  * 'primary' checkpoint node
+  */
+  private double quietMultiplier;
+
   public CheckpointConf(Configuration conf) {
-    checkpointCheckPeriod = conf.getLong(
+    checkpointCheckPeriod = conf.getTimeDuration(
         DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_KEY,
-        DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_DEFAULT);
+        DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_DEFAULT, TimeUnit.SECONDS);
         
-    checkpointPeriod = conf.getLong(DFS_NAMENODE_CHECKPOINT_PERIOD_KEY, 
-                                    DFS_NAMENODE_CHECKPOINT_PERIOD_DEFAULT);
+    checkpointPeriod = conf.getTimeDuration(DFS_NAMENODE_CHECKPOINT_PERIOD_KEY,
+        DFS_NAMENODE_CHECKPOINT_PERIOD_DEFAULT, TimeUnit.SECONDS);
     checkpointTxnCount = conf.getLong(DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 
                                   DFS_NAMENODE_CHECKPOINT_TXNS_DEFAULT);
     maxRetriesOnMergeError = conf.getInt(DFS_NAMENODE_CHECKPOINT_MAX_RETRIES_KEY,
                                   DFS_NAMENODE_CHECKPOINT_MAX_RETRIES_DEFAULT);
     legacyOivImageDir = conf.get(DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY);
+    quietMultiplier = conf.getDouble(DFS_NAMENODE_CHECKPOINT_QUIET_MULTIPLIER_KEY,
+      DFS_NAMENODE_CHECKPOINT_QUIET_MULTIPLIER_DEFAULT);
     warnForDeprecatedConfigs(conf);
   }
   
@@ -90,5 +100,9 @@ public class CheckpointConf {
 
   public String getLegacyOivImageDir() {
     return legacyOivImageDir;
+  }
+
+  public double getQuietPeriod() {
+    return this.checkpointPeriod * this.quietMultiplier;
   }
 }

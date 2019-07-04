@@ -35,13 +35,16 @@ import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies.FifoPolicy;
 import org.xml.sax.SAXException;
 
 import com.google.common.annotations.VisibleForTesting;
+import java.util.Iterator;
+import java.util.Set;
+
 /**
  * Maintains a list of queues as well as scheduling parameters for each queue,
  * such as guaranteed share allocations, from the fair scheduler config file.
- * 
  */
 @Private
 @Unstable
@@ -68,13 +71,18 @@ public class QueueManager {
 
   public void initialize(Configuration conf) throws IOException,
       SAXException, AllocationConfigurationException, ParserConfigurationException {
+    // Policies of root and default queue are set to
+    // SchedulingPolicy.DEFAULT_POLICY since the allocation file hasn't been
+    // loaded yet.
     rootQueue = new FSParentQueue("root", scheduler, null);
     queues.put(rootQueue.getName(), rootQueue);
-    
+
     // Create the default queue
     getLeafQueue(YarnConfiguration.DEFAULT_QUEUE_NAME, true);
+    // Recursively reinitialize to propagate queue properties
+    rootQueue.reinit(true);
   }
-  
+
   /**
    * Get a leaf queue by name, creating it if the create param is true and is necessary.
    * If the queue is not or can not be a leaf queue, i.e. it already exists as a
@@ -170,17 +178,44 @@ public class QueueManager {
     }
     return queue;
   }
-  
+
   /**
-   * Creates a leaf or parent queue based on what is specified in 'queueType' 
-   * and places it in the tree. Creates any parents that don't already exist.
+   * Create a leaf or parent queue based on what is specified in
+   * {@code queueType} and place it in the tree. Create any parents that don't
+   * already exist.
    * 
-   * @return
-   *    the created queue, if successful. null if not allowed (one of the parent
-   *    queues in the queue name is already a leaf queue)
+   * @return the created queue, if successful or null if not allowed (one of the
+   * parent queues in the queue name is already a leaf queue)
    */
-  private FSQueue createQueue(String name, FSQueueType queueType) {
-    List<String> newQueueNames = new ArrayList<String>();
+  @VisibleForTesting
+  FSQueue createQueue(String name, FSQueueType queueType) {
+    List<String> newQueueNames = new ArrayList<>();
+    FSParentQueue parent = buildNewQueueList(name, newQueueNames);
+    FSQueue queue = null;
+
+    if (parent != null) {
+      // Now that we know everything worked out, make all the queues
+      // and add them to the map.
+      queue = createNewQueues(queueType, parent, newQueueNames);
+    }
+
+    return queue;
+  }
+
+  /**
+   * Compile a list of all parent queues of the given queue name that do not
+   * already exist. The queue names will be added to the {@code newQueueNames}
+   * list. The list will be in order of increasing queue depth. The first
+   * element of the list will be the parent closest to the root. The last
+   * element added will be the queue to be created. This method returns the
+   * deepest parent that does exist.
+   *
+   * @param name the fully qualified name of the queue to create
+   * @param newQueueNames the list to which to add non-existent queues
+   * @return the deepest existing parent queue
+   */
+  private FSParentQueue buildNewQueueList(String name,
+      List<String> newQueueNames) {
     newQueueNames.add(name);
     int sepIndex = name.length();
     FSParentQueue parent = null;
@@ -194,60 +229,112 @@ public class QueueManager {
         throw new InvalidQueueNameException("Illegal node name at offset " +
             (sepIndex+1) + " for queue name " + name);
       }
-      FSQueue queue;
-      String curName = null;
-      curName = name.substring(0, sepIndex);
-      queue = queues.get(curName);
+
+      String curName = name.substring(0, sepIndex);
+      FSQueue queue = queues.get(curName);
 
       if (queue == null) {
-        newQueueNames.add(curName);
+        newQueueNames.add(0, curName);
       } else {
         if (queue instanceof FSParentQueue) {
           parent = (FSParentQueue)queue;
-          break;
-        } else {
-          return null;
         }
-      }
-    }
-    
-    // At this point, parent refers to the deepest existing parent of the
-    // queue to create.
-    // Now that we know everything worked out, make all the queues
-    // and add them to the map.
-    AllocationConfiguration queueConf = scheduler.getAllocationConfiguration();
-    FSLeafQueue leafQueue = null;
-    for (int i = newQueueNames.size()-1; i >= 0; i--) {
-      String queueName = newQueueNames.get(i);
-      if (i == 0 && queueType != FSQueueType.PARENT) {
-        leafQueue = new FSLeafQueue(name, scheduler, parent);
-        try {
-          leafQueue.setPolicy(queueConf.getDefaultSchedulingPolicy());
-        } catch (AllocationConfigurationException ex) {
-          LOG.warn("Failed to set default scheduling policy "
-              + queueConf.getDefaultSchedulingPolicy() + " on new leaf queue.", ex);
-        }
-        parent.addChildQueue(leafQueue);
-        queues.put(leafQueue.getName(), leafQueue);
-        leafQueues.add(leafQueue);
-        leafQueue.updatePreemptionVariables();
-        return leafQueue;
-      } else {
-        FSParentQueue newParent = new FSParentQueue(queueName, scheduler, parent);
-        try {
-          newParent.setPolicy(queueConf.getDefaultSchedulingPolicy());
-        } catch (AllocationConfigurationException ex) {
-          LOG.warn("Failed to set default scheduling policy "
-              + queueConf.getDefaultSchedulingPolicy() + " on new parent queue.", ex);
-        }
-        parent.addChildQueue(newParent);
-        queues.put(newParent.getName(), newParent);
-        newParent.updatePreemptionVariables();
-        parent = newParent;
+
+        // If the queue isn't a parent queue, parent will still be null when
+        // we break
+
+        break;
       }
     }
 
     return parent;
+  }
+
+  /**
+   * Create all queues in the {@code newQueueNames} list. The list must be in
+   * order of increasing depth. All but the last element in the list will be
+   * created as parent queues. The last element will be created as the type
+   * specified by the {@code queueType} parameter. The first queue will be
+   * created as a child of the {@code topParent} queue. All subsequent queues
+   * will be created as a child of the previously created queue.
+   *
+   * @param queueType the type of the last queue to create
+   * @param topParent the parent of the first queue to create
+   * @param newQueueNames the list of queues to create
+   * @return the last queue created
+   */
+  private FSQueue createNewQueues(FSQueueType queueType,
+      FSParentQueue topParent, List<String> newQueueNames) {
+    AllocationConfiguration queueConf = scheduler.getAllocationConfiguration();
+    Iterator<String> i = newQueueNames.iterator();
+    FSParentQueue parent = topParent;
+    FSQueue queue = null;
+
+    while (i.hasNext()) {
+      FSParentQueue newParent = null;
+      String queueName = i.next();
+
+      // Check if child policy is allowed
+      SchedulingPolicy childPolicy = scheduler.getAllocationConfiguration().
+          getSchedulingPolicy(queueName);
+      if (!parent.getPolicy().isChildPolicyAllowed(childPolicy)) {
+        LOG.error("Can't create queue '" + queueName + "'.");
+        return null;
+      }
+
+      // Only create a leaf queue at the very end
+      if (!i.hasNext() && (queueType != FSQueueType.PARENT)) {
+        FSLeafQueue leafQueue = new FSLeafQueue(queueName, scheduler, parent);
+        leafQueues.add(leafQueue);
+        queue = leafQueue;
+      } else {
+        if (childPolicy instanceof FifoPolicy) {
+          LOG.error("Can't create queue '" + queueName + "', since "
+              + FifoPolicy.NAME + " is only for leaf queues.");
+          return null;
+        }
+        newParent = new FSParentQueue(queueName, scheduler, parent);
+        queue = newParent;
+      }
+
+      parent.addChildQueue(queue);
+      setChildResourceLimits(parent, queue, queueConf);
+      queues.put(queue.getName(), queue);
+
+      // If we just created a leaf node, the newParent is null, but that's OK
+      // because we only create a leaf node in the very last iteration.
+      parent = newParent;
+    }
+
+    return queue;
+  }
+
+  /**
+   * For the given child queue, set the max resources based on the
+   * parent queue's default child resource settings. This method assumes that
+   * the child queue is ad hoc and hence does not do any safety checks around
+   * overwriting existing max resource settings.
+   *
+   * @param parent the parent queue
+   * @param child the child queue
+   * @param queueConf the {@link AllocationConfiguration}
+   */
+  void setChildResourceLimits(FSParentQueue parent, FSQueue child,
+      AllocationConfiguration queueConf) {
+    Map<FSQueueType, Set<String>> configuredQueues =
+        queueConf.getConfiguredQueues();
+
+    // Ad hoc queues do not exist in the configured queues map
+    if (!configuredQueues.get(FSQueueType.LEAF).contains(child.getName()) &&
+        !configuredQueues.get(FSQueueType.PARENT).contains(child.getName())) {
+      // For ad hoc queues, set their max reource allocations based on
+      // their parents' default child settings.
+      ConfigurableResource maxChild = parent.getMaxChildQueueResource();
+
+      if (maxChild != null) {
+        child.setMaxShare(maxChild);
+      }
+    }
   }
 
   /**
@@ -407,6 +494,13 @@ public class QueueManager {
   public void updateAllocationConfiguration(AllocationConfiguration queueConf) {
     // Create leaf queues and the parent queues in a leaf's ancestry if they do not exist
     synchronized (queues) {
+      // Verify and set scheduling policies for existing queues before creating
+      // any queue, since we need parent policies to determine if we can create
+      // its children.
+      if (!rootQueue.verifyAndSetPolicyFromConf(queueConf)) {
+        LOG.error("Setting scheduling policies for existing queues failed!");
+      }
+
       for (String name : queueConf.getConfiguredQueues().get(
               FSQueueType.LEAF)) {
         if (removeEmptyIncompatibleQueues(name, FSQueueType.LEAF)) {
@@ -423,29 +517,11 @@ public class QueueManager {
         }
       }
     }
-    rootQueue.recomputeSteadyShares();
 
-    for (FSQueue queue : queues.values()) {
-      // Update queue metrics
-      FSQueueMetrics queueMetrics = queue.getMetrics();
-      queueMetrics.setMinShare(queue.getMinShare());
-      queueMetrics.setMaxShare(queue.getMaxShare());
-      // Set scheduling policies
-      try {
-        SchedulingPolicy policy = queueConf.getSchedulingPolicy(queue.getName());
-        policy.initialize(scheduler.getClusterResource());
-        queue.setPolicy(policy);
-      } catch (AllocationConfigurationException ex) {
-        LOG.warn("Cannot apply configured scheduling policy to queue "
-            + queue.getName(), ex);
-      }
-    }
-
+    // Initialize all queues recursively
+    rootQueue.reinit(true);
     // Update steady fair shares for all queues
     rootQueue.recomputeSteadyShares();
-    // Update the fair share preemption timeouts and preemption for all queues
-    // recursively
-    rootQueue.updatePreemptionVariables();
   }
 
   /**
@@ -454,6 +530,10 @@ public class QueueManager {
    */
   @VisibleForTesting
   boolean isQueueNameValid(String node) {
-    return !node.isEmpty() && node.equals(node.trim());
+    // use the same white space trim as in QueueMetrics() otherwise things fail
+    // This needs to trim additional Unicode whitespace characters beyond what
+    // the built-in JDK methods consider whitespace. See YARN-5272.
+    return !node.isEmpty() &&
+        node.equals(FairSchedulerUtilities.trimQueueName(node));
   }
 }

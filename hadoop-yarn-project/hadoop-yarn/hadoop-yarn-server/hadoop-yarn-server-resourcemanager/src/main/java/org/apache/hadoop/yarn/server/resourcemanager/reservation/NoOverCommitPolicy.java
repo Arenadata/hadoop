@@ -21,7 +21,6 @@ package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.records.ReservationId;
-import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.MismatchedUserException;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.PlanningException;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.ResourceOverCommitException;
 
@@ -39,26 +38,19 @@ public class NoOverCommitPolicy implements SharingPolicy {
   public void validate(Plan plan, ReservationAllocation reservation)
       throws PlanningException {
 
-    ReservationAllocation oldReservation =
-        plan.getReservationById(reservation.getReservationId());
-
-    // check updates are using same name
-    if (oldReservation != null
-        && !oldReservation.getUser().equals(reservation.getUser())) {
-      throw new MismatchedUserException(
-          "Updating an existing reservation with mismatching user:"
-              + oldReservation.getUser() + " != " + reservation.getUser());
-    }
-
     RLESparseResourceAllocation available = plan.getAvailableResourceOverTime(
         reservation.getUser(), reservation.getReservationId(),
-        reservation.getStartTime(), reservation.getEndTime());
+        reservation.getStartTime(), reservation.getEndTime(),
+        reservation.getPeriodicity());
 
     // test the reservation does not exceed what is available
     try {
+
+      RLESparseResourceAllocation ask = reservation.getResourcesOverTime(
+              reservation.getStartTime(), reservation.getEndTime());
       RLESparseResourceAllocation
           .merge(plan.getResourceCalculator(), plan.getTotalCapacity(),
-              available, reservation.getResourcesOverTime(),
+              available, ask,
               RLESparseResourceAllocation.RLEOperator.subtractTestNonNegative,
               reservation.getStartTime(), reservation.getEndTime());
     } catch (PlanningException p) {

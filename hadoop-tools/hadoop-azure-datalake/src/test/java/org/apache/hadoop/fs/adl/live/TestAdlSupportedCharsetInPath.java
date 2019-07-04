@@ -282,9 +282,7 @@ public class TestAdlSupportedCharsetInPath {
       }
     }
 
-    for (FileStatus status : statuses) {
-      LOG.info(status.getPath().toString());
-    }
+    Arrays.stream(statuses).forEach(s -> LOG.info(s.getPath().toString()));
     return false;
   }
 

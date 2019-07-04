@@ -21,12 +21,14 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerSafeMode.BMSafeModeStatus;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
@@ -35,6 +37,7 @@ import org.apache.hadoop.util.Daemon;
 import org.junit.Assert;
 
 import com.google.common.base.Preconditions;
+import org.mockito.internal.util.reflection.Whitebox;
 
 public class BlockManagerTestUtil {
   public static void setNodeReplicationLimit(final BlockManager blockManager,
@@ -53,6 +56,21 @@ public class BlockManagerTestUtil {
     }
   }
 
+  public static Iterator<BlockInfo> getBlockIterator(final FSNamesystem ns,
+      final String storageID, final int startBlock) {
+    ns.readLock();
+    try {
+      DatanodeDescriptor dn =
+          ns.getBlockManager().getDatanodeManager().getDatanode(storageID);
+      return dn.getBlockIterator(startBlock);
+    } finally {
+      ns.readUnlock();
+    }
+  }
+
+  public static Iterator<BlockInfo> getBlockIterator(DatanodeStorageInfo s) {
+    return s.getBlockIterator();
+  }
 
   /**
    * Refresh block queue counts on the name-node.
@@ -72,7 +90,7 @@ public class BlockManagerTestUtil {
       final BlockInfo storedBlock = bm.getStoredBlock(b);
       return new int[]{getNumberOfRacks(bm, b),
           bm.countNodes(storedBlock).liveReplicas(),
-          bm.neededReplications.contains(storedBlock) ? 1 : 0};
+          bm.neededReconstruction.contains(storedBlock) ? 1 : 0};
     } finally {
       namesystem.readUnlock();
     }
@@ -103,26 +121,30 @@ public class BlockManagerTestUtil {
   }
 
   /**
-   * @return replication monitor thread instance from block manager.
+   * @return redundancy monitor thread instance from block manager.
    */
-  public static Daemon getReplicationThread(final BlockManager blockManager)
-  {
-    return blockManager.replicationThread;
+  public static Daemon getRedundancyThread(final BlockManager blockManager) {
+    return blockManager.getRedundancyThread();
   }
-  
+
   /**
-   * Stop the replication monitor thread
+   * Stop the redundancy monitor thread.
    */
-  public static void stopReplicationThread(final BlockManager blockManager) 
+  public static void stopRedundancyThread(final BlockManager blockManager)
       throws IOException {
     blockManager.enableRMTerminationForTesting();
-    blockManager.replicationThread.interrupt();
+    blockManager.getRedundancyThread().interrupt();
     try {
-      blockManager.replicationThread.join();
-    } catch(InterruptedException ie) {
+      blockManager.getRedundancyThread().join();
+    } catch (InterruptedException ie) {
       throw new IOException(
-          "Interrupted while trying to stop ReplicationMonitor");
+          "Interrupted while trying to stop RedundancyMonitor");
     }
+  }
+
+  public static HeartbeatManager getHeartbeatManager(
+      final BlockManager blockManager) {
+    return blockManager.getDatanodeManager().getHeartbeatManager();
   }
 
   /**
@@ -146,7 +168,17 @@ public class BlockManagerTestUtil {
   public static int computeInvalidationWork(BlockManager bm) {
     return bm.computeInvalidateWork(Integer.MAX_VALUE);
   }
-  
+
+  /**
+   * Check the redundancy of blocks and trigger replication if needed.
+   * @param blockManager
+   */
+  public static void checkRedundancy(final BlockManager blockManager) {
+    blockManager.computeDatanodeWork();
+    blockManager.processPendingReconstructions();
+    blockManager.rescanPostponedMisreplicatedBlocks();
+  }
+
   /**
    * Compute all the replication and invalidation work for the
    * given BlockManager.
@@ -161,7 +193,7 @@ public class BlockManagerTestUtil {
    */
   public static int computeAllPendingWork(BlockManager bm) {
     int work = computeInvalidationWork(bm);
-    work += bm.computeReplicationWork(Integer.MAX_VALUE);
+    work += bm.computeBlockReconstructionWork(Integer.MAX_VALUE);
     return work;
   }
 
@@ -306,7 +338,22 @@ public class BlockManagerTestUtil {
    */
   public static void recheckDecommissionState(DatanodeManager dm)
       throws ExecutionException, InterruptedException {
-    dm.getDecomManager().runMonitorForTest();
+    dm.getDatanodeAdminManager().runMonitorForTest();
+  }
+
+  /**
+   * add block to the replicateBlocks queue of the Datanode
+   */
+  public static void addBlockToBeReplicated(DatanodeDescriptor node,
+      Block block, DatanodeStorageInfo[] targets) {
+    node.addBlockToBeReplicated(block, targets);
+  }
+
+  public static void setStartupSafeModeForTest(BlockManager bm) {
+    BlockManagerSafeMode bmSafeMode = (BlockManagerSafeMode)Whitebox
+        .getInternalState(bm, "bmSafeMode");
+    Whitebox.setInternalState(bmSafeMode, "extension", Integer.MAX_VALUE);
+    Whitebox.setInternalState(bmSafeMode, "status", BMSafeModeStatus.EXTENSION);
   }
 
   /**

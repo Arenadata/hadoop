@@ -19,7 +19,6 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.junit.Assert.assertTrue;
 
-import java.util.Collection;
 import java.util.concurrent.TimeoutException;
 
 import org.apache.hadoop.conf.Configuration;
@@ -57,7 +56,7 @@ public class TestNodeCount {
         60);
 
     // reduce intervals to make test execution time shorter
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
 
     // start a mini dfs cluster of 2 nodes
@@ -105,10 +104,12 @@ public class TestNodeCount {
       
       // find out a non-excess node
       DatanodeDescriptor nonExcessDN = null;
+
       for(DatanodeStorageInfo storage : bm.blocksMap.getStorages(block.getLocalBlock())) {
         final DatanodeDescriptor dn = storage.getDatanodeDescriptor();
-        Collection<Block> blocks = bm.excessReplicateMap.get(dn.getDatanodeUuid());
-        if (blocks == null || !blocks.contains(block.getLocalBlock()) ) {
+        final BlockInfo info = new BlockInfoContiguous(
+            block.getLocalBlock(), (short)0);
+        if (!bm.isExcess(dn, info)) {
           nonExcessDN = dn;
           break;
         }

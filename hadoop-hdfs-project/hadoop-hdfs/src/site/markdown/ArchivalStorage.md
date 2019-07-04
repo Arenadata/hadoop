@@ -15,19 +15,7 @@
 Archival Storage, SSD & Memory
 ==============================
 
-* [Archival Storage, SSD & Memory](#Archival_Storage_SSD__Memory)
-    * [Introduction](#Introduction)
-    * [Storage Types and Storage Policies](#Storage_Types_and_Storage_Policies)
-        * [Storage Types: ARCHIVE, DISK, SSD and RAM\_DISK](#Storage_Types:_ARCHIVE_DISK_SSD_and_RAM_DISK)
-        * [Storage Policies: Hot, Warm, Cold, All\_SSD, One\_SSD and Lazy\_Persist](#Storage_Policies:_Hot_Warm_Cold_All_SSD_One_SSD_and_Lazy_Persist)
-        * [Storage Policy Resolution](#Storage_Policy_Resolution)
-        * [Configuration](#Configuration)
-    * [Mover - A New Data Migration Tool](#Mover_-_A_New_Data_Migration_Tool)
-    * [Storage Policy Commands](#Storage_Policy_Commands)
-        * [List Storage Policies](#List_Storage_Policies)
-        * [Set Storage Policy](#Set_Storage_Policy)
-        * [Unset Storage Policy](#Unset_Storage_Policy)
-        * [Get Storage Policy](#Get_Storage_Policy)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Introduction
 ------------
@@ -81,13 +69,15 @@ The following is a typical storage policy table.
 | 5 | Warm | DISK: 1, ARCHIVE: *n*-1 | ARCHIVE, DISK | ARCHIVE, DISK |
 | 2 | Cold | ARCHIVE: *n* | \<none\> | \<none\> |
 
-Note that the Lazy\_Persist policy is useful only for single replica blocks. For blocks with more than one replicas, all the replicas will be written to DISK since writing only one of the replicas to RAM\_DISK does not improve the overall performance.
+Note 1: The Lazy\_Persist policy is useful only for single replica blocks. For blocks with more than one replicas, all the replicas will be written to DISK since writing only one of the replicas to RAM\_DISK does not improve the overall performance.
+
+Note 2: For the erasure coded files with striping layout, the suitable storage policies are All\_SSD, Hot, Cold. So, if user sets the policy for striped EC files other than the mentioned policies, it will not follow that policy while creating or moving block.
 
 ### Storage Policy Resolution
 
 When a file or directory is created, its storage policy is *unspecified*. The storage policy can be specified using the "[`storagepolicies -setStoragePolicy`](#Set_Storage_Policy)" command. The effective storage policy of a file or directory is resolved by the following rules.
 
-1.  If the file or directory is specificed with a storage policy, return it.
+1.  If the file or directory is specified with a storage policy, return it.
 
 2.  For an unspecified file or directory, if it is the root directory, return the *default storage policy*. Otherwise, return its parent's effective storage policy.
 
@@ -108,7 +98,7 @@ The effective storage policy can be retrieved by the "[`storagepolicies -getStor
 Mover - A New Data Migration Tool
 ---------------------------------
 
-A new data migration tool is added for archiving data. The tool is similar to Balancer. It periodically scans the files in HDFS to check if the block placement satisfies the storage policy. For the blocks violating the storage policy, it moves the replicas to a different storage type in order to fulfill the storage policy requirement.
+A new data migration tool is added for archiving data. The tool is similar to Balancer. It periodically scans the files in HDFS to check if the block placement satisfies the storage policy. For the blocks violating the storage policy, it moves the replicas to a different storage type in order to fulfill the storage policy requirement. Note that it always tries to move block replicas within the same node whenever possible. If that is not possible (e.g. when a node doesn’t have the target storage type) then it will copy the block replicas to another node over the network.
 
 * Command:
 

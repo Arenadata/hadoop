@@ -19,8 +19,8 @@
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -42,6 +42,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
+import org.apache.hadoop.yarn.webapp.GuiceServletConfig;
 import org.apache.hadoop.yarn.webapp.JerseyTestBase;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
@@ -53,8 +54,6 @@ import org.junit.Test;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
 import com.google.inject.Guice;
-import com.google.inject.Injector;
-import com.google.inject.servlet.GuiceServletContextListener;
 import com.google.inject.servlet.ServletModule;
 import com.sun.jersey.api.client.ClientResponse;
 import com.sun.jersey.api.client.WebResource;
@@ -75,7 +74,8 @@ public class TestRMWebServiceAppsNodelabel extends JerseyTestBase {
   private static CapacitySchedulerConfiguration csConf;
   private static YarnConfiguration conf;
 
-  public Injector injector = Guice.createInjector(new ServletModule() {
+  private static class WebServletModule extends ServletModule {
+
     private static final String LABEL_X = "X";
 
     @Override
@@ -100,14 +100,7 @@ public class TestRMWebServiceAppsNodelabel extends JerseyTestBase {
       bind(ResourceManager.class).toInstance(rm);
       serve("/*").with(GuiceContainer.class);
     }
-  });
-
-  public class GuiceServletConfig extends GuiceServletContextListener {
-    @Override
-    protected Injector getInjector() {
-      return injector;
-    }
-  }
+  };
 
   public TestRMWebServiceAppsNodelabel() {
     super(new WebAppDescriptor.Builder(
@@ -143,6 +136,8 @@ public class TestRMWebServiceAppsNodelabel extends JerseyTestBase {
   @Before
   public void setUp() throws Exception {
     super.setUp();
+    GuiceServletConfig
+        .setInjector(Guice.createInjector(new WebServletModule()));
   }
 
   @Test
@@ -161,9 +156,10 @@ public class TestRMWebServiceAppsNodelabel extends JerseyTestBase {
     assertEquals("incorrect number of elements", 1, apps.length());
     try {
       apps.getJSONArray("app").getJSONObject(0).getJSONObject("resourceInfo");
-      fail("resourceInfo object shouldnt be available for finished apps");
+      fail("resourceInfo object shouldn't be available for finished apps");
     } catch (Exception e) {
-      assertTrue("resourceInfo shouldn't be available for finished apps", true);
+      assertTrue("resourceInfo shouldn't be available for finished apps",
+          true);
     }
     rm.stop();
   }
@@ -217,13 +213,18 @@ public class TestRMWebServiceAppsNodelabel extends JerseyTestBase {
 
   private void verifyResource(JSONObject partition, String partitionName,
       String amused, String used, String reserved) throws JSONException {
+    JSONObject amusedObject = (JSONObject) partition.get("amUsed");
+    JSONObject usedObject = (JSONObject) partition.get("used");
+    JSONObject reservedObject = (JSONObject) partition.get("reserved");
     assertEquals("Partition expected", partitionName,
         partition.get("partitionName"));
-    assertEquals("partition amused", amused,
-        partition.get("amUsed").toString());
-    assertEquals("partition used", used, partition.get("used").toString());
+    assertEquals("partition amused", amused, getResource(
+        (int) amusedObject.get("memory"), (int) amusedObject.get("vCores")));
+    assertEquals("partition used", used, getResource(
+        (int) usedObject.get("memory"), (int) usedObject.get("vCores")));
     assertEquals("partition reserved", reserved,
-        partition.get("reserved").toString());
+        getResource((int) reservedObject.get("memory"),
+            (int) reservedObject.get("vCores")));
   }
 
   @SuppressWarnings("unchecked")

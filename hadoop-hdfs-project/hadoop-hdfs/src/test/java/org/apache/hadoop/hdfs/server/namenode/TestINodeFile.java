@@ -18,9 +18,12 @@
 
 package org.apache.hadoop.hdfs.server.namenode;
 
+import static org.apache.hadoop.hdfs.protocol.BlockType.CONTIGUOUS;
+import static org.apache.hadoop.hdfs.protocol.BlockType.STRIPED;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.FileNotFoundException;
@@ -54,6 +57,7 @@ import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
@@ -67,6 +71,7 @@ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.util.Time;
+import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.Mockito;
 
@@ -98,12 +103,20 @@ public class TestINodeFile {
 
   INodeFile createINodeFile(short replication, long preferredBlockSize) {
     return new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
-        null, replication, preferredBlockSize, (byte)0);
+        null, replication, preferredBlockSize);
+  }
+
+  INodeFile createStripedINodeFile(long preferredBlockSize) {
+    return new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
+        null, null,
+        StripedFileTestUtil.getDefaultECPolicy().getId(),
+        preferredBlockSize,
+        HdfsConstants.WARM_STORAGE_POLICY_ID, STRIPED);
   }
 
   private static INodeFile createINodeFile(byte storagePolicyID) {
     return new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID, null, perm, 0L, 0L,
-        null, (short)3, 1024L, storagePolicyID);
+        null, (short)3, null, 1024L, storagePolicyID, CONTIGUOUS);
   }
 
   @Test
@@ -122,6 +135,61 @@ public class TestINodeFile {
   @Test(expected=IllegalArgumentException.class)
   public void testStoragePolicyIdAboveUpperBound () throws IllegalArgumentException {
     createINodeFile((byte)16);
+  }
+
+  @Test
+  public void testContiguousLayoutRedundancy() {
+    INodeFile inodeFile;
+    try {
+      new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID,
+          null, perm, 0L, 0L, null, new Short((short) 3) /*replication*/,
+          StripedFileTestUtil.getDefaultECPolicy().getId() /*ec policy*/,
+          preferredBlockSize, HdfsConstants.WARM_STORAGE_POLICY_ID, CONTIGUOUS);
+      fail("INodeFile construction should fail when both replication and " +
+          "ECPolicy requested!");
+    } catch (IllegalArgumentException iae) {
+      LOG.info("Expected exception: ", iae);
+    }
+
+    try {
+      new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID,
+          null, perm, 0L, 0L, null, null /*replication*/, null /*ec policy*/,
+          preferredBlockSize, HdfsConstants.WARM_STORAGE_POLICY_ID, CONTIGUOUS);
+      fail("INodeFile construction should fail when replication param not " +
+          "provided for contiguous layout!");
+    } catch (IllegalArgumentException iae) {
+      LOG.info("Expected exception: ", iae);
+    }
+
+    try {
+      new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID,
+          null, perm, 0L, 0L, null, Short.MAX_VALUE /*replication*/,
+          null /*ec policy*/, preferredBlockSize,
+          HdfsConstants.WARM_STORAGE_POLICY_ID, CONTIGUOUS);
+      fail("INodeFile construction should fail when replication param is " +
+          "beyond the range supported!");
+    } catch (IllegalArgumentException iae) {
+      LOG.info("Expected exception: ", iae);
+    }
+
+    final Short replication = new Short((short) 3);
+    try {
+      new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID,
+          null, perm, 0L, 0L, null, replication, null /*ec policy*/,
+          preferredBlockSize, HdfsConstants.WARM_STORAGE_POLICY_ID, STRIPED);
+      fail("INodeFile construction should fail when replication param is " +
+          "provided for striped layout!");
+    } catch (IllegalArgumentException iae) {
+      LOG.info("Expected exception: ", iae);
+    }
+
+    inodeFile = new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID,
+        null, perm, 0L, 0L, null, replication, null /*ec policy*/,
+        preferredBlockSize, HdfsConstants.WARM_STORAGE_POLICY_ID, CONTIGUOUS);
+
+    Assert.assertTrue(!inodeFile.isStriped());
+    Assert.assertEquals(replication.shortValue(),
+        inodeFile.getFileReplication());
   }
 
   /**
@@ -214,14 +282,24 @@ public class TestINodeFile {
 
     dir.addChild(inf);
     assertEquals("d"+Path.SEPARATOR+"f", inf.getFullPathName());
-    
+
     root.addChild(dir);
     assertEquals(Path.SEPARATOR+"d"+Path.SEPARATOR+"f", inf.getFullPathName());
     assertEquals(Path.SEPARATOR+"d", dir.getFullPathName());
 
     assertEquals(Path.SEPARATOR, root.getFullPathName());
   }
-  
+
+  @Test
+  public void testGetBlockType() {
+    replication = 3;
+    preferredBlockSize = 128*1024*1024;
+    INodeFile inf = createINodeFile(replication, preferredBlockSize);
+    assertEquals(inf.getBlockType(), CONTIGUOUS);
+    INodeFile striped = createStripedINodeFile(preferredBlockSize);
+    assertEquals(striped.getBlockType(), STRIPED);
+  }
+
   /**
    * FSDirectory#unprotectedSetQuota creates a new INodeDirectoryWithQuota to
    * replace the original INodeDirectory. Before HDFS-4243, the parent field of
@@ -300,7 +378,7 @@ public class TestINodeFile {
     INodeFile[] iNodes = new INodeFile[nCount];
     for (int i = 0; i < nCount; i++) {
       iNodes[i] = new INodeFile(i, null, perm, 0L, 0L, null, replication,
-          preferredBlockSize, (byte)0);
+          preferredBlockSize);
       iNodes[i].setLocalName(DFSUtil.string2Bytes(fileNamePrefix + i));
       BlockInfo newblock = new BlockInfoContiguous(replication);
       iNodes[i].addBlock(newblock);
@@ -358,7 +436,7 @@ public class TestINodeFile {
     {//cast from INodeFileUnderConstruction
       final INode from = new INodeFile(
           HdfsConstants.GRANDFATHER_INODE_ID, null, perm, 0L, 0L, null, replication,
-          1024L, (byte)0);
+          1024L);
       from.asFile().toUnderConstruction("client", "machine");
     
       //cast to INodeFile, should success
@@ -491,8 +569,8 @@ public class TestINodeFile {
 
       // Apply editlogs to fsimage, ensure inodeUnderConstruction is handled
       fsn.enterSafeMode(false);
-      fsn.saveNamespace();
-      fsn.leaveSafeMode();
+      fsn.saveNamespace(0, 0);
+      fsn.leaveSafeMode(false);
 
       outStream.close();
 
@@ -921,6 +999,46 @@ public class TestINodeFile {
     return INodeDirectory.valueOf(fsdir.getINode(dirStr), dirStr);
   }
 
+  /**
+   * Test whether the inode in inodeMap has been replaced after regular inode
+   * replacement
+   */
+  @Test
+  public void testInodeReplacement() throws Exception {
+    final Configuration conf = new Configuration();
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+      cluster.waitActive();
+      final DistributedFileSystem hdfs = cluster.getFileSystem();
+      final FSDirectory fsdir = cluster.getNamesystem().getFSDirectory();
+
+      final Path dir = new Path("/dir");
+      hdfs.mkdirs(dir);
+      INodeDirectory dirNode = getDir(fsdir, dir);
+      INode dirNodeFromNode = fsdir.getInode(dirNode.getId());
+      assertSame(dirNode, dirNodeFromNode);
+
+      // set quota to dir, which leads to node replacement
+      hdfs.setQuota(dir, Long.MAX_VALUE - 1, Long.MAX_VALUE - 1);
+      dirNode = getDir(fsdir, dir);
+      assertTrue(dirNode.isWithQuota());
+      // the inode in inodeMap should also be replaced
+      dirNodeFromNode = fsdir.getInode(dirNode.getId());
+      assertSame(dirNode, dirNodeFromNode);
+
+      hdfs.setQuota(dir, -1, -1);
+      dirNode = getDir(fsdir, dir);
+      // the inode in inodeMap should also be replaced
+      dirNodeFromNode = fsdir.getInode(dirNode.getId());
+      assertSame(dirNode, dirNodeFromNode);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+  
   @Test
   public void testDotdotInodePath() throws Exception {
     final Configuration conf = new Configuration();
@@ -954,7 +1072,6 @@ public class TestINodeFile {
       }
     }
   }
-
   @Test
   public void testLocationLimitInListingOps() throws Exception {
     final Configuration conf = new Configuration();
@@ -1075,7 +1192,7 @@ public class TestINodeFile {
   public void testFileUnderConstruction() {
     replication = 3;
     final INodeFile file = new INodeFile(HdfsConstants.GRANDFATHER_INODE_ID, null,
-        perm, 0L, 0L, null, replication, 1024L, (byte)0);
+        perm, 0L, 0L, null, replication, 1024L);
     assertFalse(file.isUnderConstruction());
 
     final String clientName = "client";

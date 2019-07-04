@@ -30,6 +30,7 @@ import org.apache.hadoop.hdfs.security.token.block.BlockTokenSelector;
 import org.apache.hadoop.security.KerberosInfo;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenInfo;
+import org.apache.hadoop.hdfs.server.datanode.DiskBalancerWorkStatus;
 
 /** An client-datanode protocol for block recovery
  */
@@ -111,25 +112,6 @@ public interface ClientDatanodeProtocol {
       Token<BlockTokenIdentifier> token) throws IOException;
 
   /**
-   * Retrieves volume location information about a list of blocks on a datanode.
-   * This is in the form of an opaque {@link org.apache.hadoop.fs.VolumeId}
-   * for each configured data directory, which is not guaranteed to be
-   * the same across DN restarts.
-   * 
-   * @param blockPoolId the pool to query
-   * @param blockIds
-   *          list of blocks on the local datanode
-   * @param tokens
-   *          block access tokens corresponding to the requested blocks
-   * @return an HdfsBlocksMetadata that associates {@link ExtendedBlock}s with
-   *         data directories
-   * @throws IOException
-   *           if datanode is unreachable, or replica is not found on datanode
-   */
-  HdfsBlocksMetadata getHdfsBlocksMetadata(String blockPoolId,
-      long []blockIds, List<Token<BlockTokenIdentifier>> tokens) throws IOException; 
-
-  /**
    * Shuts down a datanode.
    *
    * @param forUpgrade If true, data node does extra prep work before shutting
@@ -182,4 +164,39 @@ public interface ClientDatanodeProtocol {
    * @return balancer bandwidth
    */
   long getBalancerBandwidth() throws IOException;
+
+  /**
+   * Get volume report of datanode.
+   */
+  List<DatanodeVolumeInfo> getVolumeReport() throws IOException;
+
+  /**
+   * Submit a disk balancer plan for execution.
+   */
+  void submitDiskBalancerPlan(String planID, long planVersion, String planFile,
+                              String planData, boolean skipDateCheck)
+       throws IOException;
+
+  /**
+   * Cancel an executing plan.
+   *
+   * @param planID - A SHA-1 hash of the plan string.
+   */
+  void cancelDiskBalancePlan(String planID) throws IOException;
+
+
+  /**
+   * Gets the status of an executing diskbalancer Plan.
+   */
+  DiskBalancerWorkStatus queryDiskBalancerPlan() throws IOException;
+
+  /**
+   * Gets a run-time configuration value from running diskbalancer instance.
+   * For example : Disk Balancer bandwidth of a running instance.
+   *
+   * @param key runtime configuration key
+   * @return value of the key as a string.
+   * @throws IOException - Throws if there is no such key
+   */
+  String getDiskBalancerSetting(String key) throws IOException;
 }

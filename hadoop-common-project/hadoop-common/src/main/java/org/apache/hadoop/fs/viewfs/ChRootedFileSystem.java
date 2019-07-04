@@ -27,6 +27,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
+import org.apache.hadoop.fs.BlockStoragePolicySpi;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -39,12 +40,12 @@ import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.FsStatus;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.XAttrSetFlag;
+import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.fs.XAttrSetFlag;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
-import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.Progressable;
@@ -134,7 +135,7 @@ class ChRootedFileSystem extends FilterFileSystem {
   /**
    * Strip out the root from the path.
    * @param p - fully qualified path p
-   * @return -  the remaining path  without the begining /
+   * @return -  the remaining path  without the beginning /
    * @throws IOException if the p is not prefixed with root
    */
   String stripOutRoot(final Path p) throws IOException {
@@ -221,9 +222,20 @@ class ChRootedFileSystem extends FilterFileSystem {
   }
 
   @Override
+  public FileChecksum getFileChecksum(final Path f, final long length)
+      throws IOException {
+    return super.getFileChecksum(fullPath(f), length);
+  }
+
+  @Override
   public FileStatus getFileStatus(final Path f) 
       throws IOException {
     return super.getFileStatus(fullPath(f));
+  }
+
+  @Override
+  public Path getLinkTarget(Path f) throws IOException {
+    return super.getLinkTarget(fullPath(f));
   }
 
   @Override
@@ -430,5 +442,21 @@ class ChRootedFileSystem extends FilterFileSystem {
   @Override
   public FsServerDefaults getServerDefaults(Path f) throws IOException {
     return super.getServerDefaults(fullPath(f));
-  }  
+  }
+
+  @Override
+  public BlockStoragePolicySpi getStoragePolicy(Path src) throws IOException {
+    return super.getStoragePolicy(fullPath(src));
+  }
+
+  @Override
+  public void setStoragePolicy(Path src, String policyName) throws IOException {
+    super.setStoragePolicy(fullPath(src), policyName);
+  }
+
+  @Override
+  public void unsetStoragePolicy(Path src) throws IOException {
+    super.unsetStoragePolicy(fullPath(src));
+  }
+
 }

@@ -48,7 +48,7 @@ class DatanodeStats {
 
   synchronized void add(final DatanodeDescriptor node) {
     xceiverCount += node.getXceiverCount();
-    if (!(node.isDecommissionInProgress() || node.isDecommissioned())) {
+    if (node.isInService()) {
       capacityUsed += node.getDfsUsed();
       capacityUsedNonDfs += node.getNonDfsUsed();
       blockPoolUsed += node.getBlockPoolUsed();
@@ -58,7 +58,8 @@ class DatanodeStats {
       capacityRemaining += node.getRemaining();
       cacheCapacity += node.getCacheCapacity();
       cacheUsed += node.getCacheUsed();
-    } else if (!node.isDecommissioned()) {
+    } else if (node.isDecommissionInProgress() ||
+        node.isEnteringMaintenance()) {
       cacheCapacity += node.getCacheCapacity();
       cacheUsed += node.getCacheUsed();
     }
@@ -76,7 +77,7 @@ class DatanodeStats {
 
   synchronized void subtract(final DatanodeDescriptor node) {
     xceiverCount -= node.getXceiverCount();
-    if (!(node.isDecommissionInProgress() || node.isDecommissioned())) {
+    if (node.isInService()) {
       capacityUsed -= node.getDfsUsed();
       capacityUsedNonDfs -= node.getNonDfsUsed();
       blockPoolUsed -= node.getBlockPoolUsed();
@@ -86,7 +87,8 @@ class DatanodeStats {
       capacityRemaining -= node.getRemaining();
       cacheCapacity -= node.getCacheCapacity();
       cacheUsed -= node.getCacheUsed();
-    } else if (!node.isDecommissioned()) {
+    } else if (node.isDecommissionInProgress() ||
+        node.isEnteringMaintenance()) {
       cacheCapacity -= node.getCacheCapacity();
       cacheUsed -= node.getCacheUsed();
     }
@@ -181,7 +183,7 @@ class DatanodeStats {
       StorageTypeStats storageTypeStats =
           storageTypeStatsMap.get(storageType);
       if (storageTypeStats == null) {
-        storageTypeStats = new StorageTypeStats();
+        storageTypeStats = new StorageTypeStats(storageType);
         storageTypeStatsMap.put(storageType, storageTypeStats);
       }
       storageTypeStats.addNode(node);
@@ -192,7 +194,7 @@ class DatanodeStats {
       StorageTypeStats storageTypeStats =
           storageTypeStatsMap.get(info.getStorageType());
       if (storageTypeStats == null) {
-        storageTypeStats = new StorageTypeStats();
+        storageTypeStats = new StorageTypeStats(info.getStorageType());
         storageTypeStatsMap.put(info.getStorageType(), storageTypeStats);
       }
       storageTypeStats.addStorage(info, node);

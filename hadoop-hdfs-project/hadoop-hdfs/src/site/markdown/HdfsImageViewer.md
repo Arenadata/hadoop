@@ -15,16 +15,7 @@
 Offline Image Viewer Guide
 ==========================
 
-* [Offline Image Viewer Guide](#Offline_Image_Viewer_Guide)
-    * [Overview](#Overview)
-    * [Usage](#Usage)
-        * [Web Processor](#Web_Processor)
-        * [XML Processor](#XML_Processor)
-    * [Options](#Options)
-    * [Analyzing Results](#Analyzing_Results)
-    * [oiv\_legacy Command](#oiv_legacy_Command)
-        * [Usage](#Usage)
-        * [Options](#Options)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Overview
 --------
@@ -50,10 +41,13 @@ The Offline Image Viewer provides several output processors:
     ..., s[n-1], maxSize], and the processor calculates how many files
     in the system fall into each segment [s[i-1], s[i]). Note that
     files larger than maxSize always fall into the very last segment.
-    The output file is formatted as a tab separated two column table:
-    Size and NumFiles. Where Size represents the start of the segment,
+    By default, the output file is formatted as a tab separated two column
+    table: Size and NumFiles. Where Size represents the start of the segment,
     and numFiles is the number of files form the image which size falls
-    in this segment.
+    in this segment. By specifying the option -format, the output file will be
+    formatted in a human-readable fashion rather than a number of bytes that
+    showed in Size column. In addition, the Size column will be changed to the
+    Size Range column.
 
 4. Delimited (experimental): Generate a text file with all of the elements
    common to both inodes and inodes-under-construction, separated by a
@@ -105,7 +99,7 @@ The Web processor now supports the following operations:
 * [GETACLSTATUS](./WebHDFS.html#Get_ACL_Status)
 * [GETXATTRS](./WebHDFS.html#Get_an_XAttr)
 * [LISTXATTRS](./WebHDFS.html#List_all_XAttrs)
-* [CONTENTSUMMARY] (./WebHDFS.html#Get_Content_Summary_of_a_Directory)
+* [CONTENTSUMMARY](./WebHDFS.html#Get_Content_Summary_of_a_Directory)
 
 ### XML Processor
 
@@ -139,6 +133,69 @@ Applying the Offline Image Viewer with XML processor would result in the followi
          </inode>
        ...remaining output omitted...
 
+### ReverseXML Processor
+
+ReverseXML processor is the opposite of the XML processor. Users can specify input XML file and output fsimage file via -i and -o command-line.
+
+       bash$ bin/hdfs oiv -p ReverseXML -i fsimage.xml -o fsimage
+
+This will reconstruct an fsimage from an XML file.
+
+### FileDistribution Processor
+
+FileDistribution processor can analyze file sizes in the namespace image. Users can specify maxSize (128GB by default) and step (2MB by default) in bytes via -maxSize and -step command-line.
+
+       bash$ bin/hdfs oiv -p FileDistribution -maxSize maxSize -step size -i fsimage -o output
+
+The processor will calculate how many files in the system fall into each segment. The output file is formatted as a tab separated two column table showed as the following output:
+
+       Size	NumFiles
+       4	1
+       12	1
+       16	1
+       20	1
+       totalFiles = 4
+       totalDirectories = 2
+       totalBlocks = 4
+       totalSpace = 48
+       maxFileSize = 21
+
+To make the output result look more readable, users can specify -format option in addition.
+
+       bash$ bin/hdfs oiv -p FileDistribution -maxSize maxSize -step size -format -i fsimage -o output
+
+This would result in the following output:
+
+       Size Range	NumFiles
+       (0 B, 4 B]	1
+       (8 B, 12 B]	1
+       (12 B, 16 B]	1
+       (16 B, 21 B]	1
+       totalFiles = 4
+       totalDirectories = 2
+       totalBlocks = 4
+       totalSpace = 48
+       maxFileSize = 21
+
+### Delimited Processor
+
+Delimited processor generates a text representation of the fsimage, with each element separated by a delimiter string (\t by default). Users can specify a new delimiter string by -delimiter option.
+
+       bash$ bin/hdfs oiv -p Delimited -delimiter delimiterString -i fsimage -o output
+
+In addition, users can specify a temporary dir to cache intermediate result by the following command:
+
+       bash$ bin/hdfs oiv -p Delimited -delimiter delimiterString -t temporaryDir -i fsimage -o output
+
+If not set, Delimited processor will construct the namespace in memory before outputting text. The output result of this processor should be like the following output:
+
+       Path	Replication	ModificationTime	AccessTime	PreferredBlockSize	BlocksCount	FileSize	NSQUOTA	DSQUOTA	Permission	UserName	GroupName
+       /	0	2017-02-13 10:39	1970-01-01 08:00	0	0	0	9223372036854775807	-1	drwxr-xr-x	root	supergroup
+       /dir0	0	2017-02-13 10:39	1970-01-01 08:00	0	0	0	-1	-1	drwxr-xr-x	root	supergroup
+       /dir0/file0	1	2017-02-13 10:39	2017-02-13 10:39	134217728	1	1	0	0	-rw-r--r--	root	supergroup
+       /dir0/file1	1	2017-02-13 10:39	2017-02-13 10:39	134217728	1	1	0	0	-rw-r--r--	root	supergroup
+       /dir0/file2	1	2017-02-13 10:39	2017-02-13 10:39	134217728	1	1	0	0	-rw-r--r--	root	supergroup
+
 Options
 -------
 
@@ -150,6 +207,7 @@ Options
 | `-addr` *address* | Specify the address(host:port) to listen. (localhost:5978 by default). This option is used with Web processor. |
 | `-maxSize` *size* | Specify the range [0, maxSize] of file sizes to be analyzed in bytes (128GB by default). This option is used with FileDistribution processor. |
 | `-step` *size* | Specify the granularity of the distribution in bytes (2MB by default). This option is used with FileDistribution processor. |
+| `-format` | Format the output result in a human-readable fashion rather than a number of bytes. (false by default). This option is used with FileDistribution processor. |
 | `-delimiter` *arg* | Delimiting string to use with Delimited processor. |
 | `-t`\|`--temp` *temporary dir* | Use temporary dir to cache intermediate result to generate Delimited outputs. If not set, Delimited processor constructs the namespace in memory before outputting text. |
 | `-h`\|`--help` | Display the tool usage and help information and exit. |
@@ -180,7 +238,10 @@ Due to the internal layout changes introduced by the ProtocolBuffer-based fsimag
 |:---- |:---- |
 | `-i`\|`--inputFile` *input file* | Specify the input fsimage file to process. Required. |
 | `-o`\|`--outputFile` *output file* | Specify the output filename, if the specified output processor generates one. If the specified file already exists, it is silently overwritten. Required. |
-| `-p`\|`--processor` *processor* | Specify the image processor to apply against the image file. Valid options are Ls (default), XML, Delimited, Indented, and FileDistribution. |
+| `-p`\|`--processor` *processor* | Specify the image processor to apply against the image file. Valid options are Ls (default), XML, Delimited, Indented, FileDistribution and NameDistribution. |
+| `-maxSize` *size* | Specify the range [0, maxSize] of file sizes to be analyzed in bytes (128GB by default). This option is used with FileDistribution processor. |
+| `-step` *size* | Specify the granularity of the distribution in bytes (2MB by default). This option is used with FileDistribution processor. |
+| `-format` | Format the output result in a human-readable fashion rather than a number of bytes. (false by default). This option is used with FileDistribution processor. |
 | `-skipBlocks` | Do not enumerate individual blocks within files. This may save processing time and outfile file space on namespaces with very large files. The Ls processor reads the blocks to correctly determine file sizes and ignores this option. |
 | `-printToScreen` | Pipe output of processor to console as well as specified file. On extremely large namespaces, this may increase processing time by an order of magnitude. |
 | `-delimiter` *arg* | When used in conjunction with the Delimited processor, replaces the default tab delimiter with the string specified by *arg*. |

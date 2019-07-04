@@ -21,7 +21,11 @@ package org.apache.hadoop.yarn.server.resourcemanager;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
@@ -34,18 +38,23 @@ import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterRespo
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.ExecutionTypeRequest;
+import org.apache.hadoop.yarn.api.records.ResourceSizing;
+import org.apache.hadoop.yarn.api.records.SchedulingRequest;
 import org.apache.hadoop.yarn.api.records.UpdateContainerRequest;
+import org.apache.hadoop.yarn.api.resource.PlacementConstraint;
+import org.apache.hadoop.yarn.api.resource.PlacementConstraints;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.log4j.Logger;
-import org.junit.Assert;
 
 public class MockAM {
 
@@ -57,6 +66,9 @@ public class MockAM {
   private ApplicationMasterProtocol amRMProtocol;
   private UserGroupInformation ugi;
   private volatile AllocateResponse lastResponse;
+  private Map<Set<String>, PlacementConstraint> placementConstraints =
+      new HashMap<>();
+  private List<SchedulingRequest> schedulingRequests = new ArrayList<>();
 
   private final List<ResourceRequest> requests = new ArrayList<ResourceRequest>();
   private final List<ContainerId> releases = new ArrayList<ContainerId>();
@@ -74,36 +86,33 @@ public class MockAM {
     this.amRMProtocol = amRMProtocol;
   }
 
-  public void waitForState(RMAppAttemptState finalState) throws Exception {
+  /**
+   * Wait until an attempt has reached a specified state.
+   * The timeout is 40 seconds.
+   * @param finalState the attempt state waited
+   * @throws InterruptedException
+   *         if interrupted while waiting for the state transition
+   */
+  private void waitForState(RMAppAttemptState finalState)
+      throws InterruptedException {
     RMApp app = context.getRMApps().get(attemptId.getApplicationId());
     RMAppAttempt attempt = app.getRMAppAttempt(attemptId);
-    final int timeoutMsecs = 40000;
-    final int minWaitMsecs = 1000;
-    final int waitMsPerLoop = 500;
-    int loop = 0;
-    while (!finalState.equals(attempt.getAppAttemptState())
-        && waitMsPerLoop * loop < timeoutMsecs) {
-      LOG.info("AppAttempt : " + attemptId + " State is : " +
-          attempt.getAppAttemptState() + " Waiting for state : " +
-          finalState);
-      Thread.yield();
-      Thread.sleep(waitMsPerLoop);
-      loop++;
-    }
-    int waitedMsecs = waitMsPerLoop * loop;
-    if (minWaitMsecs > waitedMsecs) {
-      Thread.sleep(minWaitMsecs - waitedMsecs);
-    }
-    LOG.info("Attempt State is : " + attempt.getAppAttemptState());
-    if (waitedMsecs >= timeoutMsecs) {
-      Assert.fail("Attempt state is not correct (timedout): expected: "
-          + finalState + " actual: " + attempt.getAppAttemptState());
-    }
+    MockRM.waitForState(attempt, finalState);
   }
 
   public RegisterApplicationMasterResponse registerAppAttempt()
       throws Exception {
     return registerAppAttempt(true);
+  }
+
+  public void addPlacementConstraint(Set<String> tags,
+      PlacementConstraint constraint) {
+    placementConstraints.put(tags, constraint);
+  }
+
+  public MockAM addSchedulingRequest(List<SchedulingRequest> reqs) {
+    schedulingRequests.addAll(reqs);
+    return this;
   }
 
   public RegisterApplicationMasterResponse registerAppAttempt(boolean wait)
@@ -117,6 +126,9 @@ public class MockAM {
     req.setHost("");
     req.setRpcPort(1);
     req.setTrackingUrl("");
+    if (!placementConstraints.isEmpty()) {
+      req.setPlacementConstraints(this.placementConstraints);
+    }
     if (ugi == null) {
       ugi = UserGroupInformation.createRemoteUser(
           attemptId.toString());
@@ -139,9 +151,27 @@ public class MockAM {
     }
   }
 
+  public boolean setApplicationLastResponseId(int newLastResponseId) {
+    ApplicationMasterService applicationMasterService =
+        (ApplicationMasterService) amRMProtocol;
+    responseId = newLastResponseId;
+    return applicationMasterService.setAttemptLastResponseId(attemptId,
+        newLastResponseId);
+  }
+
+  public int getResponseId() {
+    return responseId;
+  }
+
   public void addRequests(String[] hosts, int memory, int priority,
       int containers) throws Exception {
-    requests.addAll(createReq(hosts, memory, priority, containers));
+    addRequests(hosts, memory, priority, containers, 0L);
+  }
+
+  public void addRequests(String[] hosts, int memory, int priority,
+      int containers, long allocationRequestId) throws Exception {
+    requests.addAll(
+        createReq(hosts, memory, priority, containers, allocationRequestId));
   }
 
   public AllocateResponse schedule() throws Exception {
@@ -172,17 +202,19 @@ public class MockAM {
       List<ContainerId> releases, String labelExpression) throws Exception {
     List<ResourceRequest> reqs =
         createReq(new String[] { host }, memory, priority, numContainers,
-            labelExpression);
+            labelExpression, -1);
     return allocate(reqs, releases);
   }
   
-  public List<ResourceRequest> createReq(String[] hosts, int memory, int priority,
-      int containers) throws Exception {
-    return createReq(hosts, memory, priority, containers, null);
+  public List<ResourceRequest> createReq(String[] hosts, int memory,
+      int priority, int containers, long allocationRequestId) throws Exception {
+    return createReq(hosts, memory, priority, containers, null,
+        allocationRequestId);
   }
 
-  public List<ResourceRequest> createReq(String[] hosts, int memory, int priority,
-      int containers, String labelExpression) throws Exception {
+  public List<ResourceRequest> createReq(String[] hosts, int memory,
+      int priority, int containers, String labelExpression,
+      long allocationRequestId) throws Exception {
     List<ResourceRequest> reqs = new ArrayList<ResourceRequest>();
     if (hosts != null) {
       for (String host : hosts) {
@@ -191,10 +223,12 @@ public class MockAM {
           ResourceRequest hostReq =
               createResourceReq(host, memory, priority, containers,
                   labelExpression);
+          hostReq.setAllocationRequestId(allocationRequestId);
           reqs.add(hostReq);
           ResourceRequest rackReq =
               createResourceReq("/default-rack", memory, priority, containers,
                   labelExpression);
+          rackReq.setAllocationRequestId(allocationRequestId);
           reqs.add(rackReq);
         }
       }
@@ -202,6 +236,7 @@ public class MockAM {
 
     ResourceRequest offRackReq = createResourceReq(ResourceRequest.ANY, memory,
         priority, containers, labelExpression);
+    offRackReq.setAllocationRequestId(allocationRequestId);
     reqs.add(offRackReq);
     return reqs;
   }
@@ -211,8 +246,15 @@ public class MockAM {
     return createResourceReq(resource, memory, priority, containers, null);
   }
 
-  public ResourceRequest createResourceReq(String resource, int memory, int priority,
-      int containers, String labelExpression) throws Exception {
+  public ResourceRequest createResourceReq(String resource, int memory,
+      int priority, int containers, String labelExpression) throws Exception {
+    return createResourceReq(resource, memory, priority, containers,
+        labelExpression, ExecutionTypeRequest.newInstance());
+  }
+
+  public ResourceRequest createResourceReq(String resource, int memory,
+      int priority, int containers, String labelExpression,
+      ExecutionTypeRequest executionTypeRequest) throws Exception {
     ResourceRequest req = Records.newRecord(ResourceRequest.class);
     req.setResourceName(resource);
     req.setNumContainers(containers);
@@ -223,10 +265,13 @@ public class MockAM {
     capability.setMemorySize(memory);
     req.setCapability(capability);
     if (labelExpression != null) {
-     req.setNodeLabelExpression(labelExpression); 
+      req.setNodeLabelExpression(labelExpression);
     }
+    req.setExecutionTypeRequest(executionTypeRequest);
     return req;
+
   }
+
 
   public AllocateResponse allocate(
       List<ResourceRequest> resourceRequest, List<ContainerId> releases)
@@ -234,10 +279,68 @@ public class MockAM {
     final AllocateRequest req =
         AllocateRequest.newInstance(0, 0F, resourceRequest,
           releases, null);
+    if (!schedulingRequests.isEmpty()) {
+      req.setSchedulingRequests(schedulingRequests);
+      schedulingRequests.clear();
+    }
     return allocate(req);
+  }
+
+  public AllocateResponse allocate(List<ResourceRequest> resourceRequest,
+      List<SchedulingRequest> newSchedulingRequests, List<ContainerId> releases)
+      throws Exception {
+    final AllocateRequest req =
+        AllocateRequest.newInstance(0, 0F, resourceRequest,
+            releases, null);
+    if (newSchedulingRequests != null) {
+      addSchedulingRequest(newSchedulingRequests);
+    }
+    if (!schedulingRequests.isEmpty()) {
+      req.setSchedulingRequests(schedulingRequests);
+      schedulingRequests.clear();
+    }
+    return allocate(req);
+  }
+
+  public AllocateResponse allocateIntraAppAntiAffinity(
+      ResourceSizing resourceSizing, Priority priority, long allocationId,
+      Set<String> allocationTags, String... targetTags) throws Exception {
+    return this.allocate(null,
+        Arrays.asList(SchedulingRequest.newBuilder().executionType(
+            ExecutionTypeRequest.newInstance(ExecutionType.GUARANTEED))
+            .allocationRequestId(allocationId).priority(priority)
+            .allocationTags(allocationTags).placementConstraintExpression(
+                PlacementConstraints
+                    .targetNotIn(PlacementConstraints.NODE,
+                        PlacementConstraints.PlacementTargets
+                            .allocationTagToIntraApp(targetTags)).build())
+            .resourceSizing(resourceSizing).build()), null);
+  }
+
+  public AllocateResponse allocateIntraAppAntiAffinity(
+      String nodePartition, ResourceSizing resourceSizing, Priority priority,
+      long allocationId, String... tags) throws Exception {
+    return this.allocate(null,
+        Arrays.asList(SchedulingRequest.newBuilder().executionType(
+            ExecutionTypeRequest.newInstance(ExecutionType.GUARANTEED))
+            .allocationRequestId(allocationId).priority(priority)
+            .placementConstraintExpression(PlacementConstraints
+                .targetNotIn(PlacementConstraints.NODE,
+                    PlacementConstraints.PlacementTargets
+                        .allocationTagToIntraApp(tags),
+                    PlacementConstraints.PlacementTargets
+                        .nodePartition(nodePartition)).build())
+            .resourceSizing(resourceSizing).build()), null);
   }
   
   public AllocateResponse sendContainerResizingRequest(
+      List<UpdateContainerRequest> updateRequests) throws Exception {
+    final AllocateRequest req = AllocateRequest.newInstance(0, 0F, null, null,
+        updateRequests, null);
+    return allocate(req);
+  }
+
+  public AllocateResponse sendContainerUpdateRequest(
       List<UpdateContainerRequest> updateRequests) throws Exception {
     final AllocateRequest req = AllocateRequest.newInstance(0, 0F, null, null,
         updateRequests, null);
@@ -258,19 +361,22 @@ public class MockAM {
 
   public AllocateResponse doAllocateAs(UserGroupInformation ugi,
       final AllocateRequest req) throws Exception {
-    req.setResponseId(++responseId);
+    req.setResponseId(responseId);
     try {
-      return ugi.doAs(new PrivilegedExceptionAction<AllocateResponse>() {
-        @Override
-        public AllocateResponse run() throws Exception {
-          return amRMProtocol.allocate(req);
-        }
-      });
+      AllocateResponse response =
+          ugi.doAs(new PrivilegedExceptionAction<AllocateResponse>() {
+            @Override
+            public AllocateResponse run() throws Exception {
+              return amRMProtocol.allocate(req);
+            }
+          });
+      responseId = response.getResponseId();
+      return response;
     } catch (UndeclaredThrowableException e) {
       throw (Exception) e.getCause();
     }
   }
-  
+
   public AllocateResponse doHeartbeat() throws Exception {
     return allocate(null, null);
   }

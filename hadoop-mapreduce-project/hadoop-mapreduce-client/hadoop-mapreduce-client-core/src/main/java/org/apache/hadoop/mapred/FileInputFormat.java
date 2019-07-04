@@ -30,8 +30,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.BlockLocation;
@@ -50,6 +48,8 @@ import org.apache.hadoop.util.StopWatch;
 import org.apache.hadoop.util.StringUtils;
 
 import com.google.common.collect.Iterables;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 
  * A base class for file-based {@link InputFormat}.
@@ -68,11 +68,11 @@ import com.google.common.collect.Iterables;
 @InterfaceStability.Stable
 public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
 
-  public static final Log LOG =
-    LogFactory.getLog(FileInputFormat.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(FileInputFormat.class);
   
   @Deprecated
-  public static enum Counter { 
+  public enum Counter {
     BYTES_READ
   }
 
@@ -369,6 +369,13 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
                 splitHosts[0], splitHosts[1]));
           }
         } else {
+          if (LOG.isDebugEnabled()) {
+            // Log only if the file is big enough to be splitted
+            if (length > Math.min(file.getBlockSize(), minSize)) {
+              LOG.debug("File is not splittable so no parallelization "
+                  + "is possible: " + file.getPath());
+            }
+          }
           String[][] splitHosts = getSplitHostsAndCachedHosts(blkLocations,0,length,clusterMap);
           splits.add(makeSplit(path, 0, length, splitHosts[0], splitHosts[1]));
         }

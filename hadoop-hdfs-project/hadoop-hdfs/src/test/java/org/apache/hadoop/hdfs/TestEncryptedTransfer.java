@@ -59,6 +59,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.Assert;
 import org.junit.rules.Timeout;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -319,6 +320,57 @@ public class TestEncryptedTransfer {
   }
 
   @Test
+  public void testFileChecksumWithInvalidEncryptionKey()
+      throws IOException, InterruptedException, TimeoutException {
+    if (resolverClazz != null) {
+      // TestTrustedChannelResolver does not use encryption keys.
+      return;
+    }
+    setEncryptionConfigKeys();
+    cluster = new MiniDFSCluster.Builder(conf).build();
+
+    fs = getFileSystem(conf);
+    DFSClient client = DFSClientAdapter.getDFSClient((DistributedFileSystem)fs);
+    DFSClient spyClient = Mockito.spy(client);
+    DFSClientAdapter.setDFSClient((DistributedFileSystem) fs, spyClient);
+    writeTestDataToFile(fs);
+    FileChecksum checksum = fs.getFileChecksum(TEST_PATH);
+
+    BlockTokenSecretManager btsm = cluster.getNamesystem().getBlockManager()
+        .getBlockTokenSecretManager();
+    // Reduce key update interval and token life for testing.
+    btsm.setKeyUpdateIntervalForTesting(2 * 1000);
+    btsm.setTokenLifetime(2 * 1000);
+    btsm.clearAllKeysForTesting();
+
+    // Wait until the encryption key becomes invalid.
+    LOG.info("Wait until encryption keys become invalid...");
+
+    DataEncryptionKey encryptionKey = spyClient.getEncryptionKey();
+    List<DataNode> dataNodes = cluster.getDataNodes();
+    for (DataNode dn: dataNodes) {
+      GenericTestUtils.waitFor(
+          new Supplier<Boolean>() {
+            @Override
+            public Boolean get() {
+              return !dn.getBlockPoolTokenSecretManager().
+                  get(encryptionKey.blockPoolId)
+                  .hasKey(encryptionKey.keyId);
+            }
+          }, 100, 30*1000
+      );
+    }
+    LOG.info("The encryption key is invalid on all nodes now.");
+    fs.getFileChecksum(TEST_PATH);
+    // verify that InvalidEncryptionKeyException is handled properly
+    Assert.assertTrue(client.getEncryptionKey() == null);
+    Mockito.verify(spyClient, times(1)).clearDataEncryptionKey();
+    // Retry the operation after clearing the encryption key
+    FileChecksum verifyChecksum = fs.getFileChecksum(TEST_PATH);
+    Assert.assertEquals(checksum, verifyChecksum);
+  }
+
+  @Test
   public void testLongLivedClientPipelineRecovery()
       throws IOException, InterruptedException, TimeoutException {
     if (resolverClazz != null) {
@@ -329,7 +381,7 @@ public class TestEncryptedTransfer {
     // client only retries establishing pipeline with the 4th node.
     int numDataNodes = 4;
     // do not consider load factor when selecting a data node
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY,
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
         false);
     setEncryptionConfigKeys();
 
@@ -353,9 +405,9 @@ public class TestEncryptedTransfer {
     // Wait until the encryption key becomes invalid.
     LOG.info("Wait until encryption keys become invalid...");
 
-    final DataEncryptionKey encryptionKey = spyClient.getEncryptionKey();
+    DataEncryptionKey encryptionKey = spyClient.getEncryptionKey();
     List<DataNode> dataNodes = cluster.getDataNodes();
-    for (final DataNode dn: dataNodes) {
+    for (DataNode dn: dataNodes) {
       GenericTestUtils.waitFor(
           new Supplier<Boolean>() {
             @Override

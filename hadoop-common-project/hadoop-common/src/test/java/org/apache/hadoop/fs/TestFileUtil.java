@@ -17,21 +17,29 @@
  */
 package org.apache.hadoop.fs;
 
-import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.*;
+import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-import java.io.BufferedReader;
+import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.PrintWriter;
 import java.net.InetAddress;
 import java.net.URI;
-import java.io.PrintWriter;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.net.UnknownHostException;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -42,22 +50,24 @@ import java.util.jar.Manifest;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.util.Shell;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.tools.tar.TarEntry;
 import org.apache.tools.tar.TarOutputStream;
-
-import javax.print.attribute.URISyntax;
-
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestFileUtil {
-  private static final Log LOG = LogFactory.getLog(TestFileUtil.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestFileUtil.class);
 
   private static final File TEST_DIR = GenericTestUtils.getTestDir("fu");
   private static final String FILE = "x";
@@ -426,10 +436,8 @@ public class TestFileUtil {
 
   @Test (timeout = 30000)
   public void testFailFullyDelete() throws IOException {
-    if(Shell.WINDOWS) {
-      // windows Dir.setWritable(false) does not work for directories
-      return;
-    }
+    // Windows Dir.setWritable(false) does not work for directories
+    assumeNotWindows();
     LOG.info("Running test to verify failure of fullyDelete()");
     setupDirsAndNonWritablePermissions();
     boolean ret = FileUtil.fullyDelete(new MyFile(del));
@@ -507,10 +515,8 @@ public class TestFileUtil {
 
   @Test (timeout = 30000)
   public void testFailFullyDeleteContents() throws IOException {
-    if(Shell.WINDOWS) {
-      // windows Dir.setWritable(false) does not work for directories
-      return;
-    }
+    // Windows Dir.setWritable(false) does not work for directories
+    assumeNotWindows();
     LOG.info("Running test to verify failure of fullyDeleteContents()");
     setupDirsAndNonWritablePermissions();
     boolean ret = FileUtil.fullyDeleteContents(new MyFile(del));
@@ -525,61 +531,6 @@ public class TestFileUtil {
     validateAndSetWritablePermissions(false, ret);
   }
   
-  @Test (timeout = 30000)
-  public void testCopyMergeSingleDirectory() throws IOException {
-    setupDirs();
-    boolean copyMergeResult = copyMerge("partitioned", "tmp/merged");
-    Assert.assertTrue("Expected successful copyMerge result.", copyMergeResult);
-    File merged = new File(TEST_DIR, "tmp/merged");
-    Assert.assertTrue("File tmp/merged must exist after copyMerge.",
-        merged.exists());
-    BufferedReader rdr = new BufferedReader(new FileReader(merged));
-
-    try {
-      Assert.assertEquals("Line 1 of merged file must contain \"foo\".",
-          "foo", rdr.readLine());
-      Assert.assertEquals("Line 2 of merged file must contain \"bar\".",
-          "bar", rdr.readLine());
-      Assert.assertNull("Expected end of file reading merged file.",
-          rdr.readLine());
-    }
-    finally {
-      rdr.close();
-    }
-  }
-
-  /**
-   * Calls FileUtil.copyMerge using the specified source and destination paths.
-   * Both source and destination are assumed to be on the local file system.
-   * The call will not delete source on completion and will not add an
-   * additional string between files.
-   * @param src String non-null source path.
-   * @param dst String non-null destination path.
-   * @return boolean true if the call to FileUtil.copyMerge was successful.
-   * @throws IOException if an I/O error occurs.
-   */
-  @SuppressWarnings("deprecation")
-  private boolean copyMerge(String src, String dst)
-      throws IOException {
-    Configuration conf = new Configuration();
-    FileSystem fs = FileSystem.getLocal(conf);
-    final boolean result;
-
-    try {
-      Path srcPath = new Path(TEST_DIR.getAbsolutePath(), src);
-      Path dstPath = new Path(TEST_DIR.getAbsolutePath(), dst);
-      boolean deleteSource = false;
-      String addString = null;
-      result = FileUtil.copyMerge(fs, srcPath, fs, dstPath, deleteSource, conf,
-          addString);
-    }
-    finally {
-      fs.close();
-    }
-
-    return result;
-  }
-
   /**
    * Test that getDU is able to handle cycles caused due to symbolic links
    * and that directory sizes are not added to the final calculated size
@@ -1117,6 +1068,40 @@ public class TestFileUtil {
     }
   }
 
+  @Test
+  public void testGetJarsInDirectory() throws Exception {
+    List<Path> jars = FileUtil.getJarsInDirectory("/foo/bar/bogus/");
+    assertTrue("no jars should be returned for a bogus path",
+        jars.isEmpty());
+
+    // setup test directory for files
+    assertFalse(tmp.exists());
+    assertTrue(tmp.mkdirs());
+
+    // create jar files to be returned
+    File jar1 = new File(tmp, "wildcard1.jar");
+    File jar2 = new File(tmp, "wildcard2.JAR");
+    List<File> matches = Arrays.asList(jar1, jar2);
+    for (File match: matches) {
+      assertTrue("failure creating file: " + match, match.createNewFile());
+    }
+
+    // create non-jar files, which we expect to not be included in the result
+    assertTrue(new File(tmp, "text.txt").createNewFile());
+    assertTrue(new File(tmp, "executable.exe").createNewFile());
+    assertTrue(new File(tmp, "README").createNewFile());
+
+    // pass in the directory
+    String directory = tmp.getCanonicalPath();
+    jars = FileUtil.getJarsInDirectory(directory);
+    assertEquals("there should be 2 jars", 2, jars.size());
+    for (Path jar: jars) {
+      URL url = jar.toUri().toURL();
+      assertTrue("the jar should match either of the jars",
+          url.equals(jar1.toURI().toURL()) || url.equals(jar2.toURI().toURL()));
+    }
+  }
+
   @Ignore
   public void setupCompareFs() {
     // Set up Strings
@@ -1194,4 +1179,84 @@ public class TestFileUtil {
     assertEquals(FileUtil.compareFs(fs3,fs4),true);
     assertEquals(FileUtil.compareFs(fs1,fs6),false);
   }
+
+  @Test(timeout = 8000)
+  public void testCreateSymbolicLinkUsingJava() throws IOException {
+    setupDirs();
+    final File simpleTar = new File(del, FILE);
+    OutputStream os = new FileOutputStream(simpleTar);
+    TarArchiveOutputStream tos = new TarArchiveOutputStream(os);
+    File untarFile = null;
+    try {
+      // Files to tar
+      final String tmpDir = "tmp/test";
+      File tmpDir1 = new File(tmpDir, "dir1/");
+      File tmpDir2 = new File(tmpDir, "dir2/");
+      // Delete the directories if they already exist
+      tmpDir1.mkdirs();
+      tmpDir2.mkdirs();
+
+      java.nio.file.Path symLink = FileSystems
+          .getDefault().getPath(tmpDir1.getPath() + "/sl");
+
+      // Create Symbolic Link
+      Files.createSymbolicLink(symLink,
+          FileSystems.getDefault().getPath(tmpDir2.getPath())).toString();
+      assertTrue(Files.isSymbolicLink(symLink.toAbsolutePath()));
+      // put entries in tar file
+      putEntriesInTar(tos, tmpDir1.getParentFile());
+      tos.close();
+
+      untarFile = new File(tmpDir, "2");
+      // Untar using java
+      FileUtil.unTarUsingJava(simpleTar, untarFile, false);
+
+      // Check symbolic link and other directories are there in untar file
+      assertTrue(Files.exists(untarFile.toPath()));
+      assertTrue(Files.exists(FileSystems.getDefault().getPath(untarFile
+          .getPath(), tmpDir)));
+      assertTrue(Files.isSymbolicLink(FileSystems.getDefault().getPath(untarFile
+          .getPath().toString(), symLink.toString())));
+
+    } finally {
+      FileUtils.deleteDirectory(new File("tmp"));
+      tos.close();
+    }
+
+  }
+
+  private void putEntriesInTar(TarArchiveOutputStream tos, File f)
+      throws IOException {
+    if (Files.isSymbolicLink(f.toPath())) {
+      TarArchiveEntry tarEntry = new TarArchiveEntry(f.getPath(),
+          TarArchiveEntry.LF_SYMLINK);
+      tarEntry.setLinkName(Files.readSymbolicLink(f.toPath()).toString());
+      tos.putArchiveEntry(tarEntry);
+      tos.closeArchiveEntry();
+      return;
+    }
+
+    if (f.isDirectory()) {
+      tos.putArchiveEntry(new TarArchiveEntry(f));
+      tos.closeArchiveEntry();
+      for (File child : f.listFiles()) {
+        putEntriesInTar(tos, child);
+      }
+    }
+
+    if (f.isFile()) {
+      tos.putArchiveEntry(new TarArchiveEntry(f));
+      BufferedInputStream origin = new BufferedInputStream(
+          new FileInputStream(f));
+      int count;
+      byte[] data = new byte[2048];
+      while ((count = origin.read(data)) != -1) {
+        tos.write(data, 0, count);
+      }
+      tos.flush();
+      tos.closeArchiveEntry();
+      origin.close();
+    }
+  }
+
 }

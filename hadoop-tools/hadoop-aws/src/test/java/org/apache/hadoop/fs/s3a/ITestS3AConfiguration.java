@@ -25,6 +25,7 @@ import com.amazonaws.services.s3.S3ClientOptions;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.reflect.FieldUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
 import org.apache.hadoop.fs.s3native.S3xLoginHelper;
@@ -109,7 +110,7 @@ public class ITestS3AConfiguration {
     } else {
       conf.set(Constants.ENDPOINT, endpoint);
       fs = S3ATestUtils.createTestFileSystem(conf);
-      AmazonS3 s3 = fs.getAmazonS3Client();
+      AmazonS3 s3 = fs.getAmazonS3ClientForTesting("test endpoint");
       String endPointRegion = "";
       // Differentiate handling of "s3-" and "s3." based endpoint identifiers
       String[] endpointParts = StringUtils.split(endpoint, '.');
@@ -144,6 +145,7 @@ public class ITestS3AConfiguration {
   @Test
   public void testProxyPortWithoutHost() throws Exception {
     conf = new Configuration();
+    conf.unset(Constants.PROXY_HOST);
     conf.setInt(Constants.MAX_ERROR_RETRIES, 2);
     conf.setInt(Constants.PROXY_PORT, 1);
     try {
@@ -161,6 +163,7 @@ public class ITestS3AConfiguration {
   @Test
   public void testAutomaticProxyPortSelection() throws Exception {
     conf = new Configuration();
+    conf.unset(Constants.PROXY_PORT);
     conf.setInt(Constants.MAX_ERROR_RETRIES, 2);
     conf.set(Constants.PROXY_HOST, "127.0.0.1");
     conf.set(Constants.SECURE_CONNECTIONS, "true");
@@ -177,39 +180,6 @@ public class ITestS3AConfiguration {
     } catch (AWSClientIOException e) {
       // expected
     }
-  }
-
-  @Test
-  public void testProxyPasswordFromCredentialProvider() throws Exception {
-    ClientConfiguration awsConf = new ClientConfiguration();
-    // set up conf to have a cred provider
-    final Configuration conf2 = new Configuration();
-    final File file = tempDir.newFile("test.jks");
-    final URI jks = ProviderUtils.nestURIForLocalJavaKeyStoreProvider(
-        file.toURI());
-    conf2.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH,
-        jks.toString());
-
-    provisionProxyPassword(conf2, "password");
-
-    // let's set the password in config and ensure that it uses the credential
-    // provider provisioned value instead.
-    conf2.set(Constants.PROXY_PASSWORD, "passwordLJM");
-    char[] pwd = conf2.getPassword(Constants.PROXY_PASSWORD);
-    assertNotNull("Proxy password should not retrun null.", pwd);
-    if (pwd != null) {
-      assertEquals("Proxy password override did NOT work.", "password",
-          new String(pwd));
-    }
-  }
-
-  void provisionProxyPassword(final Configuration conf2, String pwd)
-      throws Exception {
-    // add our password to the provider
-    final CredentialProvider provider =
-        CredentialProviderFactory.getProviders(conf2).get(0);
-    provider.createCredentialEntry(Constants.PROXY_PASSWORD, pwd.toCharArray());
-    provider.flush();
   }
 
   @Test
@@ -408,7 +378,7 @@ public class ITestS3AConfiguration {
     try {
       fs = S3ATestUtils.createTestFileSystem(conf);
       assertNotNull(fs);
-      AmazonS3 s3 = fs.getAmazonS3Client();
+      AmazonS3 s3 = fs.getAmazonS3ClientForTesting("configuration");
       assertNotNull(s3);
       S3ClientOptions clientOptions = getField(s3, S3ClientOptions.class,
           "clientOptions");
@@ -432,11 +402,12 @@ public class ITestS3AConfiguration {
     conf = new Configuration();
     fs = S3ATestUtils.createTestFileSystem(conf);
     assertNotNull(fs);
-    AmazonS3 s3 = fs.getAmazonS3Client();
+    AmazonS3 s3 = fs.getAmazonS3ClientForTesting("User Agent");
     assertNotNull(s3);
     ClientConfiguration awsConf = getField(s3, ClientConfiguration.class,
         "clientConfiguration");
-    assertEquals("Hadoop " + VersionInfo.getVersion(), awsConf.getUserAgent());
+    assertEquals("Hadoop " + VersionInfo.getVersion(),
+        awsConf.getUserAgentPrefix());
   }
 
   @Test
@@ -445,12 +416,12 @@ public class ITestS3AConfiguration {
     conf.set(Constants.USER_AGENT_PREFIX, "MyApp");
     fs = S3ATestUtils.createTestFileSystem(conf);
     assertNotNull(fs);
-    AmazonS3 s3 = fs.getAmazonS3Client();
+    AmazonS3 s3 = fs.getAmazonS3ClientForTesting("User agent");
     assertNotNull(s3);
     ClientConfiguration awsConf = getField(s3, ClientConfiguration.class,
         "clientConfiguration");
     assertEquals("MyApp, Hadoop " + VersionInfo.getVersion(),
-        awsConf.getUserAgent());
+        awsConf.getUserAgentPrefix());
   }
 
   @Test
@@ -513,7 +484,7 @@ public class ITestS3AConfiguration {
       }
     });
     assertEquals("username", alice, fs.getUsername());
-    S3AFileStatus status = fs.getFileStatus(new Path("/"));
+    FileStatus status = fs.getFileStatus(new Path("/"));
     assertEquals("owner in " + status, alice, status.getOwner());
     assertEquals("group in " + status, alice, status.getGroup());
   }
@@ -585,6 +556,16 @@ public class ITestS3AConfiguration {
     config.set(USER_AGENT_PREFIX, "UA-orig");
     Configuration updated = propagateBucketOptions(config, "c");
     assertOptionEquals(updated, USER_AGENT_PREFIX, "UA-c");
+  }
+
+  @Test
+  public void testClearBucketOption() throws Throwable {
+    Configuration config = new Configuration();
+    config.set(USER_AGENT_PREFIX, "base");
+    setBucketOption(config, "bucket", USER_AGENT_PREFIX, "overridden");
+    clearBucketOption(config, "bucket", USER_AGENT_PREFIX);
+    Configuration updated = propagateBucketOptions(config, "c");
+    assertOptionEquals(updated, USER_AGENT_PREFIX, "base");
   }
 
   @Test

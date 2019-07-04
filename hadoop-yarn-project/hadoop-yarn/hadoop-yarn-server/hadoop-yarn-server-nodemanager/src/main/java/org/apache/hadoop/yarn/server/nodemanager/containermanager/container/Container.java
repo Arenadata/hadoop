@@ -18,28 +18,32 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.container;
 
-import java.util.List;
-import java.util.Map;
-
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NMContainerStatus;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ResourceSet;
+
+import java.util.List;
+import java.util.Map;
 
 public interface Container extends EventHandler<ContainerEvent> {
 
   ContainerId getContainerId();
 
+  long getContainerStartTime();
+
   Resource getResource();
 
-  void setResource(Resource targetResource);
-
   ContainerTokenIdentifier getContainerTokenIdentifier();
+
+  void setContainerTokenIdentifier(ContainerTokenIdentifier token);
 
   String getUser();
   
@@ -55,6 +59,50 @@ public interface Container extends EventHandler<ContainerEvent> {
 
   NMContainerStatus getNMContainerStatus();
 
+  boolean isRetryContextSet();
+
+  boolean shouldRetry(int errorCode);
+
+  String getWorkDir();
+
+  void setWorkDir(String workDir);
+
+  String getLogDir();
+
+  void setLogDir(String logDir);
+
+  void setIpAndHost(String[] ipAndHost);
+
   String toString();
 
+  Priority getPriority();
+
+  ResourceSet getResourceSet();
+
+  boolean isRunning();
+
+  void setIsReInitializing(boolean isReInitializing);
+
+  boolean isReInitializing();
+
+  boolean isMarkedForKilling();
+
+  boolean canRollback();
+
+  void commitUpgrade();
+
+  void sendLaunchEvent();
+
+  void sendKillEvent(int exitStatus, String description);
+
+  boolean isRecovering();
+
+  /**
+   * Get assigned resource mappings to the container.
+   *
+   * @return Resource Mappings of the container
+   */
+  ResourceMappings getResourceMappings();
+
+  void sendPauseEvent(String description);
 }

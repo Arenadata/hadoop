@@ -20,8 +20,10 @@ package org.apache.hadoop.yarn.server.nodemanager;
 
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
 import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.isA;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -59,6 +61,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.exceptions.ConfigurationException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.nodemanager.api.LocalizationProtocol;
 import org.apache.hadoop.yarn.server.nodemanager.api.ResourceLocalizationSpec;
@@ -162,8 +165,7 @@ public class TestDefaultContainerExecutor {
         DefaultContainerExecutor.FILECACHE_PERM);
     final FsPermission appDirPerm = new FsPermission(
         DefaultContainerExecutor.APPDIR_PERM);
-    final FsPermission logDirPerm = new FsPermission(
-        DefaultContainerExecutor.LOGDIR_PERM);
+
     List<String> localDirs = new ArrayList<String>();
     localDirs.add(new Path(BASE_TMP_PATH, "localDirA").toString());
     localDirs.add(new Path(BASE_TMP_PATH, "localDirB").toString());
@@ -175,7 +177,8 @@ public class TestDefaultContainerExecutor {
     conf.set(CommonConfigurationKeys.FS_PERMISSIONS_UMASK_KEY, "077");
     FileContext lfs = FileContext.getLocalFSFileContext(conf);
     DefaultContainerExecutor executor = new DefaultContainerExecutor(lfs);
-    executor.init();
+    executor.setConf(conf);
+    executor.init(null);
 
     try {
       executor.createUserLocalDirs(localDirs, user);
@@ -202,11 +205,20 @@ public class TestDefaultContainerExecutor {
         Assert.assertEquals(appDirPerm, stats.getPermission());
       }
 
-      executor.createAppLogDirs(appId, logDirs, user);
+      String[] permissionsArray = { "000", "111", "555", "710", "777" };
 
-      for (String dir : logDirs) {
-        FileStatus stats = lfs.getFileStatus(new Path(dir, appId));
-        Assert.assertEquals(logDirPerm, stats.getPermission());
+      for (String perm : permissionsArray ) {
+        conf.set(YarnConfiguration.NM_DEFAULT_CONTAINER_EXECUTOR_LOG_DIRS_PERMISSIONS, perm);
+        executor.clearLogDirPermissions();
+        FsPermission logDirPerm = new FsPermission(
+            executor.getLogDirPermissions());
+        executor.createAppLogDirs(appId, logDirs, user);
+
+        for (String dir : logDirs) {
+          FileStatus stats = lfs.getFileStatus(new Path(dir, appId));
+          Assert.assertEquals(logDirPerm, stats.getPermission());
+          lfs.delete(new Path(dir, appId), true);
+        }
       }
     } finally {
       deleteTmpFiles();
@@ -215,7 +227,7 @@ public class TestDefaultContainerExecutor {
 
   @Test
   public void testContainerLaunchError()
-      throws IOException, InterruptedException {
+      throws IOException, InterruptedException, ConfigurationException {
 
     if (Shell.WINDOWS) {
       BASE_TMP_PATH =
@@ -258,6 +270,7 @@ public class TestDefaultContainerExecutor {
     ContainerId cId = mock(ContainerId.class);
     ContainerLaunchContext context = mock(ContainerLaunchContext.class);
     HashMap<String, String> env = new HashMap<String, String>();
+    env.put("LANG", "C");
 
     when(container.getContainerId()).thenReturn(cId);
     when(container.getLaunchContext()).thenReturn(context);
@@ -304,7 +317,7 @@ public class TestDefaultContainerExecutor {
       Path workDir = localDir;
       Path pidFile = new Path(workDir, "pid.txt");
 
-      mockExec.init();
+      mockExec.init(null);
       mockExec.activateContainer(cId, pidFile);
       int ret = mockExec.launchContainer(new ContainerStartContext.Builder()
           .setContainer(container)
@@ -377,8 +390,8 @@ public class TestDefaultContainerExecutor {
           }
         }
         return null;
-      }
-    }).when(mockUtil).copy(any(Path.class), any(Path.class));
+      }}).when(mockUtil).copy(any(Path.class), any(Path.class),
+        anyBoolean(), anyBoolean());
 
     doAnswer(new Answer() {
       @Override
@@ -469,8 +482,41 @@ public class TestDefaultContainerExecutor {
     }
 
     // Verify that the calls happen the expected number of times
-    verify(mockUtil, times(1)).copy(any(Path.class), any(Path.class));
+    verify(mockUtil, times(1)).copy(any(Path.class), any(Path.class),
+        anyBoolean(), anyBoolean());
     verify(mockLfs, times(2)).getFsStatus(any(Path.class));
+  }
+
+  @Test
+  public void testPickDirectory() throws Exception {
+    Configuration conf = new Configuration();
+    FileContext lfs = FileContext.getLocalFSFileContext(conf);
+    DefaultContainerExecutor executor = new DefaultContainerExecutor(lfs);
+
+    long[] availableOnDisk = new long[2];
+    availableOnDisk[0] = 100;
+    availableOnDisk[1] = 100;
+    assertEquals(0, executor.pickDirectory(0L, availableOnDisk));
+    assertEquals(0, executor.pickDirectory(99L, availableOnDisk));
+    assertEquals(1, executor.pickDirectory(100L, availableOnDisk));
+    assertEquals(1, executor.pickDirectory(101L, availableOnDisk));
+    assertEquals(1, executor.pickDirectory(199L, availableOnDisk));
+
+    long[] availableOnDisk2 = new long[5];
+    availableOnDisk2[0] = 100;
+    availableOnDisk2[1] = 10;
+    availableOnDisk2[2] = 400;
+    availableOnDisk2[3] = 200;
+    availableOnDisk2[4] = 350;
+    assertEquals(0, executor.pickDirectory(0L, availableOnDisk2));
+    assertEquals(0, executor.pickDirectory(99L, availableOnDisk2));
+    assertEquals(1, executor.pickDirectory(100L, availableOnDisk2));
+    assertEquals(1, executor.pickDirectory(105L, availableOnDisk2));
+    assertEquals(2, executor.pickDirectory(110L, availableOnDisk2));
+    assertEquals(2, executor.pickDirectory(259L, availableOnDisk2));
+    assertEquals(3, executor.pickDirectory(700L, availableOnDisk2));
+    assertEquals(4, executor.pickDirectory(710L, availableOnDisk2));
+    assertEquals(4, executor.pickDirectory(910L, availableOnDisk2));
   }
 
 //  @Test

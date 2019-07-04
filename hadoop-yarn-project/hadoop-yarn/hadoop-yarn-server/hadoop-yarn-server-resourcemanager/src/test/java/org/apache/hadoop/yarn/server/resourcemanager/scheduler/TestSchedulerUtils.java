@@ -110,37 +110,37 @@ public class TestSchedulerUtils {
 
     // case negative memory
     ask.setCapability(Resources.createResource(-1024));
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(minMemory, ask.getCapability().getMemorySize());
 
     // case zero memory
     ask.setCapability(Resources.createResource(0));
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(minMemory, ask.getCapability().getMemorySize());
 
     // case memory is a multiple of minMemory
     ask.setCapability(Resources.createResource(2 * minMemory));
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(2 * minMemory, ask.getCapability().getMemorySize());
 
     // case memory is not a multiple of minMemory
     ask.setCapability(Resources.createResource(minMemory + 10));
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(2 * minMemory, ask.getCapability().getMemorySize());
 
     // case memory is equal to max allowed
     ask.setCapability(Resources.createResource(maxMemory));
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(maxMemory, ask.getCapability().getMemorySize());
 
     // case memory is just less than max
     ask.setCapability(Resources.createResource(maxMemory - 10));
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(maxMemory, ask.getCapability().getMemorySize());
 
@@ -148,14 +148,14 @@ public class TestSchedulerUtils {
     maxResource = Resources.createResource(maxMemory - 10, 0);
     ask.setCapability(Resources.createResource(maxMemory - 100));
     // multiple of minMemory > maxMemory, then reduce to maxMemory
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(maxResource.getMemorySize(), ask.getCapability().getMemorySize());
 
     // ask is more than max
     maxResource = Resources.createResource(maxMemory, 0);
     ask.setCapability(Resources.createResource(maxMemory + 100));
-    SchedulerUtils.normalizeRequest(ask, resourceCalculator, null, minResource,
+    SchedulerUtils.normalizeRequest(ask, resourceCalculator, minResource,
         maxResource);
     assertEquals(maxResource.getMemorySize(), ask.getCapability().getMemorySize());
   }
@@ -173,13 +173,13 @@ public class TestSchedulerUtils {
     // case negative memory/vcores
     ask.setCapability(Resources.createResource(-1024, -1));
     SchedulerUtils.normalizeRequest(
-        ask, resourceCalculator, clusterResource, minResource, maxResource);
+        ask, resourceCalculator, minResource, maxResource);
     assertEquals(minResource, ask.getCapability());
 
     // case zero memory/vcores
     ask.setCapability(Resources.createResource(0, 0));
     SchedulerUtils.normalizeRequest(
-        ask, resourceCalculator, clusterResource, minResource, maxResource);
+        ask, resourceCalculator, minResource, maxResource);
     assertEquals(minResource, ask.getCapability());
     assertEquals(1, ask.getCapability().getVirtualCores());
     assertEquals(1024, ask.getCapability().getMemorySize());
@@ -187,7 +187,7 @@ public class TestSchedulerUtils {
     // case non-zero memory & zero cores
     ask.setCapability(Resources.createResource(1536, 0));
     SchedulerUtils.normalizeRequest(
-        ask, resourceCalculator, clusterResource, minResource, maxResource);
+        ask, resourceCalculator, minResource, maxResource);
     assertEquals(Resources.createResource(2048, 1), ask.getCapability());
     assertEquals(1, ask.getCapability().getVirtualCores());
     assertEquals(2048, ask.getCapability().getMemorySize());
@@ -760,12 +760,12 @@ public class TestSchedulerUtils {
           mock(Priority.class), ResourceRequest.ANY, resource, 1);
       SchedulerUtils.normalizeAndvalidateRequest(resReq, maxResource, "queue",
           scheduler, rmContext);
-      Assert.assertTrue(resReq.getNodeLabelExpression().equals("x"));
+      Assert.assertEquals("x", resReq.getNodeLabelExpression());
       
       resReq.setNodeLabelExpression(" y ");
       SchedulerUtils.normalizeAndvalidateRequest(resReq, maxResource, "queue",
           scheduler, rmContext);
-      Assert.assertTrue(resReq.getNodeLabelExpression().equals("y"));
+      Assert.assertEquals("y", resReq.getNodeLabelExpression());
     } catch (InvalidResourceRequestException e) {
       e.printStackTrace();
       fail("Should be valid when request labels is a subset of queue labels");
@@ -775,11 +775,35 @@ public class TestSchedulerUtils {
     }
   }
 
+  public static void waitSchedulerApplicationAttemptStopped(
+      AbstractYarnScheduler ys,
+      ApplicationAttemptId attemptId) throws InterruptedException {
+    SchedulerApplicationAttempt schedulerApp =
+        ys.getApplicationAttempt(attemptId);
+    if (null == schedulerApp) {
+      return;
+    }
+
+    // Wait at most 5 secs to make sure SchedulerApplicationAttempt stopped
+    int tick = 0;
+    while (tick < 100) {
+      if (schedulerApp.isStopped()) {
+        return;
+      }
+      tick++;
+      Thread.sleep(50);
+    }
+
+    // Only print, don't throw exception
+    System.err.println("Failed to wait scheduler application attempt stopped.");
+  }
+
   public static SchedulerApplication<SchedulerApplicationAttempt>
       verifyAppAddedAndRemovedFromScheduler(
           Map<ApplicationId, SchedulerApplication<SchedulerApplicationAttempt>> applications,
           EventHandler<SchedulerEvent> handler, String queueName)
           throws Exception {
+
     ApplicationId appId =
         ApplicationId.newInstance(System.currentTimeMillis(), 1);
     AppAddedSchedulerEvent appAddedEvent =

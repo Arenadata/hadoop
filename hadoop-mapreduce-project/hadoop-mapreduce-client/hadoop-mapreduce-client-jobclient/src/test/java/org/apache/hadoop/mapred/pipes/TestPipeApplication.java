@@ -36,6 +36,7 @@ import java.util.Map.Entry;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.FsConstants;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.io.BooleanWritable;
@@ -46,6 +47,7 @@ import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.IFile.Writer;
+import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.mapred.Counters;
@@ -82,10 +84,10 @@ public class TestPipeApplication {
   public void testRunner() throws Exception {
 
     // clean old password files
-    File[] psw = cleanTokenPasswordFile();
+    JobConf conf = new JobConf();
+    File[] psw = cleanTokenPasswordFile(conf);
     try {
       RecordReader<FloatWritable, NullWritable> rReader = new ReaderPipesMapRunner();
-      JobConf conf = new JobConf();
       conf.set(Submitter.IS_JAVA_RR, "true");
       // for stdour and stderror
 
@@ -94,7 +96,7 @@ public class TestPipeApplication {
       CombineOutputCollector<IntWritable, Text> output = new CombineOutputCollector<IntWritable, Text>(
               new Counters.Counter(), new Progress());
       FileSystem fs = new RawLocalFileSystem();
-      fs.setConf(conf);
+      fs.initialize(FsConstants.LOCAL_FS_URI, conf);
       Writer<IntWritable, Text> wr = new Writer<IntWritable, Text>(conf, fs.create(
               new Path(workSpace + File.separator + "outfile")), IntWritable.class,
               Text.class, null, null, true);
@@ -161,7 +163,7 @@ public class TestPipeApplication {
 
     TestTaskReporter reporter = new TestTaskReporter();
 
-    File[] psw = cleanTokenPasswordFile();
+    File[] psw = cleanTokenPasswordFile(conf);
     try {
 
       conf.set(MRJobConfig.TASK_ATTEMPT_ID, taskName);
@@ -176,7 +178,7 @@ public class TestPipeApplication {
       FakeCollector output = new FakeCollector(new Counters.Counter(),
               new Progress());
       FileSystem fs = new RawLocalFileSystem();
-      fs.setConf(conf);
+      fs.initialize(FsConstants.LOCAL_FS_URI, conf);
       Writer<IntWritable, Text> wr = new Writer<IntWritable, Text>(conf, fs.create(
               new Path(workSpace.getAbsolutePath() + File.separator + "outfile")),
               IntWritable.class, Text.class, null, null, true);
@@ -246,7 +248,7 @@ public class TestPipeApplication {
 
     JobConf conf = new JobConf();
 
-    File[] psw = cleanTokenPasswordFile();
+    File[] psw = cleanTokenPasswordFile(conf);
 
     System.setProperty("test.build.data",
             "target/tmp/build/TEST_SUBMITTER_MAPPER/data");
@@ -299,30 +301,27 @@ public class TestPipeApplication {
       assertTrue(out.toString().contains(
               "[-lazyOutput <true/false>] // createOutputLazily"));
 
-      assertTrue(out
-              .toString()
-              .contains(
-                      "-conf <configuration file>     specify an application configuration file"));
       assertTrue(out.toString().contains(
-              "-D <property=value>            use value for given property"));
+          "-conf <configuration file>        specify an application "
+              + "configuration file"));
       assertTrue(out.toString().contains(
-          "-fs <file:///|hdfs://namenode:port> "
-          + "specify default filesystem URL to use, overrides "
-          + "'fs.defaultFS' property from configurations."));
+          "-D <property=value>               define a value for a given "
+              + "property"));
+      assertTrue(out.toString()
+          .contains("-fs <file:///|hdfs://namenode:port> "
+              + "specify default filesystem URL to use, overrides "
+              + "'fs.defaultFS' property from configurations."));
       assertTrue(out.toString().contains(
-              "-jt <local|resourcemanager:port>    specify a ResourceManager"));
-      assertTrue(out
-              .toString()
-              .contains(
-                      "-files <comma separated list of files>    specify comma separated files to be copied to the map reduce cluster"));
-      assertTrue(out
-              .toString()
-              .contains(
-                      "-libjars <comma separated list of jars>    specify comma separated jar files to include in the classpath."));
-      assertTrue(out
-              .toString()
-              .contains(
-                      "-archives <comma separated list of archives>    specify comma separated archives to be unarchived on the compute machines."));
+          "-jt <local|resourcemanager:port>  specify a ResourceManager"));
+      assertTrue(out.toString().contains(
+          "-files <file1,...>                specify a comma-separated list of "
+              + "files to be copied to the map reduce cluster"));
+      assertTrue(out.toString().contains(
+          "-libjars <jar1,...>               specify a comma-separated list of "
+              + "jar files to be included in the classpath"));
+      assertTrue(out.toString().contains(
+          "-archives <archive1,...>          specify a comma-separated list of "
+              + "archives to be unarchived on the compute machines"));
     } finally {
       System.setOut(oldps);
       // restore
@@ -390,8 +389,8 @@ public class TestPipeApplication {
   @Test
   public void testPipesReduser() throws Exception {
 
-    File[] psw = cleanTokenPasswordFile();
     JobConf conf = new JobConf();
+    File[] psw = cleanTokenPasswordFile(conf);
     try {
       Token<AMRMTokenIdentifier> token = new Token<AMRMTokenIdentifier>(
               "user".getBytes(), "password".getBytes(), new Text("kind"), new Text(
@@ -508,14 +507,16 @@ public class TestPipeApplication {
 
   }
 
-  private File[] cleanTokenPasswordFile() throws Exception {
+  private File[] cleanTokenPasswordFile(JobConf conf) throws Exception {
     File[] result = new File[2];
-    result[0] = new File("./jobTokenPassword");
+    result[0] = new File(conf.get(MRConfig.LOCAL_DIR) + Path.SEPARATOR
+        + "jobTokenPassword");
     if (result[0].exists()) {
       FileUtil.chmod(result[0].getAbsolutePath(), "700");
       assertTrue(result[0].delete());
     }
-    result[1] = new File("./.jobTokenPassword.crc");
+    result[1] = new File(conf.get(MRConfig.LOCAL_DIR) + Path.SEPARATOR
+        + ".jobTokenPassword.crc");
     if (result[1].exists()) {
       FileUtil.chmod(result[1].getAbsolutePath(), "700");
       result[1].delete();

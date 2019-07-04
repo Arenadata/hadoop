@@ -434,7 +434,6 @@ public class TestFileAppend{
       throws IOException, InterruptedException {
     Configuration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
-    conf.setBoolean(DFSConfigKeys.DFS_SUPPORT_APPEND_KEY, true);
     //Set small soft-limit for lease
     final long softLimit = 1L;
     final long hardLimit = 9999999L;
@@ -541,7 +540,7 @@ public class TestFileAppend{
       String dnAddress = dnProp.datanode.getXferAddress().toString();
       if (dnAddress.startsWith("/")) {
         dnAddress = dnAddress.substring(1);
-}
+      }
 
       // append again to bump genstamps
       for (int i = 0; i < 2; i++) {
@@ -694,15 +693,15 @@ public class TestFileAppend{
       // Call FsDatasetImpl#append to append the block file,
       // which converts it to a rbw replica.
       ExtendedBlock block = DFSTestUtil.getFirstBlock(fs, fileName);
-      long newGS = block.getGenerationStamp() + 1;
-      ReplicaHandler replicaHandler =
-          dataSet.append(block, newGS, initialFileLength);
+      long newGS = block.getGenerationStamp()+1;
+      ReplicaHandler
+          replicaHandler = dataSet.append(block, newGS, initialFileLength);
 
       // write data to block file
       ReplicaBeingWritten rbw =
-          (ReplicaBeingWritten) replicaHandler.getReplica();
-      ReplicaOutputStreams outputStreams =
-          rbw.createStreams(false, DEFAULT_CHECKSUM);
+          (ReplicaBeingWritten)replicaHandler.getReplica();
+      ReplicaOutputStreams
+          outputStreams = rbw.createStreams(false, DEFAULT_CHECKSUM);
       OutputStream dataOutput = outputStreams.getDataOut();
 
       byte[] appendBytes = new byte[1];
@@ -712,8 +711,9 @@ public class TestFileAppend{
 
       // update checksum file
       final int smallBufferSize = DFSUtilClient.getSmallBufferSize(conf);
-      FsDatasetUtil.computeChecksum(rbw.getMetaFile(), rbw.getMetaFile(),
-          rbw.getBlockFile(), smallBufferSize, conf);
+      FsDatasetUtil.computeChecksum(
+          rbw.getMetaFile(), rbw.getMetaFile(), rbw.getBlockFile(),
+          smallBufferSize, conf);
 
       // read the block
       // the DataNode BlockSender should read from the rbw replica's in-memory
@@ -725,4 +725,5 @@ public class TestFileAppend{
       cluster.shutdown();
     }
   }
+
 }

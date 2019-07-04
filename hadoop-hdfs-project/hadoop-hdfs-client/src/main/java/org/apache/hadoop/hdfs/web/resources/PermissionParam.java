@@ -28,11 +28,25 @@ public class PermissionParam extends ShortParam {
 
   private static final Domain DOMAIN = new Domain(NAME, 8);
 
-  private static final short DEFAULT_PERMISSION = 0755;
+  private static final short DEFAULT_DIR_PERMISSION = 0755;
 
-  /** @return the default FsPermission. */
-  public static FsPermission getDefaultFsPermission() {
-    return new FsPermission(DEFAULT_PERMISSION);
+  private static final short DEFAULT_FILE_PERMISSION = 0644;
+
+  private static final short DEFAULT_SYMLINK_PERMISSION = 0777;
+
+  /** @return the default FsPermission for directory. */
+  public static FsPermission getDefaultDirFsPermission() {
+    return new FsPermission(DEFAULT_DIR_PERMISSION);
+  }
+
+  /** @return the default FsPermission for file. */
+  public static FsPermission getDefaultFileFsPermission() {
+    return new FsPermission(DEFAULT_FILE_PERMISSION);
+  }
+
+  /** @return the default FsPermission for symlink. */
+  public static FsPermission getDefaultSymLinkFsPermission() {
+    return new FsPermission(DEFAULT_SYMLINK_PERMISSION);
   }
 
   /**
@@ -40,7 +54,7 @@ public class PermissionParam extends ShortParam {
    * @param value the parameter value.
    */
   public PermissionParam(final FsPermission value) {
-    super(DOMAIN, value == null? null: value.toShort(), null, null);
+    this(DOMAIN, value == null ? null : value.toShort(), null, null);
   }
 
   /**
@@ -48,7 +62,12 @@ public class PermissionParam extends ShortParam {
    * @param str a string representation of the parameter value.
    */
   public PermissionParam(final String str) {
-    super(DOMAIN, DOMAIN.parse(str), (short)0, (short)01777);
+    this(DOMAIN, DOMAIN.parse(str), (short)0, (short)01777);
+  }
+
+  PermissionParam(final Domain domain, final Short value, final Short min,
+                  final Short max) {
+    super(domain, value, min, max);
   }
 
   @Override
@@ -57,8 +76,18 @@ public class PermissionParam extends ShortParam {
   }
 
   /** @return the represented FsPermission. */
-  public FsPermission getFsPermission() {
-    final Short v = getValue();
-    return new FsPermission(v != null? v: DEFAULT_PERMISSION);
+  public FsPermission getFileFsPermission() {
+    return this.getFsPermission(DEFAULT_FILE_PERMISSION);
   }
+
+  /** @return the represented FsPermission. */
+  public FsPermission getDirFsPermission() {
+    return this.getFsPermission(DEFAULT_DIR_PERMISSION);
+  }
+
+  private FsPermission getFsPermission(short defaultPermission){
+    final Short v = getValue();
+    return new FsPermission(v != null? v: defaultPermission);
+  }
+
 }

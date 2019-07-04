@@ -22,7 +22,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
+import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.RoundRobinVolumeChoosingPolicy;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.VolumeChoosingPolicy;
@@ -71,8 +73,13 @@ public class TestFsVolumeList {
     for (int i = 0; i < 3; i++) {
       File curDir = new File(baseDir, "nextvolume-" + i);
       curDir.mkdirs();
-      FsVolumeImpl volume = new FsVolumeImpl(dataset, "storage-id", curDir,
-          conf, StorageType.DEFAULT);
+      FsVolumeImpl volume = new FsVolumeImplBuilder()
+          .setConf(conf)
+          .setDataset(dataset)
+          .setStorageID("storage-id")
+          .setStorageDirectory(
+              new StorageDirectory(StorageLocation.parse(curDir.getPath())))
+          .build();
       volume.setCapacityForTesting(1024 * 1024 * 1024);
       volumes.add(volume);
       volumeList.addVolume(volume.obtainReference());
@@ -94,43 +101,11 @@ public class TestFsVolumeList {
     }
     for (int i = 0; i < 10; i++) {
       try (FsVolumeReference ref =
-          volumeList.getNextVolume(StorageType.DEFAULT, 128)) {
+          volumeList.getNextVolume(StorageType.DEFAULT, null, 128)) {
         // volume No.2 will not be chosen.
         assertNotEquals(ref.getVolume(), volumes.get(1));
       }
     }
-  }
-
-  @Test(timeout=30000)
-  public void testCheckDirsWithClosedVolume() throws IOException {
-    FsVolumeList volumeList = new FsVolumeList(
-        Collections.<VolumeFailureInfo>emptyList(), blockScanner, blockChooser);
-    final List<FsVolumeImpl> volumes = new ArrayList<>();
-    for (int i = 0; i < 3; i++) {
-      File curDir = new File(baseDir, "volume-" + i);
-      curDir.mkdirs();
-      FsVolumeImpl volume = new FsVolumeImpl(dataset, "storage-id", curDir,
-          conf, StorageType.DEFAULT);
-      volumes.add(volume);
-      volumeList.addVolume(volume.obtainReference());
-    }
-
-    // Close the 2nd volume.
-    volumes.get(1).setClosed();
-    try {
-      GenericTestUtils.waitFor(new Supplier<Boolean>() {
-        @Override
-        public Boolean get() {
-          return volumes.get(1).checkClosed();
-        }
-      }, 100, 3000);
-    } catch (TimeoutException e) {
-      fail("timed out while waiting for volume to be removed.");
-    } catch (InterruptedException ie) {
-      Thread.currentThread().interrupt();
-    }
-    // checkDirs() should ignore the 2nd volume since it is closed.
-    volumeList.checkDirs();
   }
 
   @Test(timeout=30000)
@@ -139,8 +114,13 @@ public class TestFsVolumeList {
         Collections.<VolumeFailureInfo>emptyList(), null, blockChooser);
     File volDir = new File(baseDir, "volume-0");
     volDir.mkdirs();
-    FsVolumeImpl volume = new FsVolumeImpl(dataset, "storage-id", volDir,
-        conf, StorageType.DEFAULT);
+    FsVolumeImpl volume = new FsVolumeImplBuilder()
+        .setConf(conf)
+        .setDataset(dataset)
+        .setStorageID("storage-id")
+        .setStorageDirectory(
+            new StorageDirectory(StorageLocation.parse(volDir.getPath())))
+        .build();
     FsVolumeReference ref = volume.obtainReference();
     volumeList.addVolume(ref);
     assertNull(ref.getVolume());
@@ -155,8 +135,13 @@ public class TestFsVolumeList {
     volDir.mkdirs();
     // when storage type reserved is not configured,should consider
     // dfs.datanode.du.reserved.
-    FsVolumeImpl volume = new FsVolumeImpl(dataset, "storage-id", volDir, conf,
-        StorageType.RAM_DISK);
+    FsVolumeImpl volume = new FsVolumeImplBuilder().setDataset(dataset)
+        .setStorageDirectory(
+            new StorageDirectory(
+                StorageLocation.parse("[RAM_DISK]"+volDir.getPath())))
+        .setStorageID("storage-id")
+        .setConf(conf)
+        .build();
     assertEquals("", 100L, volume.getReserved());
     // when storage type reserved is configured.
     conf.setLong(
@@ -165,17 +150,37 @@ public class TestFsVolumeList {
     conf.setLong(
         DFSConfigKeys.DFS_DATANODE_DU_RESERVED_KEY + "."
             + StringUtils.toLowerCase(StorageType.SSD.toString()), 2L);
-    FsVolumeImpl volume1 = new FsVolumeImpl(dataset, "storage-id", volDir,
-        conf, StorageType.RAM_DISK);
+    FsVolumeImpl volume1 = new FsVolumeImplBuilder().setDataset(dataset)
+        .setStorageDirectory(
+            new StorageDirectory(
+                StorageLocation.parse("[RAM_DISK]"+volDir.getPath())))
+        .setStorageID("storage-id")
+        .setConf(conf)
+        .build();
     assertEquals("", 1L, volume1.getReserved());
-    FsVolumeImpl volume2 = new FsVolumeImpl(dataset, "storage-id", volDir,
-        conf, StorageType.SSD);
+    FsVolumeImpl volume2 = new FsVolumeImplBuilder().setDataset(dataset)
+        .setStorageDirectory(
+            new StorageDirectory(
+                StorageLocation.parse("[SSD]"+volDir.getPath())))
+        .setStorageID("storage-id")
+        .setConf(conf)
+        .build();
     assertEquals("", 2L, volume2.getReserved());
-    FsVolumeImpl volume3 = new FsVolumeImpl(dataset, "storage-id", volDir,
-        conf, StorageType.DISK);
+    FsVolumeImpl volume3 = new FsVolumeImplBuilder().setDataset(dataset)
+        .setStorageDirectory(
+            new StorageDirectory(
+                StorageLocation.parse("[DISK]"+volDir.getPath())))
+        .setStorageID("storage-id")
+        .setConf(conf)
+        .build();
     assertEquals("", 100L, volume3.getReserved());
-    FsVolumeImpl volume4 = new FsVolumeImpl(dataset, "storage-id", volDir,
-        conf, StorageType.DEFAULT);
+    FsVolumeImpl volume4 = new FsVolumeImplBuilder().setDataset(dataset)
+        .setStorageDirectory(
+            new StorageDirectory(
+                StorageLocation.parse(volDir.getPath())))
+        .setStorageID("storage-id")
+        .setConf(conf)
+        .build();
     assertEquals("", 100L, volume4.getReserved());
   }
 
@@ -197,8 +202,13 @@ public class TestFsVolumeList {
     long actualNonDfsUsage = 300L;
     long reservedForReplicas = 50L;
     conf.setLong(DFSConfigKeys.DFS_DATANODE_DU_RESERVED_KEY, duReserved);
-    FsVolumeImpl volume = new FsVolumeImpl(dataset, "storage-id", volDir, conf,
-        StorageType.DEFAULT);
+    FsVolumeImpl volume = new FsVolumeImplBuilder().setDataset(dataset)
+        .setStorageDirectory(
+            new StorageDirectory(
+                StorageLocation.parse(volDir.getPath())))
+        .setStorageID("storage-id")
+        .setConf(conf)
+        .build();
     FsVolumeImpl spyVolume = Mockito.spy(volume);
     // Set Capacity for testing
     long testCapacity = diskCapacity - duReserved;

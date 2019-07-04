@@ -17,14 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
+import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -34,16 +33,16 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.filefilter.TrueFileFilter;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.conf.ReconfigurationException;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.FsTracer;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.BlockReader;
-import org.apache.hadoop.hdfs.client.impl.BlockReaderFactory;
 import org.apache.hadoop.hdfs.ClientContext;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -51,6 +50,7 @@ import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.RemotePeerFactory;
+import org.apache.hadoop.hdfs.client.impl.BlockReaderFactory;
 import org.apache.hadoop.hdfs.client.impl.DfsClientConf;
 import org.apache.hadoop.hdfs.net.Peer;
 import org.apache.hadoop.hdfs.protocol.Block;
@@ -73,18 +73,15 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.test.GenericTestUtils;
-
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.filefilter.TrueFileFilter;
-
-import com.google.common.base.Supplier;
-
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
-
+import org.junit.rules.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Supplier;
 
 /**
  * Fine-grain testing of block files and locations after volume failure.
@@ -111,6 +108,10 @@ public class TestDataNodeVolumeFailure {
   // block id to BlockLocs
   final Map<String, BlockLocs> block_map = new HashMap<String, BlockLocs> ();
 
+  // specific the timeout for entire test class
+  @Rule
+  public Timeout timeout = new Timeout(120 * 1000);
+
   @Before
   public void setUp() throws Exception {
     // bring up a cluster of 2
@@ -119,6 +120,8 @@ public class TestDataNodeVolumeFailure {
     // Allow a single volume failure (there are two volumes)
     conf.setInt(DFSConfigKeys.DFS_DATANODE_FAILED_VOLUMES_TOLERATED_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 30);
+    conf.setTimeDuration(DFSConfigKeys.DFS_DATANODE_DISK_CHECK_MIN_GAP_KEY,
+        0, TimeUnit.MILLISECONDS);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(dn_num).build();
     cluster.waitActive();
     fs = cluster.getFileSystem();
@@ -165,7 +168,7 @@ public class TestDataNodeVolumeFailure {
    
     // fail the volume
     // delete/make non-writable one of the directories (failed volume)
-    data_fail = new File(dataDir, "data3");
+    data_fail = cluster.getInstanceStorageDir(1, 0);
     failedDir = MiniDFSCluster.getFinalizedDir(data_fail,
         cluster.getNamesystem().getBlockPoolId());
     if (failedDir.exists() &&
@@ -182,7 +185,6 @@ public class TestDataNodeVolumeFailure {
     // we need to make sure that the "failed" volume is being accessed - 
     // and that will cause failure, blocks removal, "emergency" block report
     triggerFailure(filename, filesize);
-
     // DN eventually have latest volume failure information for next heartbeat
     final DataNode dn = cluster.getDataNodes().get(1);
     GenericTestUtils.waitFor(new Supplier<Boolean>() {
@@ -224,19 +226,20 @@ public class TestDataNodeVolumeFailure {
    */
   @Test(timeout=150000)
     public void testFailedVolumeBeingRemovedFromDataNode()
-      throws InterruptedException, IOException, TimeoutException {
+      throws Exception {
     // The test uses DataNodeTestUtils#injectDataDirFailure() to simulate
     // volume failures which is currently not supported on Windows.
-    assumeTrue(!Path.WINDOWS);
+    assumeNotWindows();
 
     Path file1 = new Path("/test1");
     DFSTestUtil.createFile(fs, file1, 1024, (short) 2, 1L);
     DFSTestUtil.waitReplication(fs, file1, (short) 2);
 
-    File dn0Vol1 = new File(dataDir, "data" + (2 * 0 + 1));
+    File dn0Vol1 = cluster.getInstanceStorageDir(0, 0);
     DataNodeTestUtils.injectDataDirFailure(dn0Vol1);
     DataNode dn0 = cluster.getDataNodes().get(0);
-    checkDiskErrorSync(dn0);
+    DataNodeTestUtils.waitForDiskError(dn0,
+        DataNodeTestUtils.getVolume(dn0, dn0Vol1));
 
     // Verify dn0Vol1 has been completely removed from DN0.
     // 1. dn0Vol1 is removed from DataStorage.
@@ -262,17 +265,18 @@ public class TestDataNodeVolumeFailure {
     FsDatasetSpi<? extends FsVolumeSpi> data = dn0.getFSDataset();
     try (FsDatasetSpi.FsVolumeReferences vols = data.getFsVolumeReferences()) {
       for (FsVolumeSpi volume : vols) {
-        assertNotEquals(new File(volume.getBasePath()).getAbsoluteFile(),
-            dn0Vol1.getAbsoluteFile());
+        assertFalse(new File(volume.getStorageLocation().getUri())
+            .getAbsolutePath().startsWith(dn0Vol1.getAbsolutePath()
+        ));
       }
     }
 
     // 3. all blocks on dn0Vol1 have been removed.
     for (ReplicaInfo replica : FsDatasetTestUtil.getReplicas(data, bpid)) {
       assertNotNull(replica.getVolume());
-      assertNotEquals(
-          new File(replica.getVolume().getBasePath()).getAbsoluteFile(),
-          dn0Vol1.getAbsoluteFile());
+      assertFalse(new File(replica.getVolume().getStorageLocation().getUri())
+          .getAbsolutePath().startsWith(dn0Vol1.getAbsolutePath()
+      ));
     }
 
     // 4. dn0Vol1 is not in DN0's configuration and dataDirs anymore.
@@ -282,34 +286,26 @@ public class TestDataNodeVolumeFailure {
     assertFalse(dataDirStrs[0].contains(dn0Vol1.getAbsolutePath()));
   }
 
-  private static void checkDiskErrorSync(DataNode dn)
-      throws InterruptedException {
-    final long lastDiskErrorCheck = dn.getLastDiskErrorCheck();
-    dn.checkDiskErrorAsync();
-    // Wait 10 seconds for checkDiskError thread to finish and discover volume
-    // failures.
-    int count = 100;
-    while (count > 0 && dn.getLastDiskErrorCheck() == lastDiskErrorCheck) {
-      Thread.sleep(100);
-      count--;
-    }
-    assertTrue("Disk checking thread does not finish in 10 seconds",
-        count > 0);
-  }
-
   /**
    * Test DataNode stops when the number of failed volumes exceeds
    * dfs.datanode.failed.volumes.tolerated .
    */
   @Test(timeout=10000)
   public void testDataNodeShutdownAfterNumFailedVolumeExceedsTolerated()
-      throws InterruptedException, IOException {
+      throws Exception {
+    // The test uses DataNodeTestUtils#injectDataDirFailure() to simulate
+    // volume failures which is currently not supported on Windows.
+    assumeNotWindows();
+
     // make both data directories to fail on dn0
-    final File dn0Vol1 = new File(dataDir, "data" + (2 * 0 + 1));
-    final File dn0Vol2 = new File(dataDir, "data" + (2 * 0 + 2));
+    final File dn0Vol1 = cluster.getInstanceStorageDir(0, 0);
+    final File dn0Vol2 = cluster.getInstanceStorageDir(0, 1);
     DataNodeTestUtils.injectDataDirFailure(dn0Vol1, dn0Vol2);
     DataNode dn0 = cluster.getDataNodes().get(0);
-    checkDiskErrorSync(dn0);
+    DataNodeTestUtils.waitForDiskError(dn0,
+        DataNodeTestUtils.getVolume(dn0, dn0Vol1));
+    DataNodeTestUtils.waitForDiskError(dn0,
+        DataNodeTestUtils.getVolume(dn0, dn0Vol2));
 
     // DN0 should stop after the number of failure disks exceed tolerated
     // value (1).
@@ -321,16 +317,21 @@ public class TestDataNodeVolumeFailure {
    */
   @Test
   public void testVolumeFailureRecoveredByHotSwappingVolume()
-      throws InterruptedException, ReconfigurationException, IOException {
-    final File dn0Vol1 = new File(dataDir, "data" + (2 * 0 + 1));
-    final File dn0Vol2 = new File(dataDir, "data" + (2 * 0 + 2));
+      throws Exception {
+    // The test uses DataNodeTestUtils#injectDataDirFailure() to simulate
+    // volume failures which is currently not supported on Windows.
+    assumeNotWindows();
+
+    final File dn0Vol1 = cluster.getInstanceStorageDir(0, 0);
+    final File dn0Vol2 = cluster.getInstanceStorageDir(0, 1);
     final DataNode dn0 = cluster.getDataNodes().get(0);
     final String oldDataDirs = dn0.getConf().get(
         DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY);
 
     // Fail dn0Vol1 first.
     DataNodeTestUtils.injectDataDirFailure(dn0Vol1);
-    checkDiskErrorSync(dn0);
+    DataNodeTestUtils.waitForDiskError(dn0,
+        DataNodeTestUtils.getVolume(dn0, dn0Vol1));
 
     // Hot swap out the failure volume.
     String dataDirs = dn0Vol2.getPath();
@@ -349,7 +350,8 @@ public class TestDataNodeVolumeFailure {
     // Fail dn0Vol2. Now since dn0Vol1 has been fixed, DN0 has sufficient
     // resources, thus it should keep running.
     DataNodeTestUtils.injectDataDirFailure(dn0Vol2);
-    checkDiskErrorSync(dn0);
+    DataNodeTestUtils.waitForDiskError(dn0,
+        DataNodeTestUtils.getVolume(dn0, dn0Vol2));
     assertTrue(dn0.shouldRun());
   }
 
@@ -359,9 +361,13 @@ public class TestDataNodeVolumeFailure {
    */
   @Test
   public void testTolerateVolumeFailuresAfterAddingMoreVolumes()
-      throws InterruptedException, ReconfigurationException, IOException {
-    final File dn0Vol1 = new File(dataDir, "data" + (2 * 0 + 1));
-    final File dn0Vol2 = new File(dataDir, "data" + (2 * 0 + 2));
+      throws Exception {
+    // The test uses DataNodeTestUtils#injectDataDirFailure() to simulate
+    // volume failures which is currently not supported on Windows.
+    assumeNotWindows();
+
+    final File dn0Vol1 = cluster.getInstanceStorageDir(0, 0);
+    final File dn0Vol2 = cluster.getInstanceStorageDir(0, 1);
     final File dn0VolNew = new File(dataDir, "data_new");
     final DataNode dn0 = cluster.getDataNodes().get(0);
     final String oldDataDirs = dn0.getConf().get(
@@ -376,12 +382,14 @@ public class TestDataNodeVolumeFailure {
 
     // Fail dn0Vol1 first and hot swap it.
     DataNodeTestUtils.injectDataDirFailure(dn0Vol1);
-    checkDiskErrorSync(dn0);
+    DataNodeTestUtils.waitForDiskError(dn0,
+        DataNodeTestUtils.getVolume(dn0, dn0Vol1));
     assertTrue(dn0.shouldRun());
 
     // Fail dn0Vol2, now dn0 should stop, because we only tolerate 1 disk failure.
     DataNodeTestUtils.injectDataDirFailure(dn0Vol2);
-    checkDiskErrorSync(dn0);
+    DataNodeTestUtils.waitForDiskError(dn0,
+        DataNodeTestUtils.getVolume(dn0, dn0Vol2));
     assertFalse(dn0.shouldRun());
   }
 
@@ -392,7 +400,7 @@ public class TestDataNodeVolumeFailure {
   public void testUnderReplicationAfterVolFailure() throws Exception {
     // The test uses DataNodeTestUtils#injectDataDirFailure() to simulate
     // volume failures which is currently not supported on Windows.
-    assumeTrue(!Path.WINDOWS);
+    assumeNotWindows();
 
     // Bring up one more datanode
     cluster.startDataNodes(conf, 1, true, null, null);
@@ -405,20 +413,30 @@ public class TestDataNodeVolumeFailure {
     DFSTestUtil.waitReplication(fs, file1, (short)3);
 
     // Fail the first volume on both datanodes
-    File dn1Vol1 = new File(dataDir, "data"+(2*0+1));
-    File dn2Vol1 = new File(dataDir, "data"+(2*1+1));
+    File dn1Vol1 = cluster.getInstanceStorageDir(0, 0);
+    File dn2Vol1 = cluster.getInstanceStorageDir(1, 0);
     DataNodeTestUtils.injectDataDirFailure(dn1Vol1, dn2Vol1);
 
     Path file2 = new Path("/test2");
     DFSTestUtil.createFile(fs, file2, 1024, (short)3, 1L);
     DFSTestUtil.waitReplication(fs, file2, (short)3);
 
-    // underReplicatedBlocks are due to failed volumes
-    int underReplicatedBlocks =
-        BlockManagerTestUtil.checkHeartbeatAndGetUnderReplicatedBlocksCount(
-            cluster.getNamesystem(), bm);
-    assertTrue("There is no under replicated block after volume failure",
-        underReplicatedBlocks > 0);
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        // underReplicatedBlocks are due to failed volumes
+        int underReplicatedBlocks = BlockManagerTestUtil
+            .checkHeartbeatAndGetUnderReplicatedBlocksCount(
+                cluster.getNamesystem(), bm);
+
+        if (underReplicatedBlocks > 0) {
+          return true;
+        }
+        LOG.info("There is no under replicated block after volume failure.");
+
+        return false;
+      }
+    }, 500, 60000);
   }
 
   /**
@@ -429,7 +447,7 @@ public class TestDataNodeVolumeFailure {
   @Test (timeout = 120000)
   public void testDataNodeFailToStartWithVolumeFailure() throws Exception {
     // Method to simulate volume failures is currently not supported on Windows.
-    assumeTrue(!Path.WINDOWS);
+    assumeNotWindows();
 
     failedDir = new File(dataDir, "failedDir");
     assertTrue("Failed to fail a volume by setting it non-writable",
@@ -446,7 +464,7 @@ public class TestDataNodeVolumeFailure {
   @Test (timeout = 120000)
   public void testDNStartAndTolerateOneVolumeFailure() throws Exception {
     // Method to simulate volume failures is currently not supported on Windows.
-    assumeTrue(!Path.WINDOWS);
+    assumeNotWindows();
 
     failedDir = new File(dataDir, "failedDir");
     assertTrue("Failed to fail a volume by setting it non-writable",
@@ -461,7 +479,7 @@ public class TestDataNodeVolumeFailure {
   @Test (timeout = 120000)
   public void testDNFailToStartWithDataDirNonWritable() throws Exception {
     // Method to simulate volume failures is currently not supported on Windows.
-    assumeTrue(!Path.WINDOWS);
+    assumeNotWindows();
 
     final File readOnlyDir = new File(dataDir, "nonWritable");
     assertTrue("Set the data dir permission non-writable",
@@ -477,7 +495,7 @@ public class TestDataNodeVolumeFailure {
   @Test (timeout = 120000)
   public void testDNStartAndTolerateOneDataDirNonWritable() throws Exception {
     // Method to simulate volume failures is currently not supported on Windows.
-    assumeTrue(!Path.WINDOWS);
+    assumeNotWindows();
 
     final File readOnlyDir = new File(dataDir, "nonWritable");
     assertTrue("Set the data dir permission non-writable",
@@ -501,26 +519,21 @@ public class TestDataNodeVolumeFailure {
 
     // bring up one more DataNode
     assertEquals(repl, cluster.getDataNodes().size());
-    cluster.startDataNodes(newConf, 1, false, null, null);
+
+    try {
+      cluster.startDataNodes(newConf, 1, false, null, null);
+      assertTrue("Failed to get expected IOException", tolerated);
+    } catch (IOException ioe) {
+      assertFalse("Unexpected IOException " + ioe, tolerated);
+      return;
+    }
+
     assertEquals(repl + 1, cluster.getDataNodes().size());
 
-    if (tolerated) {
-      // create new file and it should be able to replicate to 3 nodes
-      final Path p = new Path("/test1.txt");
-      DFSTestUtil.createFile(fs, p, block_size * blocks_num, (short) 3, 1L);
-      DFSTestUtil.waitReplication(fs, p, (short) (repl + 1));
-    } else {
-      // DataNode should stop soon if it does not tolerate disk failure
-      GenericTestUtils.waitFor(new Supplier<Boolean>() {
-        @Override
-        public Boolean get() {
-          final String bpid = cluster.getNamesystem().getBlockPoolId();
-          final BPOfferService bpos = cluster.getDataNodes().get(2)
-              .getBPOfferService(bpid);
-          return !bpos.isAlive();
-        }
-      }, 100, 30 * 1000);
-    }
+    // create new file and it should be able to replicate to 3 nodes
+    final Path p = new Path("/test1.txt");
+    DFSTestUtil.createFile(fs, p, block_size * blocks_num, (short) 3, 1L);
+    DFSTestUtil.waitReplication(fs, p, (short) (repl + 1));
   }
 
   /**
