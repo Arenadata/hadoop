@@ -664,10 +664,7 @@ public class TestRMHA {
 
   @Test
 <<<<<<< HEAD
-<<<<<<< HEAD
 =======
-=======
->>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
   public void testOpportunisticAllocatorAfterFailover() throws Exception {
     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
     configuration.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
@@ -708,9 +705,6 @@ public class TestRMHA {
   }
 
   @Test
-<<<<<<< HEAD
->>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
-=======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
   public void testResourceProfilesManagerAfterRMWentStandbyThenBackToActive()
       throws Exception {
