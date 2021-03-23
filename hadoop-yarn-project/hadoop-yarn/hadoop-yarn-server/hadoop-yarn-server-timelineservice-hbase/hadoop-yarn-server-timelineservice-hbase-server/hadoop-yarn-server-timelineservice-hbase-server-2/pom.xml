@@ -23,7 +23,11 @@
     <artifactId>hadoop-yarn-server-timelineservice-hbase-server</artifactId>
     <groupId>org.apache.hadoop</groupId>
 <<<<<<< HEAD
+<<<<<<< HEAD
     <version>3.1.0</version>
+=======
+    <version>3.1.1</version>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     <version>3.1.1</version>
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -33,7 +37,11 @@
   <artifactId>hadoop-yarn-server-timelineservice-hbase-server-2</artifactId>
   <name>Apache Hadoop YARN TimelineService HBase Server 2.0</name>
 <<<<<<< HEAD
+<<<<<<< HEAD
   <version>3.1.0</version>
+=======
+  <version>3.1.1</version>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
   <version>3.1.1</version>
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d

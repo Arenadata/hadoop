@@ -135,6 +135,11 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNodeRepo
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.TestSchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator.AllocationState;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator.ContainerAllocation;
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator.AllocationState;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator.ContainerAllocation;
@@ -4936,7 +4941,10 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
         spyCs.getNode(nm.getNodeId()).getRMNode()));
   }
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 
   // Testcase for YARN-8528
   // This is to test whether ContainerAllocation constants are holding correct
@@ -4983,5 +4991,8 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     Assert.assertEquals(AllocationState.QUEUE_SKIPPED,
         ContainerAllocation.QUEUE_SKIPPED.getAllocationState());
   }
+<<<<<<< HEAD
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
+=======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 }

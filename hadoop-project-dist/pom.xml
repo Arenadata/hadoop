@@ -21,11 +21,19 @@
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
 <<<<<<< HEAD
+<<<<<<< HEAD
     <version>3.1.0</version>
     <relativePath>../hadoop-project</relativePath>
   </parent>
   <artifactId>hadoop-project-dist</artifactId>
   <version>3.1.0</version>
+=======
+    <version>3.1.1</version>
+    <relativePath>../hadoop-project</relativePath>
+  </parent>
+  <artifactId>hadoop-project-dist</artifactId>
+  <version>3.1.1</version>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     <version>3.1.1</version>
     <relativePath>../hadoop-project</relativePath>
@@ -154,7 +162,11 @@
       </activation>
       <properties>
 <<<<<<< HEAD
+<<<<<<< HEAD
         <jdiff.stable.api>3.0.1</jdiff.stable.api>
+=======
+        <jdiff.stable.api>3.0.3</jdiff.stable.api>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
         <jdiff.stable.api>3.0.3</jdiff.stable.api>
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d

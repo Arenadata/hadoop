@@ -2206,6 +2206,8 @@ public class RouterRpcServer extends AbstractService
   /**
    * Get the possible locations of a path in the federated cluster.
    * During the get operation, it will do the quota verification.
+<<<<<<< HEAD
+=======
    *
    * @param path Path to check.
    * @param failIfLocked Fail the request if locked (top mount point).
@@ -2213,6 +2215,22 @@ public class RouterRpcServer extends AbstractService
    * @throws IOException If the location for this path cannot be determined.
    */
   protected List<RemoteLocation> getLocationsForPath(String path,
+      boolean failIfLocked) throws IOException {
+    return getLocationsForPath(path, failIfLocked, true);
+  }
+
+  /**
+   * Get the possible locations of a path in the federated cluster.
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
+   *
+   * @param path Path to check.
+   * @param failIfLocked Fail the request if locked (top mount point).
+   * @param needQuotaVerify If need to do the quota verification.
+   * @return Prioritized list of locations in the federated cluster.
+   * @throws IOException If the location for this path cannot be determined.
+   */
+  protected List<RemoteLocation> getLocationsForPath(String path,
+<<<<<<< HEAD
       boolean failIfLocked) throws IOException {
     return getLocationsForPath(path, failIfLocked, true);
   }
@@ -2227,6 +2245,8 @@ public class RouterRpcServer extends AbstractService
    * @throws IOException If the location for this path cannot be determined.
    */
   protected List<RemoteLocation> getLocationsForPath(String path,
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
       boolean failIfLocked, boolean needQuotaVerify) throws IOException {
     try {
       // Check the location for this path
@@ -2291,7 +2311,11 @@ public class RouterRpcServer extends AbstractService
         }
       } catch (IOException e) {
 <<<<<<< HEAD
+<<<<<<< HEAD
         LOG.error("Cannot get mount point: {}", e.getMessage());
+=======
+        LOG.error("Cannot get mount point", e);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
         LOG.error("Cannot get mount point", e);
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d

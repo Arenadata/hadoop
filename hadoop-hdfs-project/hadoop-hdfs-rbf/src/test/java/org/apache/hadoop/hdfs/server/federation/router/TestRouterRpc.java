@@ -25,6 +25,10 @@ import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.getFi
 import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.verifyFileExists;
 import static org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.TEST_STRING;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -81,15 +85,21 @@ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 <<<<<<< HEAD
+<<<<<<< HEAD
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
 =======
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
 import org.apache.hadoop.hdfs.server.federation.MockResolver;
+<<<<<<< HEAD
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
+=======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
 import org.apache.hadoop.hdfs.server.federation.metrics.NamenodeBeanMetrics;
@@ -1231,8 +1241,11 @@ public class TestRouterRpc {
 
     // The cache should be updated now
 <<<<<<< HEAD
+<<<<<<< HEAD
     assertNotEquals(jsonString0, metrics.getLiveNodes());
 =======
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     final String jsonString2 = metrics.getLiveNodes();
     assertNotEquals(jsonString0, jsonString2);
 
@@ -1252,6 +1265,9 @@ public class TestRouterRpc {
     // Reset the registrations again
     cluster.registerNamenodes();
     cluster.waitNamenodeRegistration();
+<<<<<<< HEAD
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
+=======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
   }
 

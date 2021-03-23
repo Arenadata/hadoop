@@ -186,11 +186,17 @@ public class MiniRouterDFSCluster {
     }
 
 <<<<<<< HEAD:hadoop-hdfs-project/hadoop-hdfs-rbf/src/test/java/org/apache/hadoop/hdfs/server/federation/MiniRouterDFSCluster.java
+<<<<<<< HEAD:hadoop-hdfs-project/hadoop-hdfs-rbf/src/test/java/org/apache/hadoop/hdfs/server/federation/MiniRouterDFSCluster.java
 =======
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d:hadoop-hdfs-project/hadoop-hdfs-rbf/src/test/java/org/apache/hadoop/hdfs/server/federation/RouterDFSCluster.java
     public URI getFileSystemURI() {
       return fileSystemUri;
     }
 
+<<<<<<< HEAD:hadoop-hdfs-project/hadoop-hdfs-rbf/src/test/java/org/apache/hadoop/hdfs/server/federation/MiniRouterDFSCluster.java
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d:hadoop-hdfs-project/hadoop-hdfs-rbf/src/test/java/org/apache/hadoop/hdfs/server/federation/RouterDFSCluster.java
+=======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d:hadoop-hdfs-project/hadoop-hdfs-rbf/src/test/java/org/apache/hadoop/hdfs/server/federation/RouterDFSCluster.java
     public String getHttpAddress() {
       InetSocketAddress httpAddress = router.getHttpServerAddress();

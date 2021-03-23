@@ -245,7 +245,11 @@ public class TestRegistryDNS extends Assert {
         ((ARecord) recs[0]).getAddress().getHostAddress());
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -288,7 +292,11 @@ public class TestRegistryDNS extends Assert {
     assertEquals("wrong ttl", 30L, recs[0].getTTL());
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -310,7 +318,11 @@ public class TestRegistryDNS extends Assert {
     Record[] recs = assertDNSQuery("19.0.17.172.in-addr.arpa.", Type.PTR, 1);
     assertEquals("wrong result",
 <<<<<<< HEAD
+<<<<<<< HEAD
         "comp-name.test1.root.dev.test.",
+=======
+        "httpd-1.test1.root.dev.test.",
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
         "httpd-1.test1.root.dev.test.",
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -340,7 +352,11 @@ public class TestRegistryDNS extends Assert {
     Record[] recs = assertDNSQuery("19.0.17.172.in-addr.arpa.", Type.PTR, 1);
     assertEquals("wrong result",
 <<<<<<< HEAD
+<<<<<<< HEAD
         "comp-name.test1.root.dev.test.",
+=======
+        "httpd-1.test1.root.dev.test.",
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
         "httpd-1.test1.root.dev.test.",
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -517,7 +533,11 @@ public class TestRegistryDNS extends Assert {
         ((AAAARecord) recs[0]).getAddress().getHostAddress());
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", Type.AAAA, 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", Type.AAAA, 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     recs = assertDNSQuery("httpd-1.test1.root.dev.test.", Type.AAAA, 1);
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -596,7 +616,11 @@ public class TestRegistryDNS extends Assert {
         ((ARecord) recs[0]).getAddress().getHostAddress());
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -606,7 +630,11 @@ public class TestRegistryDNS extends Assert {
     recs = assertDNSQuery("19.0.17.172.in-addr.arpa.", Type.PTR, 1);
     assertEquals("wrong result",
 <<<<<<< HEAD
+<<<<<<< HEAD
         "comp-name.test1.root.dev.test.",
+=======
+        "httpd-1.test1.root.dev.test.",
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
         "httpd-1.test1.root.dev.test.",
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -676,7 +704,10 @@ public class TestRegistryDNS extends Assert {
     Configuration conf = new Configuration();
     conf.set(RegistryConstants.KEY_DNS_DOMAIN, "dev.test");
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     conf.set(RegistryConstants.KEY_DNS_ZONE_SUBNET, "172.17.0");
     conf.setTimeDuration(RegistryConstants.KEY_DNS_TTL, 30L, TimeUnit.SECONDS);
     conf.set(RegistryConstants.KEY_DNS_ZONES_DIR,
@@ -694,6 +725,9 @@ public class TestRegistryDNS extends Assert {
     setRegistryDNS(new RegistryDNS("TestRegistry"));
     Configuration conf = new Configuration();
     conf.set(RegistryConstants.KEY_DNS_DOMAIN, "dev.test");
+<<<<<<< HEAD
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
+=======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     conf.set(RegistryConstants.KEY_DNS_ZONE_SUBNET, "172.17.0");
     conf.setTimeDuration(RegistryConstants.KEY_DNS_TTL, 30L, TimeUnit.SECONDS);

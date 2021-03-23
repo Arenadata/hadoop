@@ -254,9 +254,12 @@ public class ResourceManager extends CompositeService implements Recoverable {
     loadConfigurationXml(YarnConfiguration.CORE_SITE_CONFIGURATION_FILE);
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     // Refresh user to group mappings during init.
     refreshUserToGroupMappingsWithConf();
 
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     // Do refreshSuperUserGroupsConfiguration with loaded core-site.xml

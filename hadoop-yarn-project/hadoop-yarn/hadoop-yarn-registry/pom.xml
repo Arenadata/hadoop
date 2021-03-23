@@ -20,11 +20,19 @@
     <artifactId>hadoop-yarn</artifactId>
     <groupId>org.apache.hadoop</groupId>
 <<<<<<< HEAD
+<<<<<<< HEAD
     <version>3.1.0</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>hadoop-yarn-registry</artifactId>
   <version>3.1.0</version>
+=======
+    <version>3.1.1</version>
+  </parent>
+  <modelVersion>4.0.0</modelVersion>
+  <artifactId>hadoop-yarn-registry</artifactId>
+  <version>3.1.1</version>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     <version>3.1.1</version>
   </parent>

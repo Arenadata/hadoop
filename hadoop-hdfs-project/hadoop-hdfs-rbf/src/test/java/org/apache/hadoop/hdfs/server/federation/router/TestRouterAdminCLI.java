@@ -33,7 +33,10 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
 import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
 <<<<<<< HEAD
+<<<<<<< HEAD
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import org.apache.hadoop.hdfs.server.federation.StateStoreDFSCluster;
