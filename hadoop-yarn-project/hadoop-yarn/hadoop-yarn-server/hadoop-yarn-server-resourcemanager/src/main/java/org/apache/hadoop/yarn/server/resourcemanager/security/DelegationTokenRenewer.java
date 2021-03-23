@@ -209,7 +209,15 @@ public class DelegationTokenRenewer extends AbstractService {
     }
     appTokens.clear();
     allTokens.clear();
-    this.renewerService.shutdown();
+
+    serviceStateLock.writeLock().lock();
+    try {
+      isServiceStarted = false;
+      this.renewerService.shutdown();
+    } finally {
+      serviceStateLock.writeLock().unlock();
+    }
+
     dtCancelThread.interrupt();
     try {
       dtCancelThread.join(1000);
@@ -592,6 +600,10 @@ public class DelegationTokenRenewer extends AbstractService {
       throws IOException {
     // calculate timer time
     long expiresIn = token.expirationDate - System.currentTimeMillis();
+    if (expiresIn <= 0) {
+      LOG.info("Will not renew token " + token);
+      return;
+    }
     long renewIn = token.expirationDate - expiresIn/10; // little bit before the expiration
     // need to create new task every time
     RenewalTimerTask tTask = new RenewalTimerTask(token);

@@ -76,6 +76,7 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketException;
 import java.net.UnknownHostException;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.ServerSocketChannel;
@@ -98,9 +99,13 @@ import java.util.Properties;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -802,6 +807,8 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
           ch.socket().getPort(),
           ch.socket().getLocalAddress().getHostName(),
           ch.socket().getLocalPort(), e);
+    } catch (BufferUnderflowException e) {
+      // Ignore system monitor ping packets
     } finally {
       IOUtils.closeStream(ch);
     }
@@ -938,7 +945,7 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
    * @param port    local port.
    * @throws IOException if the UDP processing fails.
    */
-  private void serveNIOUDP(DatagramChannel channel,
+  private synchronized void serveNIOUDP(DatagramChannel channel,
       InetAddress addr, int port) throws Exception {
     SocketAddress remoteAddress = null;
     try {
@@ -1103,7 +1110,7 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
     LOG.debug("calling addAnswer");
     byte rcode = addAnswer(response, name, type, dclass, 0, flags);
     if (rcode != Rcode.NOERROR) {
-      rcode = remoteLookup(response, name, 0);
+      rcode = remoteLookup(response, name, type, 0);
       response.getHeader().setRcode(rcode);
     }
     addAdditional(response, flags);
@@ -1121,20 +1128,40 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
   /**
    * Lookup record from upstream DNS servers.
    */
-  private byte remoteLookup(Message response, Name name, int iterations) {
+  private byte remoteLookup(Message response, Name name, int type,
+      int iterations) {
+    // If retrieving the root zone, query for NS record type
+    if (name.toString().equals(".")) {
+      type = Type.NS;
+    }
+
+    // Always add any CNAMEs to the response first
+    if (type != Type.CNAME) {
+      Record[] cnameAnswers = getRecords(name, Type.CNAME);
+      if (cnameAnswers != null) {
+        for (Record cnameR : cnameAnswers) {
+          if (!response.findRecord(cnameR)) {
+            response.addRecord(cnameR, Section.ANSWER);
+          }
+        }
+      }
+    }
+
     // Forward lookup to primary DNS servers
-    Record[] answers = getRecords(name, Type.ANY);
+    Record[] answers = getRecords(name, type);
     try {
       for (Record r : answers) {
-        if (r.getType() == Type.SOA) {
-          response.addRecord(r, Section.AUTHORITY);
-        } else {
-          response.addRecord(r, Section.ANSWER);
+        if (!response.findRecord(r)) {
+          if (r.getType() == Type.SOA) {
+            response.addRecord(r, Section.AUTHORITY);
+          } else {
+            response.addRecord(r, Section.ANSWER);
+          }
         }
         if (r.getType() == Type.CNAME) {
           Name cname = ((CNAMERecord) r).getAlias();
           if (iterations < 6) {
-            remoteLookup(response, cname, iterations + 1);
+            remoteLookup(response, cname, type, iterations + 1);
           }
         }
       }
@@ -1154,13 +1181,20 @@ public class RegistryDNS extends AbstractService implements DNSOperations,
    * @return DNS records
    */
   protected Record[] getRecords(Name name, int type) {
+    Record[] result = null;
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    Future<Record[]> future = executor.submit(new LookupTask(name, type));
     try {
-      return new Lookup(name, type).run();
-    } catch (NullPointerException |
+      result = future.get(1500, TimeUnit.MILLISECONDS);
+      return result;
+    } catch (InterruptedException | ExecutionException |
+        TimeoutException | NullPointerException |
         ExceptionInInitializerError e) {
-      LOG.error("Fail to lookup: " + name, e);
+      LOG.warn("Failed to lookup: {} type: {}", name, Type.string(type), e);
+      return result;
+    } finally {
+      executor.shutdown();
     }
-    return null;
   }
 
   /**

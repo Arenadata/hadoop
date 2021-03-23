@@ -24,6 +24,10 @@ import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.delet
 import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.getFileStatus;
 import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.verifyFileExists;
 import static org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.TEST_STRING;
+<<<<<<< HEAD
+=======
+import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -31,6 +35,7 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -59,6 +64,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.NameNodeProxies;
 import org.apache.hadoop.hdfs.client.HdfsDataOutputStream;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
@@ -70,16 +76,29 @@ import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyState;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+<<<<<<< HEAD
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
+=======
+import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster;
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
+import org.apache.hadoop.hdfs.server.federation.MockResolver;
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
 import org.apache.hadoop.hdfs.server.federation.metrics.NamenodeBeanMetrics;
 import org.apache.hadoop.hdfs.server.federation.resolver.FileSubclusterResolver;
+import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations;
+import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations.BlockWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
+import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
+import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.io.erasurecode.ErasureCodeConstants;
@@ -132,6 +151,11 @@ public class TestRouterRpc {
   private ClientProtocol routerProtocol;
   /** Client interface to the Namenode. */
   private ClientProtocol nnProtocol;
+
+  /** NameNodeProtocol interface to the Router. */
+  private NamenodeProtocol routerNamenodeProtocol;
+  /** NameNodeProtocol interface to the Namenode. */
+  private NamenodeProtocol nnNamenodeProtocol;
 
   /** Filesystem interface to the Router. */
   private FileSystem routerFS;
@@ -189,22 +213,18 @@ public class TestRouterRpc {
     // Wait to ensure NN has fully created its test directories
     Thread.sleep(100);
 
-    // Default namenode and random router for this test
-    this.router = cluster.getRandomRouter();
-    this.ns = cluster.getNameservices().get(0);
-    this.namenode = cluster.getNamenode(ns, null);
+    // Random router for this test
+    RouterContext rndRouter = cluster.getRandomRouter();
+    this.setRouter(rndRouter);
 
-    // Handles to the ClientProtocol interface
-    this.routerProtocol = router.getClient().getNamenode();
-    this.nnProtocol = namenode.getClient().getNamenode();
-
-    // Handles to the filesystem client
-    this.nnFS = namenode.getFileSystem();
-    this.routerFS = router.getFileSystem();
+    // Pick a namenode for this test
+    String ns0 = cluster.getNameservices().get(0);
+    this.setNs(ns0);
+    this.setNamenode(cluster.getNamenode(ns0, null));
 
     // Create a test file on the NN
-    Random r = new Random();
-    String randomFile = "testfile-" + r.nextInt();
+    Random rnd = new Random();
+    String randomFile = "testfile-" + rnd.nextInt();
     this.nnFile =
         cluster.getNamenodeTestDirectoryForNS(ns) + "/" + randomFile;
     this.routerFile =
@@ -245,6 +265,8 @@ public class TestRouterRpc {
     this.router = r;
     this.routerProtocol = r.getClient().getNamenode();
     this.routerFS = r.getFileSystem();
+    this.routerNamenodeProtocol = NameNodeProxies.createProxy(router.getConf(),
+        router.getFileSystem().getUri(), NamenodeProtocol.class).getProxy();
   }
 
   protected FileSystem getRouterFileSystem() {
@@ -288,6 +310,12 @@ public class TestRouterRpc {
     this.namenode = nn;
     this.nnProtocol = nn.getClient().getNamenode();
     this.nnFS = nn.getFileSystem();
+
+    // Namenode from the default namespace
+    String ns0 = cluster.getNameservices().get(0);
+    NamenodeContext nn0 = cluster.getNamenode(ns0, null);
+    this.nnNamenodeProtocol = NameNodeProxies.createProxy(nn0.getConf(),
+        nn0.getFileSystem().getUri(), NamenodeProtocol.class).getProxy();
   }
 
   protected String getNs() {
@@ -933,6 +961,142 @@ public class TestRouterRpc {
   }
 
   @Test
+  public void testProxyVersionRequest() throws Exception {
+    NamespaceInfo rVersion = routerNamenodeProtocol.versionRequest();
+    NamespaceInfo nnVersion = nnNamenodeProtocol.versionRequest();
+    assertEquals(nnVersion.getBlockPoolID(), rVersion.getBlockPoolID());
+    assertEquals(nnVersion.getNamespaceID(), rVersion.getNamespaceID());
+    assertEquals(nnVersion.getClusterID(), rVersion.getClusterID());
+    assertEquals(nnVersion.getLayoutVersion(), rVersion.getLayoutVersion());
+    assertEquals(nnVersion.getCTime(), rVersion.getCTime());
+  }
+
+  @Test
+  public void testProxyGetBlockKeys() throws Exception {
+    ExportedBlockKeys rKeys = routerNamenodeProtocol.getBlockKeys();
+    ExportedBlockKeys nnKeys = nnNamenodeProtocol.getBlockKeys();
+    assertEquals(nnKeys.getCurrentKey(), rKeys.getCurrentKey());
+    assertEquals(nnKeys.getKeyUpdateInterval(), rKeys.getKeyUpdateInterval());
+    assertEquals(nnKeys.getTokenLifetime(), rKeys.getTokenLifetime());
+  }
+
+  @Test
+  public void testProxyGetBlocks() throws Exception {
+    // Get datanodes
+    DatanodeInfo[] dns =
+        routerProtocol.getDatanodeReport(DatanodeReportType.ALL);
+    DatanodeInfo dn0 = dns[0];
+
+    // Verify that checking that datanode works
+    BlocksWithLocations routerBlockLocations =
+        routerNamenodeProtocol.getBlocks(dn0, 1024, 0);
+    BlocksWithLocations nnBlockLocations =
+        nnNamenodeProtocol.getBlocks(dn0, 1024, 0);
+    BlockWithLocations[] routerBlocks = routerBlockLocations.getBlocks();
+    BlockWithLocations[] nnBlocks = nnBlockLocations.getBlocks();
+    assertEquals(nnBlocks.length, routerBlocks.length);
+    for (int i = 0; i < routerBlocks.length; i++) {
+      assertEquals(
+          nnBlocks[i].getBlock().getBlockId(),
+          routerBlocks[i].getBlock().getBlockId());
+    }
+  }
+
+  @Test
+  public void testProxyGetTransactionID() throws IOException {
+    long routerTransactionID = routerNamenodeProtocol.getTransactionID();
+    long nnTransactionID = nnNamenodeProtocol.getTransactionID();
+    assertEquals(nnTransactionID, routerTransactionID);
+  }
+
+  @Test
+  public void testProxyGetMostRecentCheckpointTxId() throws IOException {
+    long routerCheckPointId =
+        routerNamenodeProtocol.getMostRecentCheckpointTxId();
+    long nnCheckPointId = nnNamenodeProtocol.getMostRecentCheckpointTxId();
+    assertEquals(nnCheckPointId, routerCheckPointId);
+  }
+
+  @Test
+  public void testProxySetSafemode() throws Exception {
+    boolean routerSafemode =
+        routerProtocol.setSafeMode(SafeModeAction.SAFEMODE_GET, false);
+    boolean nnSafemode =
+        nnProtocol.setSafeMode(SafeModeAction.SAFEMODE_GET, false);
+    assertEquals(nnSafemode, routerSafemode);
+
+    routerSafemode =
+        routerProtocol.setSafeMode(SafeModeAction.SAFEMODE_GET, true);
+    nnSafemode =
+        nnProtocol.setSafeMode(SafeModeAction.SAFEMODE_GET, true);
+    assertEquals(nnSafemode, routerSafemode);
+
+    assertFalse(routerProtocol.setSafeMode(
+        SafeModeAction.SAFEMODE_GET, false));
+    assertTrue(routerProtocol.setSafeMode(
+        SafeModeAction.SAFEMODE_ENTER, false));
+    assertTrue(routerProtocol.setSafeMode(
+        SafeModeAction.SAFEMODE_GET, false));
+    assertFalse(routerProtocol.setSafeMode(
+        SafeModeAction.SAFEMODE_LEAVE, false));
+    assertFalse(routerProtocol.setSafeMode(
+        SafeModeAction.SAFEMODE_GET, false));
+  }
+
+  @Test
+  public void testProxyRestoreFailedStorage() throws Exception {
+    boolean routerSuccess = routerProtocol.restoreFailedStorage("check");
+    boolean nnSuccess = nnProtocol.restoreFailedStorage("check");
+    assertEquals(nnSuccess, routerSuccess);
+  }
+
+  @Test
+  public void testProxyExceptionMessages() throws IOException {
+
+    // Install a mount point to a different path to check
+    MockResolver resolver =
+        (MockResolver)router.getRouter().getSubclusterResolver();
+    String ns0 = cluster.getNameservices().get(0);
+    resolver.addLocation("/mnt", ns0, "/");
+
+    try {
+      FsPermission permission = new FsPermission("777");
+      routerProtocol.mkdirs("/mnt/folder0/folder1", permission, false);
+      fail("mkdirs for non-existing parent folder should have failed");
+    } catch (IOException ioe) {
+      assertExceptionContains("/mnt/folder0", ioe,
+          "Wrong path in exception for mkdirs");
+    }
+
+    try {
+      FsPermission permission = new FsPermission("777");
+      routerProtocol.setPermission("/mnt/testfile.txt", permission);
+      fail("setPermission for non-existing file should have failed");
+    } catch (IOException ioe) {
+      assertExceptionContains("/mnt/testfile.txt", ioe,
+          "Wrong path in exception for setPermission");
+    }
+
+    try {
+      FsPermission permission = new FsPermission("777");
+      routerProtocol.mkdirs("/mnt/folder0/folder1", permission, false);
+      routerProtocol.delete("/mnt/folder0", false);
+      fail("delete for non-existing file should have failed");
+    } catch (IOException ioe) {
+      assertExceptionContains("/mnt/folder0", ioe,
+          "Wrong path in exception for delete");
+    }
+
+    resolver.cleanRegistrations();
+
+    // Check corner cases
+    assertEquals(
+        "Parent directory doesn't exist: /ns1/a/a/b",
+        RouterRpcClient.processExceptionMsg(
+            "Parent directory doesn't exist: /a/a/b", "/a", "/ns1/a"));
+  }
+
+  @Test
   public void testErasureCoding() throws IOException {
 
     LOG.info("List the available erasurce coding policies");
@@ -1066,7 +1230,29 @@ public class TestRouterRpc {
     }, 500, 5 * 1000);
 
     // The cache should be updated now
+<<<<<<< HEAD
     assertNotEquals(jsonString0, metrics.getLiveNodes());
+=======
+    final String jsonString2 = metrics.getLiveNodes();
+    assertNotEquals(jsonString0, jsonString2);
+
+
+    // Without any subcluster available, we should return an empty list
+    MockResolver resolver =
+        (MockResolver) router.getRouter().getNamenodeResolver();
+    resolver.cleanRegistrations();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return !jsonString2.equals(metrics.getLiveNodes());
+      }
+    }, 500, 5 * 1000);
+    assertEquals("{}", metrics.getLiveNodes());
+
+    // Reset the registrations again
+    cluster.registerNamenodes();
+    cluster.waitNamenodeRegistration();
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
   }
 
   /**

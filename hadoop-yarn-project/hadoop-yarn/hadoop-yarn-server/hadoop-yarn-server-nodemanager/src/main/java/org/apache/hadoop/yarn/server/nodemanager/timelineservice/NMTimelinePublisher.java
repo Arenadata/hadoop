@@ -23,6 +23,8 @@ import java.security.PrivilegedExceptionAction;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,6 +82,7 @@ public class NMTimelinePublisher extends CompositeService {
   private NodeId nodeId;
 
   private String httpAddress;
+  private String httpPort;
 
   private UserGroupInformation nmLoginUGI;
 
@@ -93,7 +96,7 @@ public class NMTimelinePublisher extends CompositeService {
 
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
-    dispatcher = new AsyncDispatcher("NM Timeline dispatcher");
+    dispatcher = createDispatcher();
     dispatcher.register(NMTimelineEventType.class,
         new ForwardingEventHandler());
     addIfService(dispatcher);
@@ -101,7 +104,17 @@ public class NMTimelinePublisher extends CompositeService {
         UserGroupInformation.getLoginUser() :
         UserGroupInformation.getCurrentUser();
     LOG.info("Initialized NMTimelinePublisher UGI to " + nmLoginUGI);
+
+    String webAppURLWithoutScheme =
+        WebAppUtils.getNMWebAppURLWithoutScheme(conf);
+    if (webAppURLWithoutScheme.contains(":")) {
+      httpPort = webAppURLWithoutScheme.split(":")[1];
+    }
     super.serviceInit(conf);
+  }
+
+  protected AsyncDispatcher createDispatcher() {
+    return new AsyncDispatcher("NM Timeline dispatcher");
   }
 
   @Override
@@ -110,6 +123,7 @@ public class NMTimelinePublisher extends CompositeService {
     // context will be updated after containerManagerImpl is started
     // hence NMMetricsPublisher is added subservice of containerManagerImpl
     this.nodeId = context.getNodeId();
+    this.httpAddress = nodeId.getHost() + ":" + httpPort;
   }
 
   @Override
@@ -130,6 +144,9 @@ public class NMTimelinePublisher extends CompositeService {
     case TIMELINE_ENTITY_PUBLISH:
       putEntity(((TimelinePublishEvent) event).getTimelineEntityToPublish(),
           ((TimelinePublishEvent) event).getApplicationId());
+      break;
+    case STOP_TIMELINE_CLIENT:
+      removeAndStopTimelineClient(event.getApplicationId());
       break;
     default:
       LOG.error("Unknown NMTimelineEvent type: " + event.getType());
@@ -173,9 +190,20 @@ public class NMTimelinePublisher extends CompositeService {
           LOG.error("Seems like client has been removed before the container"
               + " metric could be published for " + container.getContainerId());
         }
-      } catch (IOException | YarnException e) {
+      } catch (IOException e) {
         LOG.error("Failed to publish Container metrics for container "
-            + container.getContainerId(), e);
+            + container.getContainerId());
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Failed to publish Container metrics for container "
+              + container.getContainerId(), e);
+        }
+      } catch (YarnException e) {
+        LOG.error("Failed to publish Container metrics for container "
+            + container.getContainerId(), e.getMessage());
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Failed to publish Container metrics for container "
+              + container.getContainerId(), e);
+        }
       }
     }
   }
@@ -267,9 +295,20 @@ public class NMTimelinePublisher extends CompositeService {
         LOG.error("Seems like client has been removed before the event could be"
             + " published for " + container.getContainerId());
       }
-    } catch (IOException | YarnException e) {
+    } catch (IOException e) {
       LOG.error("Failed to publish Container metrics for container "
-          + container.getContainerId(), e);
+          + container.getContainerId());
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Failed to publish Container metrics for container "
+            + container.getContainerId(), e);
+      }
+    } catch (YarnException e) {
+      LOG.error("Failed to publish Container metrics for container "
+          + container.getContainerId(), e.getMessage());
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Failed to publish Container metrics for container "
+            + container.getContainerId(), e);
+      }
     }
   }
 
@@ -298,8 +337,16 @@ public class NMTimelinePublisher extends CompositeService {
         LOG.error("Seems like client has been removed before the entity "
             + "could be published for " + entity);
       }
-    } catch (Exception e) {
-      LOG.error("Error when publishing entity " + entity, e);
+    } catch (IOException e) {
+      LOG.error("Error when publishing entity " + entity);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Error when publishing entity " + entity, e);
+      }
+    } catch (YarnException e) {
+      LOG.error("Error when publishing entity " + entity, e.getMessage());
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Error when publishing entity " + entity, e);
+      }
     }
   }
 
@@ -331,11 +378,6 @@ public class NMTimelinePublisher extends CompositeService {
 
   public void publishContainerEvent(ContainerEvent event) {
     // publish only when the desired event is received
-    if (this.httpAddress == null) {
-      // update httpAddress for first time. When this service started,
-      // web server will not be started.
-      this.httpAddress = nodeId.getHost() + ":" + context.getHttpPort();
-    }
     switch (event.getType()) {
     case INIT_CONTAINER:
       publishContainerCreatedEvent(event);
@@ -387,18 +429,11 @@ public class NMTimelinePublisher extends CompositeService {
   }
 
   private static class TimelinePublishEvent extends NMTimelineEvent {
-    private ApplicationId appId;
     private TimelineEntity entityToPublish;
 
     public TimelinePublishEvent(TimelineEntity entity, ApplicationId appId) {
-      super(NMTimelineEventType.TIMELINE_ENTITY_PUBLISH, System
-          .currentTimeMillis());
-      this.appId = appId;
+      super(NMTimelineEventType.TIMELINE_ENTITY_PUBLISH, appId);
       this.entityToPublish = entity;
-    }
-
-    public ApplicationId getApplicationId() {
-      return appId;
     }
 
     public TimelineEntity getTimelineEntityToPublish() {
@@ -429,6 +464,11 @@ public class NMTimelinePublisher extends CompositeService {
   }
 
   public void stopTimelineClient(ApplicationId appId) {
+    dispatcher.getEventHandler().handle(
+        new NMTimelineEvent(NMTimelineEventType.STOP_TIMELINE_CLIENT, appId));
+  }
+
+  private void removeAndStopTimelineClient(ApplicationId appId) {
     TimelineV2Client client = appToClientMap.remove(appId);
     if (client != null) {
       client.stop();

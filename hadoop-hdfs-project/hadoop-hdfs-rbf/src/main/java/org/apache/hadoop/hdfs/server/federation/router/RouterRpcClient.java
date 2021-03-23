@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hdfs.server.federation.router;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -34,13 +35,16 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -48,7 +52,6 @@ import java.util.regex.Pattern;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.NameNodeProxiesClient.ProxyAndInfo;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.federation.resolver.ActiveNamenodeResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeContext;
@@ -63,6 +66,7 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
@@ -97,7 +101,7 @@ public class RouterRpcClient {
   /** Connection pool to the Namenodes per user for performance. */
   private final ConnectionManager connectionManager;
   /** Service to run asynchronous calls. */
-  private final ExecutorService executorService;
+  private final ThreadPoolExecutor executorService;
   /** Retry policy for router -> NN communication. */
   private final RetryPolicy retryPolicy;
   /** Optional perf monitor. */
@@ -130,8 +134,16 @@ public class RouterRpcClient {
     ThreadFactory threadFactory = new ThreadFactoryBuilder()
         .setNameFormat("RPC Router Client-%d")
         .build();
-    this.executorService = Executors.newFixedThreadPool(
-        numThreads, threadFactory);
+    BlockingQueue<Runnable> workQueue;
+    if (conf.getBoolean(
+        RBFConfigKeys.DFS_ROUTER_CLIENT_REJECT_OVERLOAD,
+        RBFConfigKeys.DFS_ROUTER_CLIENT_REJECT_OVERLOAD_DEFAULT)) {
+      workQueue = new ArrayBlockingQueue<>(numThreads);
+    } else {
+      workQueue = new LinkedBlockingQueue<>();
+    }
+    this.executorService = new ThreadPoolExecutor(numThreads, numThreads,
+        0L, TimeUnit.MILLISECONDS, workQueue, threadFactory);
 
     this.rpcMonitor = monitor;
 
@@ -225,14 +237,14 @@ public class RouterRpcClient {
    *
    * @param ugi User group information.
    * @param nsId Nameservice identifier.
-   * @param rpcAddress ClientProtocol RPC server address of the NN.
+   * @param rpcAddress RPC server address of the NN.
+   * @param proto Protocol of the connection.
    * @return ConnectionContext containing a ClientProtocol proxy client for the
    *         NN + current user.
    * @throws IOException If we cannot get a connection to the NameNode.
    */
-  private ConnectionContext getConnection(
-      UserGroupInformation ugi, String nsId, String rpcAddress)
-          throws IOException {
+  private ConnectionContext getConnection(UserGroupInformation ugi, String nsId,
+      String rpcAddress, Class<?> proto) throws IOException {
     ConnectionContext connection = null;
     try {
       // Each proxy holds the UGI info for the current user when it is created.
@@ -242,7 +254,7 @@ public class RouterRpcClient {
       // for each individual request.
 
       // TODO Add tokens from the federated UGI
-      connection = this.connectionManager.getConnection(ugi, rpcAddress);
+      connection = this.connectionManager.getConnection(ugi, rpcAddress, proto);
       LOG.debug("User {} NN {} is using connection {}",
           ugi.getUserName(), rpcAddress, connection);
     } catch (Exception ex) {
@@ -326,7 +338,8 @@ public class RouterRpcClient {
   private Object invokeMethod(
       final UserGroupInformation ugi,
       final List<? extends FederationNamenodeContext> namenodes,
-      final Method method, final Object... params) throws IOException {
+      final Class<?> protocol, final Method method, final Object... params)
+          throws IOException {
 
     if (namenodes == null || namenodes.isEmpty()) {
       throw new IOException("No namenodes to invoke " + method.getName() +
@@ -344,9 +357,10 @@ public class RouterRpcClient {
       try {
         String nsId = namenode.getNameserviceId();
         String rpcAddress = namenode.getRpcAddress();
-        connection = this.getConnection(ugi, nsId, rpcAddress);
-        ProxyAndInfo<ClientProtocol> client = connection.getClient();
-        ClientProtocol proxy = client.getProxy();
+        connection = this.getConnection(ugi, nsId, rpcAddress, protocol);
+        ProxyAndInfo<?> client = connection.getClient();
+        final Object proxy = client.getProxy();
+
         ret = invoke(nsId, 0, method, proxy, params);
         if (failover) {
           // Success on alternate server, update
@@ -610,8 +624,30 @@ public class RouterRpcClient {
     UserGroupInformation ugi = RouterRpcServer.getRemoteUser();
     List<? extends FederationNamenodeContext> nns =
         getNamenodesForNameservice(nsId);
-    RemoteLocationContext loc = new RemoteLocation(nsId, "/");
-    return invokeMethod(ugi, nns, method.getMethod(), method.getParams(loc));
+    RemoteLocationContext loc = new RemoteLocation(nsId, "/", "/");
+    Class<?> proto = method.getProtocol();
+    Method m = method.getMethod();
+    Object[] params = method.getParams(loc);
+    return invokeMethod(ugi, nns, proto, m, params);
+  }
+
+  /**
+   * Invokes a remote method against the specified namespace.
+   *
+   * Re-throws exceptions generated by the remote RPC call as either
+   * RemoteException or IOException.
+   *
+   * @param nsId Target namespace for the method.
+   * @param method The remote method and parameters to invoke.
+   * @param clazz Class for the return type.
+   * @return The result of invoking the method.
+   * @throws IOException If the invoke generated an error.
+   */
+  public <T> T invokeSingle(final String nsId, RemoteMethod method,
+      Class<T> clazz) throws IOException {
+    @SuppressWarnings("unchecked")
+    T ret = (T)invokeSingle(nsId, method);
+    return ret;
   }
 
   /**
@@ -689,8 +725,9 @@ public class RouterRpcClient {
       List<? extends FederationNamenodeContext> namenodes =
           getNamenodesForNameservice(ns);
       try {
+        Class<?> proto = remoteMethod.getProtocol();
         Object[] params = remoteMethod.getParams(loc);
-        Object result = invokeMethod(ugi, namenodes, m, params);
+        Object result = invokeMethod(ugi, namenodes, proto, m, params);
         // Check if the result is what we expected
         if (isExpectedClass(expectedResultClass, result) &&
             isExpectedValue(expectedResultValue, result)) {
@@ -703,8 +740,12 @@ public class RouterRpcClient {
           firstResult = result;
         }
       } catch (IOException ioe) {
+        // Localize the exception
+
+        ioe = processException(ioe, loc);
+
         // Record it and move on
-        lastThrownException = (IOException) ioe;
+        lastThrownException =  ioe;
         if (firstThrownException == null) {
           firstThrownException = lastThrownException;
         }
@@ -730,6 +771,63 @@ public class RouterRpcClient {
     @SuppressWarnings("unchecked")
     T ret = (T)firstResult;
     return ret;
+  }
+
+  /**
+   * Exception messages might contain local subcluster paths. This method
+   * generates a new exception with the proper message.
+   * @param ioe Original IOException.
+   * @param loc Location we are processing.
+   * @return Exception processed for federation.
+   */
+  private IOException processException(
+      IOException ioe, RemoteLocationContext loc) {
+
+    if (ioe instanceof RemoteException) {
+      RemoteException re = (RemoteException)ioe;
+      String newMsg = processExceptionMsg(
+          re.getMessage(), loc.getDest(), loc.getSrc());
+      RemoteException newException =
+          new RemoteException(re.getClassName(), newMsg);
+      newException.setStackTrace(ioe.getStackTrace());
+      return newException;
+    }
+
+    if (ioe instanceof FileNotFoundException) {
+      String newMsg = processExceptionMsg(
+          ioe.getMessage(), loc.getDest(), loc.getSrc());
+      FileNotFoundException newException = new FileNotFoundException(newMsg);
+      newException.setStackTrace(ioe.getStackTrace());
+      return newException;
+    }
+
+    return ioe;
+  }
+
+  /**
+   * Process a subcluster message and make it federated.
+   * @param msg Original exception message.
+   * @param dst Path in federation.
+   * @param src Path in the subcluster.
+   * @return Message processed for federation.
+   */
+  @VisibleForTesting
+  static String processExceptionMsg(
+      final String msg, final String dst, final String src) {
+    if (dst.equals(src) || !dst.startsWith("/") || !src.startsWith("/")) {
+      return msg;
+    }
+
+    String newMsg = msg.replaceFirst(dst, src);
+    int minLen = Math.min(dst.length(), src.length());
+    for (int i = 0; newMsg.equals(msg) && i < minLen; i++) {
+      // Check if we can replace sub folders
+      String dst1 = dst.substring(0, dst.length() - 1 - i);
+      String src1 = src.substring(0, src.length() - 1 - i);
+      newMsg = msg.replaceFirst(dst1, src1);
+    }
+
+    return newMsg;
   }
 
   /**
@@ -908,14 +1006,17 @@ public class RouterRpcClient {
     final UserGroupInformation ugi = RouterRpcServer.getRemoteUser();
     final Method m = method.getMethod();
 
-    if (locations.size() == 1) {
+    if (locations.isEmpty()) {
+      throw new IOException("No remote locations available");
+    } else if (locations.size() == 1) {
       // Shortcut, just one call
       T location = locations.iterator().next();
       String ns = location.getNameserviceId();
       final List<? extends FederationNamenodeContext> namenodes =
           getNamenodesForNameservice(ns);
+      Class<?> proto = method.getProtocol();
       Object[] paramList = method.getParams(location);
-      Object result = invokeMethod(ugi, namenodes, m, paramList);
+      Object result = invokeMethod(ugi, namenodes, proto, m, paramList);
       return Collections.singletonMap(location, clazz.cast(result));
     }
 
@@ -925,6 +1026,7 @@ public class RouterRpcClient {
       String nsId = location.getNameserviceId();
       final List<? extends FederationNamenodeContext> namenodes =
           getNamenodesForNameservice(nsId);
+      final Class<?> proto = method.getProtocol();
       final Object[] paramList = method.getParams(location);
       if (standby) {
         // Call the objectGetter to all NNs (including standby)
@@ -939,7 +1041,7 @@ public class RouterRpcClient {
           orderedLocations.add(nnLocation);
           callables.add(new Callable<Object>() {
             public Object call() throws Exception {
-              return invokeMethod(ugi, nnList, m, paramList);
+              return invokeMethod(ugi, nnList, proto, m, paramList);
             }
           });
         }
@@ -948,7 +1050,7 @@ public class RouterRpcClient {
         orderedLocations.add(location);
         callables.add(new Callable<Object>() {
           public Object call() throws Exception {
-            return invokeMethod(ugi, namenodes, m, paramList);
+            return invokeMethod(ugi, namenodes, proto, m, paramList);
           }
         });
       }
@@ -976,10 +1078,10 @@ public class RouterRpcClient {
           results.put(location, clazz.cast(result));
         } catch (CancellationException ce) {
           T loc = orderedLocations.get(i);
-          String msg =
-              "Invocation to \"" + loc + "\" for \"" + method + "\" timed out";
+          String msg = "Invocation to \"" + loc + "\" for \""
+              + method.getMethodName() + "\" timed out";
           LOG.error(msg);
-          IOException ioe = new IOException(msg);
+          IOException ioe = new SubClusterTimeoutException(msg);
           exceptions.put(location, ioe);
         } catch (ExecutionException ex) {
           Throwable cause = ex.getCause();
@@ -1015,6 +1117,16 @@ public class RouterRpcClient {
       }
 
       return results;
+    } catch (RejectedExecutionException e) {
+      if (rpcMonitor != null) {
+        rpcMonitor.proxyOpFailureClientOverloaded();
+      }
+      int active = executorService.getActiveCount();
+      int total = executorService.getMaximumPoolSize();
+      String msg = "Not enough client threads " + active + "/" + total;
+      LOG.error(msg);
+      throw new StandbyException(
+          "Router " + routerId + " is overloaded: " + msg);
     } catch (InterruptedException ex) {
       LOG.error("Unexpected error while invoking API: {}", ex.getMessage());
       throw new IOException(

@@ -191,7 +191,7 @@ public class DFSUtilClient {
   /**
    * Returns collection of nameservice Ids from the configuration.
    * @param conf configuration
-   * @return collection of nameservice Ids, or null if not specified
+   * @return collection of nameservice Ids. Empty list if unspecified.
    */
   public static Collection<String> getNameServiceIds(Configuration conf) {
     return conf.getTrimmedStringCollection(DFS_NAMESERVICES);
@@ -751,14 +751,14 @@ public class DFSUtilClient {
   public static class CorruptedBlocks {
     private Map<ExtendedBlock, Set<DatanodeInfo>> corruptionMap;
 
-    public CorruptedBlocks() {
-      this.corruptionMap = new HashMap<>();
-    }
-
     /**
      * Indicate a block replica on the specified datanode is corrupted
      */
     public void addCorruptedBlock(ExtendedBlock blk, DatanodeInfo node) {
+      if (corruptionMap == null) {
+        corruptionMap = new HashMap<>();
+      }
+
       Set<DatanodeInfo> dnSet = corruptionMap.get(blk);
       if (dnSet == null) {
         dnSet = new HashSet<>();
@@ -770,7 +770,8 @@ public class DFSUtilClient {
     }
 
     /**
-     * @return the map that contains all the corruption entries.
+     * @return the map that contains all the corruption entries, or null if
+     * there were no corrupted entries
      */
     public Map<ExtendedBlock, Set<DatanodeInfo>> getCorruptionMap() {
       return corruptionMap;

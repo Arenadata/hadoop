@@ -1205,7 +1205,7 @@ public abstract class Shell {
 
     /**
      * Returns the timeout value set for the executor's sub-commands.
-     * @return The timeout value in seconds
+     * @return The timeout value in milliseconds
      */
     @VisibleForTesting
     public long getTimeoutInterval() {
@@ -1387,5 +1387,20 @@ public abstract class Shell {
     synchronized (CHILD_SHELLS) {
       return new HashSet<>(CHILD_SHELLS.keySet());
     }
+  }
+
+  /**
+   * Static method to return the memory lock limit for datanode.
+   * @param ulimit max value at which memory locked should be capped.
+   * @return long value specifying the memory lock limit.
+   */
+  public static Long getMemlockLimit(Long ulimit) {
+    if (WINDOWS) {
+      // HDFS-13560: if ulimit is too large on Windows, Windows will complain
+      // "1450: Insufficient system resources exist to complete the requested
+      // service". Thus, cap Windows memory lock limit at Integer.MAX_VALUE.
+      return Math.min(Integer.MAX_VALUE, ulimit);
+    }
+    return ulimit;
   }
 }

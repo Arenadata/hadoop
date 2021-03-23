@@ -18,7 +18,9 @@
 package org.apache.hadoop.hdfs.server.federation.router;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -37,9 +39,14 @@ import org.apache.hadoop.hdfs.client.HdfsDataOutputStream;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.NSQuotaExceededException;
-import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
+import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
+<<<<<<< HEAD
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import org.apache.hadoop.hdfs.server.federation.StateStoreDFSCluster;
 import org.apache.hadoop.hdfs.server.federation.resolver.MountTableManager;
 import org.apache.hadoop.hdfs.server.federation.resolver.MountTableResolver;
@@ -49,8 +56,10 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntr
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetMountTableEntriesResponse;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.RemoveMountTableEntryRequest;
 import org.apache.hadoop.hdfs.server.federation.store.protocol.RemoveMountTableEntryResponse;
+import org.apache.hadoop.hdfs.server.federation.store.protocol.UpdateMountTableEntryRequest;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.Time;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -151,6 +160,10 @@ public class TestRouterQuota {
     // mkdir in real FileSystem should be okay
     nnFs1.mkdirs(new Path("/testdir1/" + UUID.randomUUID()));
     nnFs2.mkdirs(new Path("/testdir2/" + UUID.randomUUID()));
+
+    // delete/rename call should be still okay
+    routerFs.delete(new Path("/nsquota"), true);
+    routerFs.rename(new Path("/nsquota/subdir"), new Path("/nsquota/subdir"));
   }
 
   @Test
@@ -403,8 +416,7 @@ public class TestRouterQuota {
     updateService.periodicInvoke();
 
     // verify initial quota value
-    List<MountTable> results = getMountTable(path);
-    MountTable updatedMountTable = !results.isEmpty() ? results.get(0) : null;
+    MountTable updatedMountTable = getMountTable(path);
     RouterQuotaUsage quota = updatedMountTable.getQuota();
     assertEquals(nsQuota, quota.getQuota());
     assertEquals(ssQuota, quota.getSpaceQuota());
@@ -419,8 +431,7 @@ public class TestRouterQuota {
     appendData(path + "/file", routerClient, BLOCK_SIZE);
 
     updateService.periodicInvoke();
-    results = getMountTable(path);
-    updatedMountTable = !results.isEmpty() ? results.get(0) : null;
+    updatedMountTable = getMountTable(path);
     quota = updatedMountTable.getQuota();
 
     // verify if quota has been updated in state store
@@ -436,16 +447,251 @@ public class TestRouterQuota {
    * @return If it was successfully got.
    * @throws IOException Problems getting entries.
    */
-  private List<MountTable> getMountTable(String path) throws IOException {
+  private MountTable getMountTable(String path) throws IOException {
     // Reload the Router cache
     resolver.loadCache(true);
     RouterClient client = routerContext.getAdminClient();
     MountTableManager mountTableManager = client.getMountTableManager();
     GetMountTableEntriesRequest getRequest = GetMountTableEntriesRequest
         .newInstance(path);
-    GetMountTableEntriesResponse removeResponse = mountTableManager
+    GetMountTableEntriesResponse response = mountTableManager
         .getMountTableEntries(getRequest);
+    List<MountTable> results = response.getEntries();
 
-    return removeResponse.getEntries();
+    return !results.isEmpty() ? results.get(0) : null;
+  }
+
+  @Test
+  public void testQuotaSynchronization() throws IOException {
+    long updateNsQuota = 3;
+    long updateSsQuota = 4;
+    MountTable mountTable = MountTable.newInstance("/quotaSync",
+        Collections.singletonMap("ns0", "/"), Time.now(), Time.now());
+    mountTable.setQuota(new RouterQuotaUsage.Builder().quota(1)
+        .spaceQuota(2).build());
+    // Add new mount table
+    addMountTable(mountTable);
+
+    // ensure the quota is not set as updated value
+    QuotaUsage realQuota = nnContext1.getFileSystem()
+        .getQuotaUsage(new Path("/"));
+    assertNotEquals(updateNsQuota, realQuota.getQuota());
+    assertNotEquals(updateSsQuota, realQuota.getSpaceQuota());
+
+    // Call periodicInvoke to ensure quota  updated in quota manager
+    // and state store.
+    RouterQuotaUpdateService updateService = routerContext.getRouter()
+        .getQuotaCacheUpdateService();
+    updateService.periodicInvoke();
+
+    mountTable.setQuota(new RouterQuotaUsage.Builder().quota(updateNsQuota)
+        .spaceQuota(updateSsQuota).build());
+    UpdateMountTableEntryRequest updateRequest = UpdateMountTableEntryRequest
+        .newInstance(mountTable);
+    RouterClient client = routerContext.getAdminClient();
+    MountTableManager mountTableManager = client.getMountTableManager();
+    mountTableManager.updateMountTableEntry(updateRequest);
+
+    // verify if the quota is updated in real path
+    realQuota = nnContext1.getFileSystem().getQuotaUsage(
+        new Path("/"));
+    assertEquals(updateNsQuota, realQuota.getQuota());
+    assertEquals(updateSsQuota, realQuota.getSpaceQuota());
+  }
+
+  @Test
+  public void testQuotaRefreshAfterQuotaExceed() throws Exception {
+    long nsQuota = 3;
+    long ssQuota = 100;
+    final FileSystem nnFs1 = nnContext1.getFileSystem();
+    final FileSystem nnFs2 = nnContext2.getFileSystem();
+
+    // Add two mount tables:
+    // /setquota1 --> ns0---testdir11
+    // /setquota2 --> ns1---testdir12
+    nnFs1.mkdirs(new Path("/testdir11"));
+    nnFs2.mkdirs(new Path("/testdir12"));
+    MountTable mountTable1 = MountTable.newInstance("/setquota1",
+        Collections.singletonMap("ns0", "/testdir11"));
+    mountTable1
+        .setQuota(new RouterQuotaUsage.Builder().quota(nsQuota)
+        .spaceQuota(ssQuota).build());
+    addMountTable(mountTable1);
+
+    MountTable mountTable2 = MountTable.newInstance("/setquota2",
+        Collections.singletonMap("ns1", "/testdir12"));
+    mountTable2
+        .setQuota(new RouterQuotaUsage.Builder().quota(nsQuota)
+        .spaceQuota(ssQuota).build());
+    addMountTable(mountTable2);
+
+    final FileSystem routerFs = routerContext.getFileSystem();
+    // Create directory to make directory count equals to nsQuota
+    routerFs.mkdirs(new Path("/setquota1/" + UUID.randomUUID()));
+    routerFs.mkdirs(new Path("/setquota1/" + UUID.randomUUID()));
+
+    // create one more directory to exceed the nsQuota
+    routerFs.mkdirs(new Path("/setquota1/" + UUID.randomUUID()));
+
+    RouterQuotaUpdateService updateService = routerContext.getRouter()
+        .getQuotaCacheUpdateService();
+    // Call RouterQuotaUpdateService#periodicInvoke to update quota cache
+    updateService.periodicInvoke();
+    // Reload the Router cache
+    resolver.loadCache(true);
+
+    RouterQuotaManager quotaManager =
+        routerContext.getRouter().getQuotaManager();
+    ClientProtocol client1 = nnContext1.getClient().getNamenode();
+    ClientProtocol client2 = nnContext2.getClient().getNamenode();
+    QuotaUsage quota1 = client1.getQuotaUsage("/testdir11");
+    QuotaUsage quota2 = client2.getQuotaUsage("/testdir12");
+    QuotaUsage cacheQuota1 = quotaManager.getQuotaUsage("/setquota1");
+    QuotaUsage cacheQuota2 = quotaManager.getQuotaUsage("/setquota2");
+
+    // Verify quota usage
+    assertEquals(4, quota1.getFileAndDirectoryCount());
+    assertEquals(4, cacheQuota1.getFileAndDirectoryCount());
+    assertEquals(1, quota2.getFileAndDirectoryCount());
+    assertEquals(1, cacheQuota2.getFileAndDirectoryCount());
+
+    try {
+      // create new directory to trigger NSQuotaExceededException
+      routerFs.mkdirs(new Path("/testdir11/" + UUID.randomUUID()));
+      fail("Mkdir should be failed under dir /testdir11.");
+    } catch (NSQuotaExceededException ignored) {
+    }
+
+    // Create directory under the other mount point
+    routerFs.mkdirs(new Path("/setquota2/" + UUID.randomUUID()));
+    routerFs.mkdirs(new Path("/setquota2/" + UUID.randomUUID()));
+
+    // Call RouterQuotaUpdateService#periodicInvoke to update quota cache
+    updateService.periodicInvoke();
+
+    quota1 = client1.getQuotaUsage("/testdir11");
+    cacheQuota1 = quotaManager.getQuotaUsage("/setquota1");
+    quota2 = client2.getQuotaUsage("/testdir12");
+    cacheQuota2 = quotaManager.getQuotaUsage("/setquota2");
+
+    // Verify whether quota usage cache is update by periodicInvoke().
+    assertEquals(4, quota1.getFileAndDirectoryCount());
+    assertEquals(4, cacheQuota1.getFileAndDirectoryCount());
+    assertEquals(3, quota2.getFileAndDirectoryCount());
+    assertEquals(3, cacheQuota2.getFileAndDirectoryCount());
+  }
+
+  /**
+   * Verify whether mount table and quota usage cache is updated properly.
+   * {@link RouterQuotaUpdateService#periodicInvoke()} should be able to update
+   * the cache and the mount table even if the destination directory for some
+   * mount entry is not present in the filesystem.
+   */
+  @Test
+  public void testQuotaRefreshWhenDestinationNotPresent() throws Exception {
+    long nsQuota = 5;
+    long ssQuota = 3*BLOCK_SIZE;
+    final FileSystem nnFs = nnContext1.getFileSystem();
+
+    // Add three mount tables:
+    // /setdir1 --> ns0---testdir13
+    // /setdir2 --> ns0---testdir14
+    // Create destination directory
+    nnFs.mkdirs(new Path("/testdir13"));
+    nnFs.mkdirs(new Path("/testdir14"));
+
+    MountTable mountTable = MountTable.newInstance("/setdir1",
+        Collections.singletonMap("ns0", "/testdir13"));
+    mountTable
+        .setQuota(new RouterQuotaUsage.Builder().quota(nsQuota)
+        .spaceQuota(ssQuota).build());
+    addMountTable(mountTable);
+
+    mountTable = MountTable.newInstance("/setdir2",
+        Collections.singletonMap("ns0", "/testdir14"));
+    mountTable
+        .setQuota(new RouterQuotaUsage.Builder().quota(nsQuota)
+        .spaceQuota(ssQuota).build());
+    addMountTable(mountTable);
+
+    final DFSClient routerClient = routerContext.getClient();
+    // Create file
+    routerClient.create("/setdir1/file1", true).close();
+    routerClient.create("/setdir2/file2", true).close();
+    // append data to the file
+    appendData("/setdir1/file1", routerClient, BLOCK_SIZE);
+    appendData("/setdir2/file2", routerClient, BLOCK_SIZE);
+
+    RouterQuotaUpdateService updateService =
+        routerContext.getRouter().getQuotaCacheUpdateService();
+    // Update quota cache
+    updateService.periodicInvoke();
+    // Reload the Router cache
+    resolver.loadCache(true);
+
+    ClientProtocol client1 = nnContext1.getClient().getNamenode();
+    RouterQuotaManager quotaManager =
+        routerContext.getRouter().getQuotaManager();
+    QuotaUsage quota1 = client1.getQuotaUsage("/testdir13");
+    QuotaUsage quota2 = client1.getQuotaUsage("/testdir14");
+    QuotaUsage cacheQuota1 = quotaManager.getQuotaUsage("/setdir1");
+    QuotaUsage cacheQuota2 = quotaManager.getQuotaUsage("/setdir2");
+
+    // Get quota details in mount table
+    MountTable updatedMountTable = getMountTable("/setdir1");
+    RouterQuotaUsage mountQuota1 = updatedMountTable.getQuota();
+    updatedMountTable = getMountTable("/setdir2");
+    RouterQuotaUsage mountQuota2 = updatedMountTable.getQuota();
+
+    // Verify quota usage
+    assertEquals(2, quota1.getFileAndDirectoryCount());
+    assertEquals(2, cacheQuota1.getFileAndDirectoryCount());
+    assertEquals(2, mountQuota1.getFileAndDirectoryCount());
+    assertEquals(2, quota2.getFileAndDirectoryCount());
+    assertEquals(2, cacheQuota2.getFileAndDirectoryCount());
+    assertEquals(2, mountQuota2.getFileAndDirectoryCount());
+    assertEquals(BLOCK_SIZE, quota1.getSpaceConsumed());
+    assertEquals(BLOCK_SIZE, cacheQuota1.getSpaceConsumed());
+    assertEquals(BLOCK_SIZE, mountQuota1.getSpaceConsumed());
+    assertEquals(BLOCK_SIZE, quota2.getSpaceConsumed());
+    assertEquals(BLOCK_SIZE, cacheQuota2.getSpaceConsumed());
+    assertEquals(BLOCK_SIZE, mountQuota2.getSpaceConsumed());
+
+    FileSystem routerFs = routerContext.getFileSystem();
+    // Remove destination directory for the mount entry
+    routerFs.delete(new Path("/setdir1"), true);
+
+    // Create file
+    routerClient.create("/setdir2/file3", true).close();
+    // append data to the file
+    appendData("/setdir2/file3", routerClient, BLOCK_SIZE);
+    int updatedSpace = BLOCK_SIZE + BLOCK_SIZE;
+
+    // Update quota cache
+    updateService.periodicInvoke();
+
+    quota2 = client1.getQuotaUsage("/testdir14");
+    cacheQuota1 = quotaManager.getQuotaUsage("/setdir1");
+    cacheQuota2 = quotaManager.getQuotaUsage("/setdir2");
+
+    // Get quota details in mount table
+    updatedMountTable = getMountTable("/setdir1");
+    mountQuota1 = updatedMountTable.getQuota();
+    updatedMountTable = getMountTable("/setdir2");
+    mountQuota2 = updatedMountTable.getQuota();
+
+    // If destination is not present the quota usage should be reset to 0
+    assertEquals(0, cacheQuota1.getFileAndDirectoryCount());
+    assertEquals(0, mountQuota1.getFileAndDirectoryCount());
+    assertEquals(0, cacheQuota1.getSpaceConsumed());
+    assertEquals(0, mountQuota1.getSpaceConsumed());
+
+    // Verify current quota usage for other mount entries
+    assertEquals(3, quota2.getFileAndDirectoryCount());
+    assertEquals(3, cacheQuota2.getFileAndDirectoryCount());
+    assertEquals(3, mountQuota2.getFileAndDirectoryCount());
+    assertEquals(updatedSpace, quota2.getSpaceConsumed());
+    assertEquals(updatedSpace, cacheQuota2.getSpaceConsumed());
+    assertEquals(updatedSpace, mountQuota2.getSpaceConsumed());
   }
 }

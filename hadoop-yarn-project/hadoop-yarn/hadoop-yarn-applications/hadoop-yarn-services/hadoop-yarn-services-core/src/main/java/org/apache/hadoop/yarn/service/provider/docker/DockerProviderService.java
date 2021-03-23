@@ -17,16 +17,23 @@
  */
 package org.apache.hadoop.yarn.service.provider.docker;
 
-import org.apache.hadoop.registry.client.api.RegistryConstants;
-import org.apache.hadoop.registry.client.binding.RegistryUtils;
+import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.service.component.instance.ComponentInstance;
 import org.apache.hadoop.yarn.service.provider.AbstractProviderService;
+import org.apache.hadoop.yarn.service.provider.ProviderUtils;
+import org.apache.hadoop.yarn.api.records.Container;
+import org.apache.hadoop.yarn.service.api.records.Component;
 import org.apache.hadoop.yarn.service.api.records.Service;
 import org.apache.hadoop.yarn.service.utils.SliderFileSystem;
 import org.apache.hadoop.yarn.service.containerlaunch.AbstractLauncher;
+import org.apache.hadoop.yarn.service.containerlaunch.CommandLineBuilder;
+import org.apache.hadoop.yarn.service.containerlaunch.ContainerLaunchService;
+import org.apache.hadoop.yarn.service.exceptions.SliderException;
+import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
 
 import java.io.IOException;
-import java.text.MessageFormat;
+import java.util.Map;
 
 public class DockerProviderService extends AbstractProviderService
     implements DockerKeys {
@@ -38,20 +45,58 @@ public class DockerProviderService extends AbstractProviderService
     launcher.setDockerImage(compInstance.getCompSpec().getArtifact().getId());
     launcher.setDockerNetwork(compInstance.getCompSpec().getConfiguration()
         .getProperty(DOCKER_NETWORK));
-    String domain = compInstance.getComponent().getScheduler().getConfig()
-        .get(RegistryConstants.KEY_DNS_DOMAIN);
-    String hostname;
-    if (domain == null || domain.isEmpty()) {
-      hostname = MessageFormat
-          .format("{0}.{1}.{2}", compInstance.getCompInstanceName(),
-              service.getName(), RegistryUtils.currentUser());
-    } else {
-      hostname = MessageFormat
-          .format("{0}.{1}.{2}.{3}", compInstance.getCompInstanceName(),
-              service.getName(), RegistryUtils.currentUser(), domain);
-    }
-    launcher.setDockerHostname(hostname);
+    launcher.setDockerHostname(compInstance.getHostname());
     launcher.setRunPrivilegedContainer(
         compInstance.getCompSpec().getRunPrivilegedContainer());
   }
+
+  /**
+   * Check if system is default to disable docker override or
+   * user requested a Docker container with ENTRY_POINT support.
+   *
+   * @param component - YARN Service component
+   * @return true if Docker launch command override is disabled
+   */
+  private boolean checkUseEntryPoint(Component component) {
+    boolean overrideDisable = false;
+    String overrideDisableKey = Environment.
+        YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE.
+            name();
+    String overrideDisableValue = (component
+        .getConfiguration().getEnv(overrideDisableKey) != null) ?
+            component.getConfiguration().getEnv(overrideDisableKey) :
+                System.getenv(overrideDisableKey);
+    overrideDisable = Boolean.parseBoolean(overrideDisableValue);
+    return overrideDisable;
+  }
+
+  @Override
+  public void buildContainerLaunchCommand(AbstractLauncher launcher,
+      Service service, ComponentInstance instance,
+      SliderFileSystem fileSystem, Configuration yarnConf, Container container,
+      ContainerLaunchService.ComponentLaunchContext compLaunchContext,
+      Map<String, String> tokensForSubstitution)
+          throws IOException, SliderException {
+    Component component = instance.getComponent().getComponentSpec();
+    boolean useEntryPoint = checkUseEntryPoint(component);
+    if (useEntryPoint) {
+      String launchCommand = component.getLaunchCommand();
+      if (!StringUtils.isEmpty(launchCommand)) {
+        launcher.addCommand(launchCommand);
+      }
+    } else {
+      // substitute launch command
+      String launchCommand = compLaunchContext.getLaunchCommand();
+      // docker container may have empty commands
+      if (!StringUtils.isEmpty(launchCommand)) {
+        launchCommand = ProviderUtils
+            .substituteStrWithTokens(launchCommand, tokensForSubstitution);
+        CommandLineBuilder operation = new CommandLineBuilder();
+        operation.add(launchCommand);
+        operation.addOutAndErrFiles(OUT_FILE, ERR_FILE);
+        launcher.addCommand(operation.build());
+      }
+    }
+  }
+
 }

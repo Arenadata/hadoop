@@ -23,7 +23,12 @@ package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ContainerId;
+import org.apache.hadoop.yarn.server.nodemanager.Context;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ResourceLocalizationService;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerExecutionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +49,7 @@ public final class DockerClient {
        LoggerFactory.getLogger(DockerClient.class);
   private static final String TMP_FILE_PREFIX = "docker.";
   private static final String TMP_FILE_SUFFIX = ".cmd";
+  private static final String TMP_ENV_FILE_SUFFIX = ".env";
   private final String tmpDirPath;
 
   public DockerClient(Configuration conf) throws ContainerExecutionException {
@@ -64,36 +70,113 @@ public final class DockerClient {
 
   public String writeCommandToTempFile(DockerCommand cmd, String filePrefix)
       throws ContainerExecutionException {
-    File dockerCommandFile = null;
     try {
-      dockerCommandFile = File.createTempFile(TMP_FILE_PREFIX + filePrefix,
-          TMP_FILE_SUFFIX, new
-          File(tmpDirPath));
-
-      Writer writer = new OutputStreamWriter(
-          new FileOutputStream(dockerCommandFile), "UTF-8");
-      PrintWriter printWriter = new PrintWriter(writer);
-      printWriter.println("[docker-command-execution]");
-      for (Map.Entry<String, List<String>> entry :
-          cmd.getDockerCommandWithArguments().entrySet()) {
-        if (entry.getKey().contains("=")) {
-          throw new ContainerExecutionException(
-              "'=' found in entry for docker command file, key = " + entry
-                  .getKey() + "; value = " + entry.getValue());
+      File dockerCommandFile = File.createTempFile(TMP_FILE_PREFIX + filePrefix,
+        TMP_FILE_SUFFIX, new
+        File(tmpDirPath));
+      try (
+        Writer writer = new OutputStreamWriter(
+            new FileOutputStream(dockerCommandFile), "UTF-8");
+        PrintWriter printWriter = new PrintWriter(writer);
+      ) {
+        printWriter.println("[docker-command-execution]");
+        for (Map.Entry<String, List<String>> entry :
+            cmd.getDockerCommandWithArguments().entrySet()) {
+          if (entry.getKey().contains("=")) {
+            throw new ContainerExecutionException(
+                "'=' found in entry for docker command file, key = " + entry
+                    .getKey() + "; value = " + entry.getValue());
+          }
+          if (entry.getValue().contains("\n")) {
+            throw new ContainerExecutionException(
+                "'\\n' found in entry for docker command file, key = " + entry
+                    .getKey() + "; value = " + entry.getValue());
+          }
+          printWriter.println("  " + entry.getKey() + "=" + StringUtils
+              .join(",", entry.getValue()));
         }
-        if (entry.getValue().contains("\n")) {
-          throw new ContainerExecutionException(
-              "'\\n' found in entry for docker command file, key = " + entry
-                  .getKey() + "; value = " + entry.getValue());
-        }
-        printWriter.println("  " + entry.getKey() + "=" + StringUtils
-            .join(",", entry.getValue()));
+        return dockerCommandFile.getAbsolutePath();
       }
-      printWriter.close();
-
-      return dockerCommandFile.getAbsolutePath();
     } catch (IOException e) {
       LOG.warn("Unable to write docker command to temporary file!");
+      throw new ContainerExecutionException(e);
+    }
+  }
+
+  private String writeEnvFile(DockerRunCommand cmd, String filePrefix,
+      File cmdDir) throws IOException {
+    File dockerEnvFile = File.createTempFile(TMP_FILE_PREFIX + filePrefix,
+        TMP_ENV_FILE_SUFFIX, cmdDir);
+    try (
+        Writer envWriter = new OutputStreamWriter(
+            new FileOutputStream(dockerEnvFile), "UTF-8");
+        PrintWriter envPrintWriter = new PrintWriter(envWriter);
+    ) {
+      for (Map.Entry<String, String> entry : cmd.getEnv()
+          .entrySet()) {
+        envPrintWriter.println(entry.getKey() + "=" + entry.getValue());
+      }
+      return dockerEnvFile.getAbsolutePath();
+    }
+  }
+
+  public String writeCommandToTempFile(DockerCommand cmd,
+      ContainerId containerId, Context nmContext)
+      throws ContainerExecutionException {
+    String filePrefix = containerId.toString();
+    ApplicationId appId = containerId.getApplicationAttemptId()
+        .getApplicationId();
+    File dockerCommandFile;
+    File cmdDir = null;
+
+    if(nmContext == null || nmContext.getLocalDirsHandler() == null) {
+      throw new ContainerExecutionException(
+          "Unable to write temporary docker command");
+    }
+
+    try {
+      String cmdDirPath = nmContext.getLocalDirsHandler().getLocalPathForWrite(
+          ResourceLocalizationService.NM_PRIVATE_DIR + Path.SEPARATOR +
+          appId + Path.SEPARATOR + filePrefix + Path.SEPARATOR).toString();
+      cmdDir = new File(cmdDirPath);
+      if (!cmdDir.mkdirs() && !cmdDir.exists()) {
+        throw new IOException("Cannot create container private directory "
+            + cmdDir);
+      }
+      dockerCommandFile = File.createTempFile(TMP_FILE_PREFIX + filePrefix,
+          TMP_FILE_SUFFIX, cmdDir);
+      try (
+        Writer writer = new OutputStreamWriter(
+            new FileOutputStream(dockerCommandFile.toString()), "UTF-8");
+        PrintWriter printWriter = new PrintWriter(writer);
+      ) {
+        printWriter.println("[docker-command-execution]");
+        for (Map.Entry<String, List<String>> entry :
+            cmd.getDockerCommandWithArguments().entrySet()) {
+          if (entry.getKey().contains("=")) {
+            throw new ContainerExecutionException(
+                "'=' found in entry for docker command file, key = " + entry
+                    .getKey() + "; value = " + entry.getValue());
+          }
+          if (entry.getValue().contains("\n")) {
+            throw new ContainerExecutionException(
+                "'\\n' found in entry for docker command file, key = " + entry
+                    .getKey() + "; value = " + entry.getValue());
+          }
+          printWriter.println("  " + entry.getKey() + "=" + StringUtils
+              .join(",", entry.getValue()));
+        }
+        if (cmd instanceof DockerRunCommand) {
+          DockerRunCommand runCommand = (DockerRunCommand) cmd;
+          if (runCommand.containsEnv()) {
+            String path = writeEnvFile(runCommand, filePrefix, cmdDir);
+            printWriter.println("  environ=" + path);
+          }
+        }
+        return dockerCommandFile.toString();
+      }
+    } catch (IOException e) {
+      LOG.warn("Unable to write docker command to " + cmdDir);
       throw new ContainerExecutionException(e);
     }
   }

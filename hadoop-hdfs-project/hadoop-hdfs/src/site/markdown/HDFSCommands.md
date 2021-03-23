@@ -352,6 +352,7 @@ Usage:
         hdfs dfsadmin [-clrSpaceQuota [-storageType <storagetype>] <dirname>...<dirname>]
         hdfs dfsadmin [-finalizeUpgrade]
         hdfs dfsadmin [-rollingUpgrade [<query> |<prepare> |<finalize>]]
+        hdfs dfsadmin [-upgrade [query | finalize]
         hdfs dfsadmin [-refreshServiceAcl]
         hdfs dfsadmin [-refreshUserToGroupsMappings]
         hdfs dfsadmin [-refreshSuperUserGroupsConfiguration]
@@ -389,6 +390,7 @@ Usage:
 | `-clrSpaceQuota` `[-storageType <storagetype>]` \<dirname\>...\<dirname\> | See [HDFS Quotas Guide](../hadoop-hdfs/HdfsQuotaAdminGuide.html#Administrative_Commands) for the detail. |
 | `-finalizeUpgrade` | Finalize upgrade of HDFS. Datanodes delete their previous version working directories, followed by Namenode doing the same. This completes the upgrade process. |
 | `-rollingUpgrade` [\<query\>\|\<prepare\>\|\<finalize\>] | See [Rolling Upgrade document](../hadoop-hdfs/HdfsRollingUpgrade.html#dfsadmin_-rollingUpgrade) for the detail. |
+| `-upgrade` query\|finalize | Query the current upgrade status.<br/>Finalize upgrade of HDFS (equivalent to -finalizeUpgrade). |
 | `-refreshServiceAcl` | Reload the service-level authorization policy file. |
 | `-refreshUserToGroupsMappings` | Refresh user-to-groups mappings. |
 | `-refreshSuperUserGroupsConfiguration` | Refresh superuser proxy groups mappings |
@@ -418,30 +420,36 @@ Runs a HDFS dfsadmin client.
 
 Usage: `hdfs dfsrouter`
 
-Runs the DFS router. See [Router](./HDFSRouterFederation.html#Router) for more info.
+Runs the DFS router. See [Router](../hadoop-hdfs-rbf/HDFSRouterFederation.html#Router) for more info.
 
 ### `dfsrouteradmin`
 
 Usage:
 
       hdfs dfsrouteradmin
-          [-add <source> <nameservice> <destination> [-readonly] -owner <owner> -group <group> -mode <mode>]
+          [-add <source> <nameservice1, nameservice2, ...> <destination> [-readonly] [-order HASH|LOCAL|RANDOM|HASH_ALL] -owner <owner> -group <group> -mode <mode>]
+          [-update <source> <nameservice1, nameservice2, ...> <destination> [-readonly] [-order HASH|LOCAL|RANDOM|HASH_ALL] -owner <owner> -group <group> -mode <mode>]
           [-rm <source>]
           [-ls <path>]
           [-setQuota <path> -nsQuota <nsQuota> -ssQuota <quota in bytes or quota size string>]
           [-clrQuota <path>]
           [-safemode enter | leave | get]
+          [-nameservice disable | enable <nameservice>]
+          [-getDisabledNameservices]
 
 | COMMAND\_OPTION | Description |
 |:---- |:---- |
-| `-add` *source* *nameservice* *destination* | Add a mount table entry or update if it exists. |
+| `-add` *source* *nameservices* *destination* | Add a mount table entry or update if it exists. |
+| `-update` *source* *nameservices* *destination* | Update a mount table entry or create one if it does not exist. |
 | `-rm` *source* | Remove mount point of specified path. |
 | `-ls` *path* | List mount points under specified path. |
 | `-setQuota` *path* `-nsQuota` *nsQuota* `-ssQuota` *ssQuota* | Set quota for specified path. See [HDFS Quotas Guide](./HdfsQuotaAdminGuide.html) for the quota detail. |
 | `-clrQuota` *path* | Clear quota of given mount point. See [HDFS Quotas Guide](./HdfsQuotaAdminGuide.html) for the quota detail. |
 | `-safemode` `enter` `leave` `get` | Manually set the Router entering or leaving safe mode. The option *get* will be used for verifying if the Router is in safe mode state. |
+| `-nameservice` `disable` `enable` *nameservice* | Disable/enable  a name service from the federation. If disabled, requests will not go to that name service. |
+| `-getDisabledNameservices` | Get the name services that are disabled in the federation. |
 
-The commands for managing Router-based federation. See [Mount table management](./HDFSRouterFederation.html#Mount_table_management) for more info.
+The commands for managing Router-based federation. See [Mount table management](../hadoop-hdfs-rbf/HDFSRouterFederation.html#Mount_table_management) for more info.
 
 ### `diskbalancer`
 

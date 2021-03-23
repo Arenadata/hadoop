@@ -18,7 +18,11 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.apache.hadoop</groupId>
   <artifactId>hadoop-main</artifactId>
+<<<<<<< HEAD
   <version>3.1.0-arenadata</version>
+=======
+  <version>3.1.1</version>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
   <description>Apache Hadoop Main</description>
   <name>Apache Hadoop Main</name>
   <packaging>pom</packaging>

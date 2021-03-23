@@ -317,6 +317,27 @@
 </property>
 
 <property>
+  <name>hadoop.security.group.mapping.ldap.ssl.truststore</name>
+  <value></value>
+  <description>
+    File path to the SSL truststore that contains the root certificate used to
+    sign the LDAP server's certificate. Specify this if the LDAP server's
+    certificate is not signed by a well known certificate authority.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.group.mapping.ldap.ssl.truststore.password.file</name>
+  <value></value>
+  <description>
+    The path to a file containing the password of the LDAP SSL truststore.
+
+    IMPORTANT: This file should be readable only by the Unix user running
+    the daemons.
+  </description>
+</property>
+
+<property>
   <name>hadoop.security.group.mapping.ldap.bind.user</name>
   <value></value>
   <description>
@@ -2134,7 +2155,7 @@
 
 <property>
   <name>ha.zookeeper.session-timeout.ms</name>
-  <value>5000</value>
+  <value>10000</value>
   <description>
     The session timeout to use when the ZKFC connects to ZooKeeper.
     Setting this value to a lower value implies that server crashes
@@ -2449,6 +2470,29 @@
   <value></value>
   <description>
     The JCE provider name used in CryptoCodec.
+  </description>
+</property>
+
+<property>
+  <name>hadoop.security.crypto.jceks.key.serialfilter</name>
+  <description>
+    Enhanced KeyStore Mechanisms in JDK 8u171 introduced jceks.key.serialFilter.
+    If jceks.key.serialFilter is configured, the JCEKS KeyStore uses it during
+    the deserialization of the encrypted Key object stored inside a
+    SecretKeyEntry.
+    If jceks.key.serialFilter is not configured it will cause an error when
+    recovering keystore file in KeyProviderFactory when recovering key from
+    keystore file using JDK 8u171 or newer. The filter pattern uses the same
+    format as jdk.serialFilter.
+
+    The value of this property will be used as the following:
+    1. The value of jceks.key.serialFilter system property takes precedence
+    over the value of this property.
+    2. In the absence of jceks.key.serialFilter system property the value of
+    this property will be set as the value of jceks.key.serialFilter.
+    3. If the value of this property and jceks.key.serialFilter system
+    property has not been set, org.apache.hadoop.crypto.key.KeyProvider
+    sets a default value for jceks.key.serialFilter.
   </description>
 </property>
 
@@ -2995,6 +3039,14 @@
       ,SERVER,DEBUG,DEPRICATED,COMMON,OPTIONAL</value>
     <description>
       System tags to group related properties together.
+    </description>
+  </property>
+
+  <property>
+    <name>ipc.client.bind.wildcard.addr</name>
+    <value>false</value>
+    <description>When set to true Clients will bind socket to wildcard
+      address. (i.e 0.0.0.0)
     </description>
   </property>
 </configuration>

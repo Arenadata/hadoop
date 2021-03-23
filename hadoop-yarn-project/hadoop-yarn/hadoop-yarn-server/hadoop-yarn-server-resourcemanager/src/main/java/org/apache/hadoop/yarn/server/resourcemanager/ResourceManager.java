@@ -34,7 +34,6 @@ import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.source.JvmMetrics;
 import org.apache.hadoop.net.NetUtils;
-import org.apache.hadoop.security.Groups;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.ProxyUsers;
@@ -107,6 +106,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.timelineservice.RMTimelineC
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.RMWebApp;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.RMWebAppUtil;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
+import org.apache.hadoop.yarn.server.service.SystemServiceManager;
 import org.apache.hadoop.yarn.server.webproxy.AppReportFetcher;
 import org.apache.hadoop.yarn.server.webproxy.ProxyUriUtils;
 import org.apache.hadoop.yarn.server.webproxy.WebAppProxy;
@@ -253,9 +253,12 @@ public class ResourceManager extends CompositeService implements Recoverable {
     // load core-site.xml
     loadConfigurationXml(YarnConfiguration.CORE_SITE_CONFIGURATION_FILE);
 
+<<<<<<< HEAD
     // Refresh user to group mappings during init.
     refreshUserToGroupMappingsWithConf();
 
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     // Do refreshSuperUserGroupsConfiguration with loaded core-site.xml
     // Or use RM specific configurations to overwrite the common ones first
     // if they exist
@@ -310,7 +313,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
 
     rmContext.setYarnConfiguration(conf);
-    
+
     createAndInitActiveServices(false);
 
     webAppAddress = WebAppUtils.getWebAppBindURL(this.conf,
@@ -483,6 +486,27 @@ public class ResourceManager extends CompositeService implements Recoverable {
     } catch (ClassNotFoundException e) {
       throw new YarnRuntimeException(
           "Could not instantiate ReservationSystem: " + reservationClassName, e);
+    }
+  }
+
+  protected SystemServiceManager createServiceManager() {
+    String schedulerClassName =
+        YarnConfiguration.DEFAULT_YARN_API_SYSTEM_SERVICES_CLASS;
+    LOG.info("Using SystemServiceManager: " + schedulerClassName);
+    try {
+      Class<?> schedulerClazz = Class.forName(schedulerClassName);
+      if (SystemServiceManager.class.isAssignableFrom(schedulerClazz)) {
+        return (SystemServiceManager) ReflectionUtils
+            .newInstance(schedulerClazz, this.conf);
+      } else {
+        throw new YarnRuntimeException(
+            "Class: " + schedulerClassName + " not instance of "
+                + SystemServiceManager.class.getCanonicalName());
+      }
+    } catch (ClassNotFoundException e) {
+      throw new YarnRuntimeException(
+          "Could not instantiate SystemServiceManager: " + schedulerClassName,
+          e);
     }
   }
 
@@ -754,8 +778,10 @@ public class ResourceManager extends CompositeService implements Recoverable {
       }
 
       masterService = createApplicationMasterService();
+      createAndRegisterOpportunisticDispatcher(masterService);
       addService(masterService) ;
       rmContext.setApplicationMasterService(masterService);
+
 
       applicationACLsManager = new ApplicationACLsManager(conf);
 
@@ -795,7 +821,30 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
       new RMNMInfo(rmContext, scheduler);
 
+      if (conf.getBoolean(YarnConfiguration.YARN_API_SERVICES_ENABLE,
+          false)) {
+        SystemServiceManager systemServiceManager = createServiceManager();
+        addIfService(systemServiceManager);
+      }
+
       super.serviceInit(conf);
+    }
+
+    private void createAndRegisterOpportunisticDispatcher(
+        ApplicationMasterService service) {
+      if (!isOpportunisticSchedulingEnabled(conf)) {
+        return;
+      }
+      EventDispatcher oppContainerAllocEventDispatcher = new EventDispatcher(
+          (OpportunisticContainerAllocatorAMService) service,
+          OpportunisticContainerAllocatorAMService.class.getName());
+      // Add an event dispatcher for the
+      // OpportunisticContainerAllocatorAMService to handle node
+      // additions, updates and removals. Since the SchedulerEvent is currently
+      // a super set of theses, we register interest for it.
+      addService(oppContainerAllocEventDispatcher);
+      rmDispatcher
+          .register(SchedulerEventType.class, oppContainerAllocEventDispatcher);
     }
 
     @Override
@@ -1102,7 +1151,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
                 "ws")
             .with(conf)
             .withServlet("API-Service", "/app/*",
-                ServletContainer.class, params)
+                ServletContainer.class, params, false)
             .withHttpSpnegoPrincipalKey(
                 YarnConfiguration.RM_WEBAPP_SPNEGO_USER_NAME_KEY)
             .withHttpSpnegoKeytabKey(
@@ -1207,6 +1256,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
   void reinitialize(boolean initialize) {
     ClusterMetrics.destroy();
     QueueMetrics.clearQueueMetrics();
+    getResourceScheduler().resetSchedulerMetrics();
     if (initialize) {
       resetRMContext();
       createAndInitActiveServices(true);
@@ -1264,8 +1314,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
   protected void serviceStart() throws Exception {
     if (this.rmContext.isHAEnabled()) {
       transitionToStandby(false);
-    } else {
-      transitionToActive();
     }
 
     startWepApp();
@@ -1275,6 +1323,11 @@ public class ResourceManager extends CompositeService implements Recoverable {
       WebAppUtils.setRMWebAppPort(conf, port);
     }
     super.serviceStart();
+
+    // Non HA case, start after RM services are started.
+    if (!this.rmContext.isHAEnabled()) {
+      transitionToActive();
+    }
   }
   
   protected void doSecureLogin() throws IOException {
@@ -1322,8 +1375,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
   protected ApplicationMasterService createApplicationMasterService() {
     Configuration config = this.rmContext.getYarnConfiguration();
-    if (YarnConfiguration.isOpportunisticContainerAllocationEnabled(config)
-        || YarnConfiguration.isDistSchedulingEnabled(config)) {
+    if (isOpportunisticSchedulingEnabled(conf)) {
       if (YarnConfiguration.isDistSchedulingEnabled(config) &&
           !YarnConfiguration
               .isOpportunisticContainerAllocationEnabled(config)) {
@@ -1335,16 +1387,6 @@ public class ResourceManager extends CompositeService implements Recoverable {
           oppContainerAllocatingAMService =
           new OpportunisticContainerAllocatorAMService(this.rmContext,
               scheduler);
-      EventDispatcher oppContainerAllocEventDispatcher =
-          new EventDispatcher(oppContainerAllocatingAMService,
-              OpportunisticContainerAllocatorAMService.class.getName());
-      // Add an event dispatcher for the
-      // OpportunisticContainerAllocatorAMService to handle node
-      // additions, updates and removals. Since the SchedulerEvent is currently
-      // a super set of theses, we register interest for it.
-      addService(oppContainerAllocEventDispatcher);
-      rmDispatcher.register(SchedulerEventType.class,
-          oppContainerAllocEventDispatcher);
       this.rmContext.setContainerQueueLimitCalculator(
           oppContainerAllocatingAMService.getNodeManagerQueueLimitCalculator());
       return oppContainerAllocatingAMService;
@@ -1358,6 +1400,11 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
   protected RMSecretManagerService createRMSecretManagerService() {
     return new RMSecretManagerService(conf, rmContext);
+  }
+
+  private boolean isOpportunisticSchedulingEnabled(Configuration conf) {
+    return YarnConfiguration.isOpportunisticContainerAllocationEnabled(conf)
+        || YarnConfiguration.isDistSchedulingEnabled(conf);
   }
 
   /**

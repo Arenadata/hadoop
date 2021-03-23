@@ -19,12 +19,11 @@
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableSet;
 import org.apache.commons.collections.IteratorUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.hadoop.yarn.api.records.AllocationTagNamespace;
-import org.apache.hadoop.yarn.api.records.AllocationTagNamespaceType;
 import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.ResourceSizing;
@@ -32,7 +31,6 @@ import org.apache.hadoop.yarn.api.records.SchedulingRequest;
 import org.apache.hadoop.yarn.api.records.impl.pb.SchedulingRequestPBImpl;
 import org.apache.hadoop.yarn.api.resource.PlacementConstraint;
 import org.apache.hadoop.yarn.api.resource.PlacementConstraints;
-import org.apache.hadoop.yarn.exceptions.InvalidAllocationTagException;
 import org.apache.hadoop.yarn.exceptions.SchedulerInvalidResoureRequestException;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
@@ -241,129 +239,118 @@ public class SingleConstraintAppPlacementAllocator<N extends SchedulerNode>
           "Only GUARANTEED execution type is supported.");
     }
 
-    PlacementConstraint constraint =
-        newSchedulingRequest.getPlacementConstraint();
-
-    // We only accept SingleConstraint
-    PlacementConstraint.AbstractConstraint ac = constraint.getConstraintExpr();
-    if (!(ac instanceof PlacementConstraint.SingleConstraint)) {
-      throwExceptionWithMetaInfo(
-          "Only accepts " + PlacementConstraint.SingleConstraint.class.getName()
-              + " as constraint-expression. Rejecting the new added "
-              + "constraint-expression.class=" + ac.getClass().getName());
-    }
-
-    PlacementConstraint.SingleConstraint singleConstraint =
-        (PlacementConstraint.SingleConstraint) ac;
-
-    // Make sure it is an anti-affinity request (actually this implementation
-    // should be able to support both affinity / anti-affinity without much
-    // effort. Considering potential test effort required. Limit to
-    // anti-affinity to intra-app and scope is node.
-    if (!singleConstraint.getScope().equals(PlacementConstraints.NODE)) {
-      throwExceptionWithMetaInfo(
-          "Only support scope=" + PlacementConstraints.NODE
-              + "now. PlacementConstraint=" + singleConstraint);
-    }
-
-    if (singleConstraint.getMinCardinality() != 0
-        || singleConstraint.getMaxCardinality() != 0) {
-      throwExceptionWithMetaInfo(
-          "Only support anti-affinity, which is: minCardinality=0, "
-              + "maxCardinality=1");
-    }
-
-    Set<PlacementConstraint.TargetExpression> targetExpressionSet =
-        singleConstraint.getTargetExpressions();
-    if (targetExpressionSet == null || targetExpressionSet.isEmpty()) {
-      throwExceptionWithMetaInfo(
-          "TargetExpression should not be null or empty");
-    }
-
-    // Set node partition
+    // Node partition
     String nodePartition = null;
-
     // Target allocation tags
     Set<String> targetAllocationTags = null;
 
-    for (PlacementConstraint.TargetExpression targetExpression : targetExpressionSet) {
-      // Handle node partition
-      if (targetExpression.getTargetType().equals(
-          PlacementConstraint.TargetExpression.TargetType.NODE_ATTRIBUTE)) {
-        // For node attribute target, we only support Partition now. And once
-        // YARN-3409 is merged, we will support node attribute.
-        if (!targetExpression.getTargetKey().equals(NODE_PARTITION)) {
-          throwExceptionWithMetaInfo("When TargetType="
-              + PlacementConstraint.TargetExpression.TargetType.NODE_ATTRIBUTE
-              + " only " + NODE_PARTITION + " is accepted as TargetKey.");
-        }
+    PlacementConstraint constraint =
+        newSchedulingRequest.getPlacementConstraint();
 
-        if (nodePartition != null) {
-          // This means we have duplicated node partition entry inside placement
-          // constraint, which might be set by mistake.
-          throwExceptionWithMetaInfo(
-              "Only one node partition targetExpression is allowed");
-        }
+    if (constraint != null) {
+      // We only accept SingleConstraint
+      PlacementConstraint.AbstractConstraint ac = constraint
+          .getConstraintExpr();
+      if (!(ac instanceof PlacementConstraint.SingleConstraint)) {
+        throwExceptionWithMetaInfo("Only accepts "
+            + PlacementConstraint.SingleConstraint.class.getName()
+                + " as constraint-expression. Rejecting the new added "
+            + "constraint-expression.class=" + ac.getClass().getName());
+      }
 
-        Set<String> values = targetExpression.getTargetValues();
-        if (values == null || values.isEmpty()) {
-          nodePartition = RMNodeLabelsManager.NO_LABEL;
-          continue;
-        }
+      PlacementConstraint.SingleConstraint singleConstraint =
+          (PlacementConstraint.SingleConstraint) ac;
 
-        if (values.size() > 1) {
-          throwExceptionWithMetaInfo("Inside one targetExpression, we only "
-              + "support affinity to at most one node partition now");
-        }
+      // Make sure it is an anti-affinity request (actually this implementation
+      // should be able to support both affinity / anti-affinity without much
+      // effort. Considering potential test effort required. Limit to
+      // anti-affinity to intra-app and scope is node.
+      if (!singleConstraint.getScope().equals(PlacementConstraints.NODE)) {
+        throwExceptionWithMetaInfo(
+            "Only support scope=" + PlacementConstraints.NODE
+                + "now. PlacementConstraint=" + singleConstraint);
+      }
 
-        nodePartition = values.iterator().next();
-      } else if (targetExpression.getTargetType().equals(
-          PlacementConstraint.TargetExpression.TargetType.ALLOCATION_TAG)) {
-        // Handle allocation tags
-        if (targetAllocationTags != null) {
-          // This means we have duplicated AllocationTag expressions entries
-          // inside placement constraint, which might be set by mistake.
-          throwExceptionWithMetaInfo(
-              "Only one AllocationTag targetExpression is allowed");
-        }
+      if (singleConstraint.getMinCardinality() != 0
+          || singleConstraint.getMaxCardinality() != 0) {
+        throwExceptionWithMetaInfo(
+            "Only support anti-affinity, which is: minCardinality=0, "
+                + "maxCardinality=1");
+      }
 
-        if (targetExpression.getTargetValues() == null || targetExpression
-            .getTargetValues().isEmpty()) {
-          throwExceptionWithMetaInfo("Failed to find allocation tags from "
-              + "TargetExpressions or couldn't find self-app target.");
-        }
+      Set<PlacementConstraint.TargetExpression> targetExpressionSet =
+          singleConstraint.getTargetExpressions();
+      if (targetExpressionSet == null || targetExpressionSet.isEmpty()) {
+        throwExceptionWithMetaInfo(
+            "TargetExpression should not be null or empty");
+      }
 
-        targetAllocationTags = new HashSet<>(
-            targetExpression.getTargetValues());
-
-        try {
-          AllocationTagNamespace tagNS =
-              AllocationTagNamespace.parse(targetExpression.getTargetKey());
-          if (!AllocationTagNamespaceType.SELF
-              .equals(tagNS.getNamespaceType())) {
-            throwExceptionWithMetaInfo(
-                "As of now, the only accepted target key for targetKey of "
-                    + "allocation_tag target expression is: ["
-                    + AllocationTagNamespaceType.SELF.toString()
-                    + "]. Please make changes to placement constraints "
-                    + "accordingly. If this is null, it will be set to "
-                    + AllocationTagNamespaceType.SELF.toString()
-                    + " by default.");
+      for (PlacementConstraint.TargetExpression targetExpression :
+          targetExpressionSet) {
+        // Handle node partition
+        if (targetExpression.getTargetType().equals(
+            PlacementConstraint.TargetExpression.TargetType.NODE_ATTRIBUTE)) {
+          // For node attribute target, we only support Partition now. And once
+          // YARN-3409 is merged, we will support node attribute.
+          if (!targetExpression.getTargetKey().equals(NODE_PARTITION)) {
+            throwExceptionWithMetaInfo("When TargetType="
+                + PlacementConstraint.TargetExpression.TargetType.NODE_ATTRIBUTE
+                + " only " + NODE_PARTITION + " is accepted as TargetKey.");
           }
-        } catch (InvalidAllocationTagException e) {
-          throwExceptionWithMetaInfo(
-              "Invalid allocation tag namespace, message: " + e.getMessage());
+
+          if (nodePartition != null) {
+            // This means we have duplicated node partition entry
+            // inside placement constraint, which might be set by mistake.
+            throwExceptionWithMetaInfo(
+                "Only one node partition targetExpression is allowed");
+          }
+
+          Set<String> values = targetExpression.getTargetValues();
+          if (values == null || values.isEmpty()) {
+            nodePartition = RMNodeLabelsManager.NO_LABEL;
+            continue;
+          }
+
+          if (values.size() > 1) {
+            throwExceptionWithMetaInfo("Inside one targetExpression, we only "
+                + "support affinity to at most one node partition now");
+          }
+
+          nodePartition = values.iterator().next();
+        } else if (targetExpression.getTargetType().equals(
+            PlacementConstraint.TargetExpression.TargetType.ALLOCATION_TAG)) {
+          // Handle allocation tags
+          if (targetAllocationTags != null) {
+            // This means we have duplicated AllocationTag expressions entries
+            // inside placement constraint, which might be set by mistake.
+            throwExceptionWithMetaInfo(
+                "Only one AllocationTag targetExpression is allowed");
+          }
+
+          if (targetExpression.getTargetValues() == null ||
+              targetExpression.getTargetValues().isEmpty()) {
+            throwExceptionWithMetaInfo("Failed to find allocation tags from "
+                + "TargetExpressions or couldn't find self-app target.");
+          }
+
+          targetAllocationTags = new HashSet<>(
+              targetExpression.getTargetValues());
         }
+      }
+
+      if (targetAllocationTags == null) {
+        // That means we don't have ALLOCATION_TAG specified
+        throwExceptionWithMetaInfo(
+            "Couldn't find target expression with type == ALLOCATION_TAG,"
+                + " it is required to include one and only one target"
+                + " expression with type == ALLOCATION_TAG");
       }
     }
 
+    // If this scheduling request doesn't contain a placement constraint,
+    // we set allocation tags an empty set.
     if (targetAllocationTags == null) {
-      // That means we don't have ALLOCATION_TAG specified
-      throwExceptionWithMetaInfo(
-          "Couldn't find target expression with type == ALLOCATION_TAG, it is "
-              + "required to include one and only one target expression with "
-              + "type == ALLOCATION_TAG");
-
+      targetAllocationTags = ImmutableSet.of();
     }
 
     if (nodePartition == null) {

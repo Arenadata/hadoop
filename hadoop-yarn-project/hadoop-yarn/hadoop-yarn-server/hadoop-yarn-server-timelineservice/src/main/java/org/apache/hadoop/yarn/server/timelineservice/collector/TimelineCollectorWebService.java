@@ -48,6 +48,7 @@ import org.apache.hadoop.yarn.api.records.timelineservice.ClusterEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.ContainerEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.FlowRunEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.QueueEntity;
+import org.apache.hadoop.yarn.api.records.timelineservice.SubApplicationEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntities;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntityType;
@@ -58,6 +59,9 @@ import org.apache.hadoop.yarn.webapp.NotFoundException;
 import com.google.inject.Singleton;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.IllegalFormatException;
 
 /**
  * The main per-node REST end point for timeline service writes. It is
@@ -142,6 +146,7 @@ public class TimelineCollectorWebService {
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
       @QueryParam("async") String async,
+      @QueryParam("subappwrite") String isSubAppEntities,
       @QueryParam("appid") String appId,
       TimelineEntities entities) {
     init(res);
@@ -163,19 +168,23 @@ public class TimelineCollectorWebService {
       TimelineCollector collector = collectorManager.get(appID);
       if (collector == null) {
         LOG.error("Application: "+ appId + " is not found");
-        throw new NotFoundException(); // different exception?
+        throw new NotFoundException("Application: "+ appId + " is not found");
       }
 
       boolean isAsync = async != null && async.trim().equalsIgnoreCase("true");
       if (isAsync) {
-        collector.putEntitiesAsync(
-            processTimelineEntities(entities), callerUgi);
+        collector.putEntitiesAsync(processTimelineEntities(entities, appId,
+            Boolean.valueOf(isSubAppEntities)), callerUgi);
       } else {
-        collector.putEntities(processTimelineEntities(entities), callerUgi);
+        collector.putEntities(processTimelineEntities(entities, appId,
+            Boolean.valueOf(isSubAppEntities)), callerUgi);
       }
 
       return Response.ok().build();
-    } catch (Exception e) {
+    } catch (NotFoundException | ForbiddenException e) {
+      throw new WebApplicationException(e,
+          Response.Status.INTERNAL_SERVER_ERROR);
+    } catch (IOException e) {
       LOG.error("Error putting entities", e);
       throw new WebApplicationException(e,
           Response.Status.INTERNAL_SERVER_ERROR);
@@ -189,7 +198,7 @@ public class TimelineCollectorWebService {
       } else {
         return null;
       }
-    } catch (Exception e) {
+    } catch (IllegalFormatException e) {
       LOG.error("Invalid application ID: " + appId);
       return null;
     }
@@ -212,7 +221,7 @@ public class TimelineCollectorWebService {
   // but let's keep it for now in case we need to use sub-classes APIs in the
   // future (e.g., aggregation).
   private static TimelineEntities processTimelineEntities(
-      TimelineEntities entities) {
+      TimelineEntities entities, String appId, boolean isSubAppWrite) {
     TimelineEntities entitiesToReturn = new TimelineEntities();
     for (TimelineEntity entity : entities.getEntities()) {
       TimelineEntityType type = null;
@@ -248,7 +257,13 @@ public class TimelineCollectorWebService {
           break;
         }
       } else {
-        entitiesToReturn.addEntity(entity);
+        if (isSubAppWrite) {
+          SubApplicationEntity se = new SubApplicationEntity(entity);
+          se.setApplicationId(appId);
+          entitiesToReturn.addEntity(se);
+        } else {
+          entitiesToReturn.addEntity(entity);
+        }
       }
     }
     return entitiesToReturn;

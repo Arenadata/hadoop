@@ -17,12 +17,17 @@
  */
 package org.apache.hadoop.hdfs.server.federation.router;
 
+import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.simulateSlowNamenode;
+import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+import static org.apache.hadoop.test.GenericTestUtils.waitFor;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -30,19 +35,31 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
-import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
+import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
+<<<<<<< HEAD
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.NamenodeContext;
+import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster.RouterContext;
+=======
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import org.apache.hadoop.hdfs.server.federation.StateStoreDFSCluster;
 import org.apache.hadoop.hdfs.server.federation.metrics.FederationRPCMetrics;
+import org.apache.hadoop.hdfs.server.federation.metrics.NamenodeBeanMetrics;
 import org.apache.hadoop.hdfs.server.federation.resolver.FederationNamenodeContext;
 import org.apache.hadoop.hdfs.server.federation.resolver.MembershipNamenodeResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.NamenodeStatusReport;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.ipc.RemoteException;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.codehaus.jettison.json.JSONException;
+import org.codehaus.jettison.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
+
+import com.google.common.base.Supplier;
 
 /**
  * Test retry behavior of the Router RPC Client.
@@ -55,15 +72,21 @@ public class TestRouterRPCClientRetries {
   private static MembershipNamenodeResolver resolver;
   private static ClientProtocol routerProtocol;
 
+  @Rule
+  public final Timeout testTimeout = new Timeout(100000);
+
   @Before
   public void setUp() throws Exception {
     // Build and start a federated cluster
     cluster = new StateStoreDFSCluster(false, 2);
     Configuration routerConf = new RouterConfigBuilder()
         .stateStore()
+        .metrics()
         .admin()
         .rpc()
         .build();
+    routerConf.setTimeDuration(
+        NamenodeBeanMetrics.DN_REPORT_CACHE_EXPIRE, 1, TimeUnit.SECONDS);
 
     // reduce IPC client connection retry times and interval time
     Configuration clientConf = new Configuration(false);
@@ -71,6 +94,9 @@ public class TestRouterRPCClientRetries {
         CommonConfigurationKeys.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 1);
     clientConf.setInt(
         CommonConfigurationKeys.IPC_CLIENT_CONNECT_RETRY_INTERVAL_KEY, 100);
+
+    // Set the DNs to belong to only one subcluster
+    cluster.setIndependentDNs();
 
     cluster.addRouterOverrides(routerConf);
     // override some settings for the client
@@ -111,7 +137,7 @@ public class TestRouterRPCClientRetries {
       fail("Should have thrown RemoteException error.");
     } catch (RemoteException e) {
       String ns0 = cluster.getNameservices().get(0);
-      GenericTestUtils.assertExceptionContains(
+      assertExceptionContains(
           "No namenode available under nameservice " + ns0, e);
     }
 
@@ -156,5 +182,71 @@ public class TestRouterRPCClientRetries {
     report.setRegistrationValid(false);
     assertTrue(resolver.registerNamenode(report));
     resolver.loadCache(true);
+  }
+
+  @Test
+  public void testNamenodeMetricsSlow() throws Exception {
+    final Router router = routerContext.getRouter();
+    final NamenodeBeanMetrics metrics = router.getNamenodeMetrics();
+
+    // Initially, there are 4 DNs in total
+    final String jsonString0 = metrics.getLiveNodes();
+    assertEquals(4, getNumDatanodes(jsonString0));
+
+    // The response should be cached
+    assertEquals(jsonString0, metrics.getLiveNodes());
+
+    // Check that the cached value gets updated eventually
+    waitUpdateLiveNodes(jsonString0, metrics);
+    final String jsonString2 = metrics.getLiveNodes();
+    assertNotEquals(jsonString0, jsonString2);
+    assertEquals(4, getNumDatanodes(jsonString2));
+
+    // Making subcluster0 slow to reply, should only get DNs from nn1
+    MiniDFSCluster dfsCluster = cluster.getCluster();
+    NameNode nn0 = dfsCluster.getNameNode(0);
+    simulateSlowNamenode(nn0, 3);
+    waitUpdateLiveNodes(jsonString2, metrics);
+    final String jsonString3 = metrics.getLiveNodes();
+    assertEquals(2, getNumDatanodes(jsonString3));
+
+    // Making subcluster1 slow to reply, shouldn't get any DNs
+    NameNode nn1 = dfsCluster.getNameNode(1);
+    simulateSlowNamenode(nn1, 3);
+    waitUpdateLiveNodes(jsonString3, metrics);
+    final String jsonString4 = metrics.getLiveNodes();
+    assertEquals(0, getNumDatanodes(jsonString4));
+  }
+
+  /**
+   * Get the number of nodes in a JSON string.
+   * @param jsonString JSON string containing nodes.
+   * @return Number of nodes.
+   * @throws JSONException If the JSON string is not properly formed.
+   */
+  private static int getNumDatanodes(final String jsonString)
+      throws JSONException {
+    JSONObject jsonObject = new JSONObject(jsonString);
+    if (jsonObject.length() == 0) {
+      return 0;
+    }
+    return jsonObject.names().length();
+  }
+
+  /**
+   * Wait until the cached live nodes value is updated.
+   * @param oldValue Old cached value.
+   * @param metrics Namenode metrics beans to get the live nodes from.
+   * @throws Exception If it cannot wait.
+   */
+  private static void waitUpdateLiveNodes(
+      final String oldValue, final NamenodeBeanMetrics metrics)
+          throws Exception {
+    waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return !oldValue.equals(metrics.getLiveNodes());
+      }
+    }, 500, 5 * 1000);
   }
 }

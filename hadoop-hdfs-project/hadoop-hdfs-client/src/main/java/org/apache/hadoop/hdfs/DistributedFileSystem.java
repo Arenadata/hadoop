@@ -1534,6 +1534,16 @@ public class DistributedFileSystem extends FileSystem
   }
 
   /**
+   * Get status of upgrade - finalized or not.
+   * @return true if upgrade is finalized or if no upgrade is in progress and
+   * false otherwise.
+   * @throws IOException
+   */
+  public boolean upgradeStatus() throws IOException {
+    return dfs.upgradeStatus();
+  }
+
+  /**
    * Rolling upgrade: prepare/finalize/query.
    */
   public RollingUpgradeInfo rollingUpgrade(RollingUpgradeAction action)
@@ -1681,7 +1691,8 @@ public class DistributedFileSystem extends FileSystem
     return new FileSystemLinkResolver<FileChecksum>() {
       @Override
       public FileChecksum doCall(final Path p) throws IOException {
-        return dfs.getFileChecksum(getPathName(p), Long.MAX_VALUE);
+        return dfs.getFileChecksumWithCombineMode(
+            getPathName(p), Long.MAX_VALUE);
       }
 
       @Override
@@ -1701,7 +1712,7 @@ public class DistributedFileSystem extends FileSystem
     return new FileSystemLinkResolver<FileChecksum>() {
       @Override
       public FileChecksum doCall(final Path p) throws IOException {
-        return dfs.getFileChecksum(getPathName(p), length);
+        return dfs.getFileChecksumWithCombineMode(getPathName(p), length);
       }
 
       @Override

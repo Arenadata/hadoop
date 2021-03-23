@@ -387,12 +387,12 @@ public class WebServices {
     return new ContainerInfo(container);
   }
 
-  protected void init(HttpServletResponse response) {
+  protected void initForReadableEndpoints(HttpServletResponse response) {
     // clear content type
     response.setContentType(null);
   }
 
-  protected static Set<String>
+  public static Set<String>
       parseQueries(Set<String> queries, boolean isState) {
     Set<String> params = new HashSet<String>();
     if (!queries.isEmpty()) {

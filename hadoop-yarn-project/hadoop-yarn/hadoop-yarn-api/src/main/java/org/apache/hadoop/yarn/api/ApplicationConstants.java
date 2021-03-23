@@ -99,6 +99,16 @@ public interface ApplicationConstants {
   public static final String STDOUT = "stdout";
 
   /**
+   * The type of launch for the container.
+   */
+  @Public
+  @Unstable
+  enum ContainerLaunchType {
+    LAUNCH,
+    RELAUNCH
+  }
+
+  /**
    * Environment for Applications.
    *
    * Some of the environment variables for applications are <em>final</em>
@@ -234,7 +244,14 @@ public interface ApplicationConstants {
      * Comma separate list of directories that the container should use for
      * logging.
      */
-    LOG_DIRS("LOG_DIRS");
+    LOG_DIRS("LOG_DIRS"),
+
+    /**
+     * $YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE
+     * Final, Docker run support ENTRY_POINT.
+     */
+    YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE(
+        "YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE");
 
     private final String variable;
     private Environment(String variable) {

@@ -121,6 +121,10 @@ public class YarnConfiguration extends Configuration {
         new DeprecationDelta(RM_ZK_RETRY_INTERVAL_MS,
             CommonConfigurationKeys.ZK_RETRY_INTERVAL_MS),
     });
+    Configuration.addDeprecations(new DeprecationDelta[] {
+        new DeprecationDelta("yarn.resourcemanager.display.per-user-apps",
+            FILTER_ENTITY_LIST_BY_USER)
+    });
   }
 
   //Configurations
@@ -340,6 +344,10 @@ public class YarnConfiguration extends Configuration {
       + "webapp.ui2.war-file-path";
   public static final String YARN_API_SERVICES_ENABLE = "yarn."
       + "webapp.api-service.enable";
+
+  @Private
+  public static final String DEFAULT_YARN_API_SYSTEM_SERVICES_CLASS =
+      "org.apache.hadoop.yarn.service.client.SystemServiceManagerImpl";
 
   public static final String RM_RESOURCE_TRACKER_ADDRESS =
     RM_PREFIX + "resource-tracker.address";
@@ -1353,6 +1361,16 @@ public class YarnConfiguration extends Configuration {
       NM_PREFIX + "log-aggregation.roll-monitoring-interval-seconds";
   public static final long
       DEFAULT_NM_LOG_AGGREGATION_ROLL_MONITORING_INTERVAL_SECONDS = -1;
+
+  /**
+   * Define how many aggregated log files per application per NM we can have
+   * in remote file system.
+   */
+  public static final String NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP
+      = NM_PREFIX + "log-aggregation.num-log-files-per-app";
+  public static final int
+      DEFAULT_NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP = 30;
+
   /**
    * Number of threads used in log cleanup. Only applicable if Log aggregation
    * is disabled
@@ -1931,6 +1949,16 @@ public class YarnConfiguration extends Configuration {
    */
   public static final boolean DEFAULT_NM_DOCKER_ALLOW_DELAYED_REMOVAL = false;
 
+  /** The default list of read-only mounts to be bind-mounted into all
+   *  Docker containers that use DockerContainerRuntime. */
+  public static final String NM_DOCKER_DEFAULT_RO_MOUNTS =
+      DOCKER_CONTAINER_RUNTIME_PREFIX + "default-ro-mounts";
+
+  /** The default list of read-write mounts to be bind-mounted into all
+   *  Docker containers that use DockerContainerRuntime. */
+  public static final String NM_DOCKER_DEFAULT_RW_MOUNTS =
+      DOCKER_CONTAINER_RUNTIME_PREFIX + "default-rw-mounts";
+
   /** The mode in which the Java Container Sandbox should run detailed by
    *  the JavaSandboxLinuxContainerRuntime. */
   public static final String YARN_CONTAINER_SANDBOX =
@@ -2085,6 +2113,9 @@ public class YarnConfiguration extends Configuration {
 
   public static final String NM_AUX_SERVICES_CLASSPATH =
       NM_AUX_SERVICES + ".%s.classpath";
+
+  public static final String NM_AUX_SERVICE_REMOTE_CLASSPATH =
+      NM_AUX_SERVICES + ".%s.remote-classpath";
 
   public static final String NM_AUX_SERVICES_SYSTEM_CLASSES =
       NM_AUX_SERVICES + ".%s.system-classes";
@@ -2623,7 +2654,7 @@ public class YarnConfiguration extends Configuration {
   public static final String ATS_APP_COLLECTOR_LINGER_PERIOD_IN_MS =
       TIMELINE_SERVICE_PREFIX + "app-collector.linger-period.ms";
 
-  public static final int DEFAULT_ATS_APP_COLLECTOR_LINGER_PERIOD_IN_MS = 1000;
+  public static final int DEFAULT_ATS_APP_COLLECTOR_LINGER_PERIOD_IN_MS = 60000;
 
   public static final String NUMBER_OF_ASYNC_ENTITIES_TO_MERGE =
       TIMELINE_SERVICE_PREFIX
@@ -3506,11 +3537,16 @@ public class YarnConfiguration extends Configuration {
   public static final String NM_SCRIPT_BASED_NODE_LABELS_PROVIDER_SCRIPT_OPTS =
       NM_SCRIPT_BASED_NODE_LABELS_PROVIDER_PREFIX + "opts";
 
-  /*
+  /**
    * Support to view apps for given user in secure cluster.
+   * @deprecated This field is deprecated for {@link #FILTER_ENTITY_LIST_BY_USER}
    */
+  @Deprecated
   public static final String DISPLAY_APPS_FOR_LOGGED_IN_USER =
       RM_PREFIX + "display.per-user-apps";
+
+  public static final String FILTER_ENTITY_LIST_BY_USER =
+      "yarn.webapp.filter-entity-list-by-user";
   public static final boolean DEFAULT_DISPLAY_APPS_FOR_LOGGED_IN_USER =
       false;
 
@@ -3567,6 +3603,13 @@ public class YarnConfiguration extends Configuration {
   public static final String
       DEFAULT_TIMELINE_SERVICE_READER_WEBAPP_HTTPS_ADDRESS =
       DEFAULT_TIMELINE_SERVICE_WEBAPP_HTTPS_ADDRESS;
+
+  @Private
+  public static final String
+      TIMELINE_SERVICE_READER_STORAGE_MONITOR_INTERVAL_MS =
+      TIMELINE_SERVICE_READER_PREFIX + "storage-monitor.interval-ms";
+  public static final long
+      DEFAULT_TIMELINE_SERVICE_STORAGE_MONITOR_INTERVAL_MS = 60 * 1000;
 
   /**
    * Marked collector properties as Private since it run as auxillary service.
@@ -3772,6 +3815,27 @@ public class YarnConfiguration extends Configuration {
       Collection<Float> versions = getTimelineServiceVersions(conf);
       for (Float version : versions) {
         if (version.intValue() == 1) {
+          enabled = true;
+          break;
+        }
+      }
+    }
+    return enabled;
+  }
+
+  /**
+   * Returns whether the timeline service v.1,5 is enabled via configuration.
+   *
+   * @param conf the configuration
+   * @return whether the timeline service v.1.5 is enabled. V.1.5 refers to a
+   * version equal to 1.5.
+   */
+  public static boolean timelineServiceV15Enabled(Configuration conf) {
+    boolean enabled = false;
+    if (timelineServiceEnabled(conf)) {
+      Collection<Float> versions = getTimelineServiceVersions(conf);
+      for (Float version : versions) {
+        if (Float.compare(version, 1.5f) == 0) {
           enabled = true;
           break;
         }

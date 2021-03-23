@@ -84,6 +84,7 @@ public interface YarnServiceConstants {
   String HADOOP_USER_NAME = "HADOOP_USER_NAME";
 
   String APP_CONF_DIR = "conf";
+  String APP_RESOURCES_DIR = "resources";
 
   String APP_LIB_DIR = "lib";
 
@@ -92,4 +93,6 @@ public interface YarnServiceConstants {
 
   String CONTENT = "content";
   String PRINCIPAL = "yarn.service.am.principal";
+
+  String UPGRADE_DIR = "upgrade";
 }

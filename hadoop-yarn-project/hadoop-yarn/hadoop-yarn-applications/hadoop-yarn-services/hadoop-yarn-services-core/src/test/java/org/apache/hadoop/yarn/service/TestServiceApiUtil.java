@@ -22,6 +22,11 @@ import org.apache.hadoop.registry.client.api.RegistryConstants;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.service.api.records.Artifact;
 import org.apache.hadoop.yarn.service.api.records.Component;
+import org.apache.hadoop.yarn.service.api.records.KerberosPrincipal;
+import org.apache.hadoop.yarn.service.api.records.PlacementConstraint;
+import org.apache.hadoop.yarn.service.api.records.PlacementPolicy;
+import org.apache.hadoop.yarn.service.api.records.PlacementScope;
+import org.apache.hadoop.yarn.service.api.records.PlacementType;
 import org.apache.hadoop.yarn.service.api.records.Resource;
 import org.apache.hadoop.yarn.service.api.records.Service;
 import org.apache.hadoop.yarn.service.exceptions.RestApiErrorMessages;
@@ -43,6 +48,7 @@ import static org.apache.hadoop.yarn.service.conf.RestApiConstants.DEFAULT_UNLIM
 import static org.apache.hadoop.yarn.service.exceptions.RestApiErrorMessages.*;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Test for ServiceApiUtil helper methods.
@@ -328,6 +334,24 @@ public class TestServiceApiUtil {
   }
 
   @Test
+  public void testComponentNameSameAsServiceName() throws IOException {
+    SliderFileSystem sfs = ServiceTestUtils.initMockFs();
+    Service app = new Service();
+    app.setName("test");
+    app.setVersion("v1");
+    app.addComponent(createValidComponent("test"));
+
+    //component name same as service name
+    try {
+      ServiceApiUtil.validateAndResolveService(app, sfs, CONF_DNS_ENABLED);
+      Assert.fail(EXCEPTION_PREFIX + "component name matches service name");
+    } catch (IllegalArgumentException e) {
+      assertEquals("Component name test must not be same as service name test",
+          e.getMessage());
+    }
+  }
+
+  @Test
   public void testExternalDuplicateComponent() throws IOException {
     Service ext = createValidApplication("comp1");
     SliderFileSystem sfs = ServiceTestUtils.initMockFs(ext);
@@ -486,6 +510,114 @@ public class TestServiceApiUtil {
     // does not fail
     try {
       ServiceApiUtil.validateAndResolveService(app, sfs, CONF_DNS_ENABLED);
+    } catch (IllegalArgumentException e) {
+      Assert.fail(NO_EXCEPTION_PREFIX + e.getMessage());
+    }
+  }
+
+  @Test
+  public void testPlacementPolicy() throws IOException {
+    SliderFileSystem sfs = ServiceTestUtils.initMockFs();
+    Service app = createValidApplication("comp-a");
+    Component comp = app.getComponents().get(0);
+    PlacementPolicy pp = new PlacementPolicy();
+    PlacementConstraint pc = new PlacementConstraint();
+    pc.setName("CA1");
+    pp.setConstraints(Collections.singletonList(pc));
+    comp.setPlacementPolicy(pp);
+
+    try {
+      ServiceApiUtil.validateAndResolveService(app, sfs, CONF_DNS_ENABLED);
+      Assert.fail(EXCEPTION_PREFIX + "constraint with no type");
+    } catch (IllegalArgumentException e) {
+      assertEquals(String.format(
+          RestApiErrorMessages.ERROR_PLACEMENT_POLICY_CONSTRAINT_TYPE_NULL,
+          "CA1 ", "comp-a"), e.getMessage());
+    }
+
+    // Set the type
+    pc.setType(PlacementType.ANTI_AFFINITY);
+
+    try {
+      ServiceApiUtil.validateAndResolveService(app, sfs, CONF_DNS_ENABLED);
+      Assert.fail(EXCEPTION_PREFIX + "constraint with no scope");
+    } catch (IllegalArgumentException e) {
+      assertEquals(String.format(
+          RestApiErrorMessages.ERROR_PLACEMENT_POLICY_CONSTRAINT_SCOPE_NULL,
+          "CA1 ", "comp-a"), e.getMessage());
+    }
+
+    // Set the scope
+    pc.setScope(PlacementScope.NODE);
+
+    try {
+      ServiceApiUtil.validateAndResolveService(app, sfs, CONF_DNS_ENABLED);
+      Assert.fail(EXCEPTION_PREFIX + "constraint with no tag(s)");
+    } catch (IllegalArgumentException e) {
+      assertEquals(String.format(
+          RestApiErrorMessages.ERROR_PLACEMENT_POLICY_CONSTRAINT_TAGS_NULL,
+          "CA1 ", "comp-a"), e.getMessage());
+    }
+
+    // Set a target tag - but an invalid one
+    pc.setTargetTags(Collections.singletonList("comp-invalid"));
+
+    try {
+      ServiceApiUtil.validateAndResolveService(app, sfs, CONF_DNS_ENABLED);
+      Assert.fail(EXCEPTION_PREFIX + "constraint with invalid tag name");
+    } catch (IllegalArgumentException e) {
+      assertEquals(
+          String.format(
+              RestApiErrorMessages.ERROR_PLACEMENT_POLICY_TAG_NAME_NOT_SAME,
+              "comp-invalid", "comp-a", "comp-a", "comp-a"),
+          e.getMessage());
+    }
+
+    // Set valid target tags now
+    pc.setTargetTags(Collections.singletonList("comp-a"));
+
+    // Finally it should succeed
+    try {
+      ServiceApiUtil.validateAndResolveService(app, sfs, CONF_DNS_ENABLED);
+    } catch (IllegalArgumentException e) {
+      Assert.fail(NO_EXCEPTION_PREFIX + e.getMessage());
+    }
+  }
+
+  @Test
+  public void testKerberosPrincipal() throws IOException {
+    SliderFileSystem sfs = ServiceTestUtils.initMockFs();
+    Service app = createValidApplication("comp-a");
+    KerberosPrincipal kp = new KerberosPrincipal();
+    kp.setKeytab("/some/path");
+    kp.setPrincipalName("user/_HOST@domain.com");
+    app.setKerberosPrincipal(kp);
+
+    try {
+      ServiceApiUtil.validateKerberosPrincipal(app.getKerberosPrincipal());
+      Assert.fail(EXCEPTION_PREFIX + "service with invalid keytab URI scheme");
+    } catch (IllegalArgumentException e) {
+      assertEquals(
+          String.format(RestApiErrorMessages.ERROR_KEYTAB_URI_SCHEME_INVALID,
+              kp.getKeytab()),
+          e.getMessage());
+    }
+
+    kp.setKeytab("/ blank / in / paths");
+    try {
+      ServiceApiUtil.validateKerberosPrincipal(app.getKerberosPrincipal());
+      Assert.fail(EXCEPTION_PREFIX + "service with invalid keytab");
+    } catch (IllegalArgumentException e) {
+      // strip out the %s at the end of the RestApiErrorMessages string constant
+      assertTrue(e.getMessage().contains(
+          RestApiErrorMessages.ERROR_KEYTAB_URI_INVALID.substring(0,
+              RestApiErrorMessages.ERROR_KEYTAB_URI_INVALID.length() - 2)));
+    }
+
+    kp.setKeytab("file:///tmp/a.keytab");
+    // now it should succeed
+    try {
+      ServiceApiUtil.validateKerberosPrincipal(app.getKerberosPrincipal());
     } catch (IllegalArgumentException e) {
       Assert.fail(NO_EXCEPTION_PREFIX + e.getMessage());
     }

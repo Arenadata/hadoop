@@ -115,32 +115,47 @@ public class TestRegistryDNS extends Assert {
       + "}\n";
   static final String CONTAINER_RECORD = "{\n"
       + "  \"type\" : \"JSONServiceRecord\",\n"
-      + "  \"description\" : \"COMP-NAME\",\n"
+      + "  \"description\" : \"httpd-1\",\n"
       + "  \"external\" : [ ],\n"
       + "  \"internal\" : [ ],\n"
       + "  \"yarn:id\" : \"container_e50_1451931954322_0016_01_000002\",\n"
       + "  \"yarn:persistence\" : \"container\",\n"
       + "  \"yarn:ip\" : \"172.17.0.19\",\n"
-      + "  \"yarn:hostname\" : \"0a134d6329ba\"\n"
+      + "  \"yarn:hostname\" : \"host1\",\n"
+      + "  \"yarn:component\" : \"httpd\"\n"
+      + "}\n";
+
+  static final String CONTAINER_RECORD2 = "{\n"
+      + "  \"type\" : \"JSONServiceRecord\",\n"
+      + "  \"description\" : \"httpd-2\",\n"
+      + "  \"external\" : [ ],\n"
+      + "  \"internal\" : [ ],\n"
+      + "  \"yarn:id\" : \"container_e50_1451931954322_0016_01_000003\",\n"
+      + "  \"yarn:persistence\" : \"container\",\n"
+      + "  \"yarn:ip\" : \"172.17.0.20\",\n"
+      + "  \"yarn:hostname\" : \"host2\",\n"
+      + "  \"yarn:component\" : \"httpd\"\n"
       + "}\n";
 
   private static final String CONTAINER_RECORD_NO_IP = "{\n"
       + "  \"type\" : \"JSONServiceRecord\",\n"
-      + "  \"description\" : \"COMP-NAME\",\n"
+      + "  \"description\" : \"httpd-1\",\n"
       + "  \"external\" : [ ],\n"
       + "  \"internal\" : [ ],\n"
       + "  \"yarn:id\" : \"container_e50_1451931954322_0016_01_000002\",\n"
-      + "  \"yarn:persistence\" : \"container\"\n"
+      + "  \"yarn:persistence\" : \"container\",\n"
+      + "  \"yarn:component\" : \"httpd\"\n"
       + "}\n";
 
   private static final String CONTAINER_RECORD_YARN_PERSISTANCE_ABSENT = "{\n"
       + "  \"type\" : \"JSONServiceRecord\",\n"
-      + "  \"description\" : \"COMP-NAME\",\n"
+      + "  \"description\" : \"httpd-1\",\n"
       + "  \"external\" : [ ],\n"
       + "  \"internal\" : [ ],\n"
       + "  \"yarn:id\" : \"container_e50_1451931954322_0016_01_000003\",\n"
       + "  \"yarn:ip\" : \"172.17.0.19\",\n"
-      + "  \"yarn:hostname\" : \"0a134d6329bb\"\n"
+      + "  \"yarn:hostname\" : \"0a134d6329bb\",\n"
+      + "  \"yarn:component\" : \"httpd\""
       + "}\n";
 
   @Before
@@ -229,7 +244,11 @@ public class TestRegistryDNS extends Assert {
     assertEquals("wrong result", "172.17.0.19",
         ((ARecord) recs[0]).getAddress().getHostAddress());
 
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     assertTrue("not an ARecord", recs[0] instanceof ARecord);
   }
 
@@ -268,7 +287,11 @@ public class TestRegistryDNS extends Assert {
         ((ARecord) recs[0]).getAddress().getHostAddress());
     assertEquals("wrong ttl", 30L, recs[0].getTTL());
 
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     assertTrue("not an ARecord", recs[0] instanceof ARecord);
 
     assertEquals("wrong ttl", 30L, recs[0].getTTL());
@@ -286,7 +309,11 @@ public class TestRegistryDNS extends Assert {
     // start assessing whether correct records are available
     Record[] recs = assertDNSQuery("19.0.17.172.in-addr.arpa.", Type.PTR, 1);
     assertEquals("wrong result",
+<<<<<<< HEAD
         "comp-name.test1.root.dev.test.",
+=======
+        "httpd-1.test1.root.dev.test.",
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
         ((PTRRecord) recs[0]).getTarget().toString());
   }
 
@@ -312,7 +339,11 @@ public class TestRegistryDNS extends Assert {
     // start assessing whether correct records are available
     Record[] recs = assertDNSQuery("19.0.17.172.in-addr.arpa.", Type.PTR, 1);
     assertEquals("wrong result",
+<<<<<<< HEAD
         "comp-name.test1.root.dev.test.",
+=======
+        "httpd-1.test1.root.dev.test.",
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
         ((PTRRecord) recs[0]).getTarget().toString());
   }
 
@@ -395,7 +426,7 @@ public class TestRegistryDNS extends Assert {
     return recs;
   }
 
-  Record[] assertDNSQueryNotNull(String lookup, int type)
+  Record[] assertDNSQueryNotNull(String lookup, int type, int answerCount)
       throws IOException {
     Name name = Name.fromString(lookup);
     Record question = Record.newRecord(name, type, DClass.IN);
@@ -409,13 +440,8 @@ public class TestRegistryDNS extends Assert {
     assertEquals("Questions do not match", query.getQuestion(),
         response.getQuestion());
     Record[] recs = response.getSectionArray(Section.ANSWER);
-    boolean found = false;
-    for (Record r : recs) {
-      if (r.getType()==Type.A) {
-        found = true;
-      }
-    }
-    assertTrue("No A records in answer", found);
+    assertEquals(answerCount, recs.length);
+    assertEquals(recs[0].getType(), type);
     return recs;
   }
 
@@ -490,7 +516,11 @@ public class TestRegistryDNS extends Assert {
     assertEquals("wrong result", "172.17.0.19",
         ((AAAARecord) recs[0]).getAddress().getHostAddress());
 
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", Type.AAAA, 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", Type.AAAA, 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     assertTrue("not an ARecord", recs[0] instanceof AAAARecord);
   }
 
@@ -565,13 +595,21 @@ public class TestRegistryDNS extends Assert {
     assertEquals("wrong result", "172.17.0.19",
         ((ARecord) recs[0]).getAddress().getHostAddress());
 
+<<<<<<< HEAD
     recs = assertDNSQuery("comp-name.test1.root.dev.test.", 1);
+=======
+    recs = assertDNSQuery("httpd-1.test1.root.dev.test.", 1);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
     assertTrue("not an ARecord", recs[0] instanceof ARecord);
 
     // lookup dyanmic reverse records
     recs = assertDNSQuery("19.0.17.172.in-addr.arpa.", Type.PTR, 1);
     assertEquals("wrong result",
+<<<<<<< HEAD
         "comp-name.test1.root.dev.test.",
+=======
+        "httpd-1.test1.root.dev.test.",
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
         ((PTRRecord) recs[0]).getTarget().toString());
 
     // now lookup static reverse records
@@ -637,6 +675,8 @@ public class TestRegistryDNS extends Assert {
     setRegistryDNS(new RegistryDNS("TestRegistry"));
     Configuration conf = new Configuration();
     conf.set(RegistryConstants.KEY_DNS_DOMAIN, "dev.test");
+<<<<<<< HEAD
+=======
     conf.set(RegistryConstants.KEY_DNS_ZONE_SUBNET, "172.17.0");
     conf.setTimeDuration(RegistryConstants.KEY_DNS_TTL, 30L, TimeUnit.SECONDS);
     conf.set(RegistryConstants.KEY_DNS_ZONES_DIR,
@@ -646,7 +686,54 @@ public class TestRegistryDNS extends Assert {
 
     // start assessing whether correct records are available
     Record[] recs =
-        assertDNSQueryNotNull("mail.yahoo.com.", Type.CNAME);
+        assertDNSQueryNotNull("mail.yahoo.com.", Type.CNAME, 1);
+  }
+
+  @Test
+  public void testRootLookup() throws Exception {
+    setRegistryDNS(new RegistryDNS("TestRegistry"));
+    Configuration conf = new Configuration();
+    conf.set(RegistryConstants.KEY_DNS_DOMAIN, "dev.test");
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
+    conf.set(RegistryConstants.KEY_DNS_ZONE_SUBNET, "172.17.0");
+    conf.setTimeDuration(RegistryConstants.KEY_DNS_TTL, 30L, TimeUnit.SECONDS);
+    conf.set(RegistryConstants.KEY_DNS_ZONES_DIR,
+        getClass().getResource("/").getFile());
+    getRegistryDNS().setDomainName(conf);
+    getRegistryDNS().initializeZones(conf);
+
+    // start assessing whether correct records are available
+    Record[] recs =
+        assertDNSQueryNotNull(".", Type.NS, 13);
+  }
+
+  @Test
+  public void testMultiARecord() throws Exception {
+    ServiceRecord record = getMarshal().fromBytes("somepath",
+        CONTAINER_RECORD.getBytes());
+    ServiceRecord record2 = getMarshal().fromBytes("somepath",
+        CONTAINER_RECORD2.getBytes());
+    getRegistryDNS().register(
+        "/registry/users/root/services/org-apache-slider/test1/components/"
+            + "ctr-e50-1451931954322-0016-01-000002",
+        record);
+    getRegistryDNS().register(
+        "/registry/users/root/services/org-apache-slider/test1/components/"
+            + "ctr-e50-1451931954322-0016-01-000003",
+        record2);
+
+    // start assessing whether correct records are available
+    Record[] recs =
+        assertDNSQuery("httpd.test1.root.dev.test.", 2);
+    assertTrue("not an ARecord", recs[0] instanceof ARecord);
+    assertTrue("not an ARecord", recs[1] instanceof ARecord);
+  }
+
+  @Test(timeout=5000)
+  public void testUpstreamFault() throws Exception {
+    Name name = Name.fromString("19.0.17.172.in-addr.arpa.");
+    Record[] recs = getRegistryDNS().getRecords(name, Type.CNAME);
+    assertNull("Record is not null", recs);
   }
 
   public RegistryDNS getRegistryDNS() {

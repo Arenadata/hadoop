@@ -63,9 +63,6 @@ public class Service extends BaseResource {
   @XmlElement(name = "number_of_running_containers")
   private Long numberOfRunningContainers = null;
   private Long lifetime = null;
-  @JsonProperty("placement_policy")
-  @XmlElement(name = "placement_policy")
-  private PlacementPolicy placementPolicy = null;
   private List<Component> components = new ArrayList<>();
   private Configuration configuration = new Configuration();
   private ServiceState state = null;
@@ -76,6 +73,7 @@ public class Service extends BaseResource {
   private KerberosPrincipal kerberosPrincipal = new KerberosPrincipal();
   private String version = null;
   private String description = null;
+  private String dockerClientConfig = null;
 
   /**
    * A unique service name.
@@ -249,28 +247,6 @@ public class Service extends BaseResource {
   }
 
   /**
-   * Advanced scheduling and placement policies (optional). If not specified, it
-   * defaults to the default placement policy of the service owner. The design of
-   * placement policies are in the works. It is not very clear at this point,
-   * how policies in conjunction with labels be exposed to service owners.
-   * This is a placeholder for now. The advanced structure of this attribute
-   * will be determined by YARN-4902.
-   **/
-  public Service placementPolicy(PlacementPolicy placementPolicy) {
-    this.placementPolicy = placementPolicy;
-    return this;
-  }
-
-  @ApiModelProperty(example = "null", value = "Advanced scheduling and placement policies (optional). If not specified, it defaults to the default placement policy of the service owner. The design of placement policies are in the works. It is not very clear at this point, how policies in conjunction with labels be exposed to service owners. This is a placeholder for now. The advanced structure of this attribute will be determined by YARN-4902.")
-  public PlacementPolicy getPlacementPolicy() {
-    return placementPolicy;
-  }
-
-  public void setPlacementPolicy(PlacementPolicy placementPolicy) {
-    this.placementPolicy = placementPolicy;
-  }
-
-  /**
    * Components of an service.
    **/
   public Service components(List<Component> components) {
@@ -395,6 +371,27 @@ public class Service extends BaseResource {
     this.kerberosPrincipal = kerberosPrincipal;
   }
 
+  @JsonProperty("docker_client_config")
+  @XmlElement(name = "docker_client_config")
+  @SuppressWarnings("checkstyle:hiddenfield")
+  public Service dockerClientConfig(String dockerClientConfig) {
+    this.dockerClientConfig = dockerClientConfig;
+    return this;
+  }
+
+  /**
+   * The Docker client config for the service.
+   * @return dockerClientConfig
+   */
+  @ApiModelProperty(value = "The Docker client config for the service")
+  public String getDockerClientConfig() {
+    return dockerClientConfig;
+  }
+
+  public void setDockerClientConfig(String dockerClientConfig) {
+    this.dockerClientConfig = dockerClientConfig;
+  }
+
   @Override
   public boolean equals(java.lang.Object o) {
     if (this == o) {
@@ -429,8 +426,6 @@ public class Service extends BaseResource {
     sb.append("    numberOfRunningContainers: ")
         .append(toIndentedString(numberOfRunningContainers)).append("\n");
     sb.append("    lifetime: ").append(toIndentedString(lifetime)).append("\n");
-    sb.append("    placementPolicy: ").append(toIndentedString(placementPolicy))
-        .append("\n");
     sb.append("    components: ").append(toIndentedString(components))
         .append("\n");
     sb.append("    configuration: ").append(toIndentedString(configuration))
@@ -441,6 +436,8 @@ public class Service extends BaseResource {
     sb.append("    queue: ").append(toIndentedString(queue)).append("\n");
     sb.append("    kerberosPrincipal: ")
         .append(toIndentedString(kerberosPrincipal)).append("\n");
+    sb.append("    dockerClientConfig: ")
+        .append(toIndentedString(dockerClientConfig)).append("\n");
     sb.append("}");
     return sb.toString();
   }

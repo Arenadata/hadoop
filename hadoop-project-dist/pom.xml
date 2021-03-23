@@ -20,11 +20,19 @@
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
+<<<<<<< HEAD
     <version>3.1.0</version>
     <relativePath>../hadoop-project</relativePath>
   </parent>
   <artifactId>hadoop-project-dist</artifactId>
   <version>3.1.0</version>
+=======
+    <version>3.1.1</version>
+    <relativePath>../hadoop-project</relativePath>
+  </parent>
+  <artifactId>hadoop-project-dist</artifactId>
+  <version>3.1.1</version>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
   <description>Apache Hadoop Project Dist POM</description>
   <name>Apache Hadoop Project Dist POM</name>
   <packaging>pom</packaging>
@@ -145,7 +153,11 @@
         <activeByDefault>false</activeByDefault>
       </activation>
       <properties>
+<<<<<<< HEAD
         <jdiff.stable.api>3.0.1</jdiff.stable.api>
+=======
+        <jdiff.stable.api>3.0.3</jdiff.stable.api>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
         <jdiff.stability>-unstable</jdiff.stability>
         <!-- Commented out for HADOOP-11776 -->
         <!-- Uncomment param name="${jdiff.compatibility}" in javadoc doclet if compatibility is not empty -->

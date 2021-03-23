@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement;
 
 import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint.AllocationTags;
 import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.ExecutionTypeRequest;
 import org.apache.hadoop.yarn.api.records.NodeId;
@@ -125,7 +126,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer"),
+                    .allocationTag("mapper", "reducer"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -141,7 +142,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer"),
+                    .allocationTag("mapper", "reducer"),
                 PlacementConstraints.PlacementTargets.nodePartition("x"))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -157,7 +158,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer")).build())
+                    .allocationTag("mapper", "reducer")).build())
         .resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
         .build());
@@ -172,7 +173,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer")).build())
+                    .allocationTag("mapper", "reducer")).build())
         .resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
         .build());
@@ -188,7 +189,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer")).build())
+                    .allocationTag("mapper", "reducer")).build())
         .build(), true);
 
     // Invalid (without target tags)
@@ -206,9 +207,9 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper"),
+                    .allocationTag("mapper"),
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("reducer"),
+                    .allocationTag("reducer"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -221,9 +222,9 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper"),
+                    .allocationTag("mapper"),
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp(""),
+                    .allocationTag(""),
                 PlacementConstraints.PlacementTargets.nodePartition("x"))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -236,7 +237,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetCardinality(PlacementConstraints.NODE, 1, 2,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper"),
+                    .allocationTag("mapper"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -249,7 +250,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetCardinality(PlacementConstraints.NODE, 0, 2,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper"),
+                    .allocationTag("mapper"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -262,7 +263,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.RACK,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer"),
+                    .allocationTag("mapper", "reducer"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -275,7 +276,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer"),
+                    .allocationTag("mapper", "reducer"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -291,7 +292,7 @@ public class TestSingleConstraintAppPlacementAllocator {
             .placementConstraintExpression(PlacementConstraints
                 .targetNotIn(PlacementConstraints.NODE,
                     PlacementConstraints.PlacementTargets
-                        .allocationTagToIntraApp("mapper", "reducer"),
+                        .allocationTag("mapper", "reducer"),
                     PlacementConstraints.PlacementTargets.nodePartition(""))
                 .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -320,7 +321,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetCardinality(PlacementConstraints.NODE, 0, 1,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper"),
+                    .allocationTag("mapper"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -337,7 +338,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer"),
+                    .allocationTag("mapper", "reducer"),
                 PlacementConstraints.PlacementTargets.nodePartition(""))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -357,7 +358,7 @@ public class TestSingleConstraintAppPlacementAllocator {
             .placementConstraintExpression(PlacementConstraints
                 .targetNotIn(PlacementConstraints.NODE,
                     PlacementConstraints.PlacementTargets
-                        .allocationTagToIntraApp("mapper", "reducer"),
+                        .allocationTag("mapper", "reducer"),
                     PlacementConstraints.PlacementTargets.nodePartition(""))
                 .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -366,8 +367,7 @@ public class TestSingleConstraintAppPlacementAllocator {
     allocator.canAllocate(NodeType.NODE_LOCAL,
         TestUtils.getMockNode("host1", "/rack1", 123, 1024));
     verify(spyAllocationTagsManager, Mockito.times(1)).getNodeCardinalityByOp(
-        eq(NodeId.fromString("host1:123")), eq(TestUtils.getMockApplicationId(1)),
-        eq(ImmutableSet.of("mapper", "reducer")),
+        eq(NodeId.fromString("host1:123")), any(AllocationTags.class),
         any(LongBinaryOperator.class));
 
     allocator = new SingleConstraintAppPlacementAllocator();
@@ -379,7 +379,7 @@ public class TestSingleConstraintAppPlacementAllocator {
         .placementConstraintExpression(PlacementConstraints
             .targetNotIn(PlacementConstraints.NODE,
                 PlacementConstraints.PlacementTargets
-                    .allocationTagToIntraApp("mapper", "reducer"),
+                    .allocationTag("mapper", "reducer"),
                 PlacementConstraints.PlacementTargets.nodePartition("x"))
             .build()).resourceSizing(
             ResourceSizing.newInstance(1, Resource.newInstance(1024, 1)))
@@ -388,9 +388,8 @@ public class TestSingleConstraintAppPlacementAllocator {
     allocator.canAllocate(NodeType.NODE_LOCAL,
         TestUtils.getMockNode("host1", "/rack1", 123, 1024));
     verify(spyAllocationTagsManager, Mockito.atLeast(1)).getNodeCardinalityByOp(
-        eq(NodeId.fromString("host1:123")),
-        eq(TestUtils.getMockApplicationId(1)), eq(ImmutableSet
-            .of("mapper", "reducer")), any(LongBinaryOperator.class));
+        eq(NodeId.fromString("host1:123")), any(AllocationTags.class),
+        any(LongBinaryOperator.class));
 
     SchedulerNode node1 = mock(SchedulerNode.class);
     when(node1.getPartition()).thenReturn("x");

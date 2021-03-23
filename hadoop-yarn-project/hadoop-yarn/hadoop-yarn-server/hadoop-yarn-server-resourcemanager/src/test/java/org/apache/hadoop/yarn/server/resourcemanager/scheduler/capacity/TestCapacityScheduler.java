@@ -134,6 +134,11 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNodeReport;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.TestSchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
+<<<<<<< HEAD
+=======
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator.AllocationState;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator.ContainerAllocation;
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.ResourceCommitRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
@@ -258,14 +263,12 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     }
   }
 
-  private NodeManager
-      registerNode(String hostName, int containerManagerPort, int httpPort,
-          String rackName, Resource capability)
+  private NodeManager registerNode(String hostName, int containerManagerPort,
+                                   int httpPort, String rackName,
+                                   Resource capability)
           throws IOException, YarnException {
-    NodeManager nm =
-        new NodeManager(
-            hostName, containerManagerPort, httpPort, rackName, capability,
-            resourceManager);
+    NodeManager nm = new NodeManager(hostName, containerManagerPort, httpPort,
+        rackName, capability, resourceManager);
     NodeAddedSchedulerEvent nodeAddEvent1 =
         new NodeAddedSchedulerEvent(resourceManager.getRMContext()
             .getRMNodes().get(nm.getNodeId()));
@@ -280,13 +283,13 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
 
     // Register node1
     String host_0 = "host_0";
-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_0 =
+    NodeManager nm_0 =
         registerNode(host_0, 1234, 2345, NetworkTopology.DEFAULT_RACK,
             Resources.createResource(4 * GB, 1));
 
     // Register node2
     String host_1 = "host_1";
-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_1 =
+    NodeManager nm_1 =
         registerNode(host_1, 1234, 2345, NetworkTopology.DEFAULT_RACK,
             Resources.createResource(2 * GB, 1));
 
@@ -4038,6 +4041,29 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
       Assert.fail("Cannot find RMContainer");
     }
   }
+  @Test
+  public void testRemovedNodeDecomissioningNode() throws Exception {
+    // Register nodemanager
+    NodeManager nm = registerNode("host_decom", 1234, 2345,
+        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
+
+    RMNode node =
+        resourceManager.getRMContext().getRMNodes().get(nm.getNodeId());
+    // Send a heartbeat to kick the tires on the Scheduler
+    NodeUpdateSchedulerEvent nodeUpdate = new NodeUpdateSchedulerEvent(node);
+    resourceManager.getResourceScheduler().handle(nodeUpdate);
+
+    // force remove the node to simulate race condition
+    ((CapacityScheduler) resourceManager.getResourceScheduler()).getNodeTracker().
+        removeNode(nm.getNodeId());
+    // Kick off another heartbeat with the node state mocked to decommissioning
+    RMNode spyNode =
+        Mockito.spy(resourceManager.getRMContext().getRMNodes()
+            .get(nm.getNodeId()));
+    when(spyNode.getState()).thenReturn(NodeState.DECOMMISSIONING);
+    resourceManager.getResourceScheduler().handle(
+        new NodeUpdateSchedulerEvent(spyNode));
+  }
 
   @Test
   public void testResourceUpdateDecommissioningNode() throws Exception {
@@ -4064,9 +4090,8 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     ((AsyncDispatcher) mockDispatcher).start();
     // Register node
     String host_0 = "host_0";
-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_0 =
-        registerNode(host_0, 1234, 2345, NetworkTopology.DEFAULT_RACK,
-            Resources.createResource(8 * GB, 4));
+    NodeManager nm_0 = registerNode(host_0, 1234, 2345,
+        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
     // ResourceRequest priorities
     Priority priority_0 = Priority.newInstance(0);
 
@@ -4910,4 +4935,53 @@ public class TestCapacityScheduler extends CapacitySchedulerTestBase {
     spyCs.handle(new NodeUpdateSchedulerEvent(
         spyCs.getNode(nm.getNodeId()).getRMNode()));
   }
+<<<<<<< HEAD
+=======
+
+  // Testcase for YARN-8528
+  // This is to test whether ContainerAllocation constants are holding correct
+  // values during scheduling.
+  @Test
+  public void testContainerAllocationLocalitySkipped() throws Exception {
+    Assert.assertEquals(AllocationState.APP_SKIPPED,
+        ContainerAllocation.APP_SKIPPED.getAllocationState());
+    Assert.assertEquals(AllocationState.LOCALITY_SKIPPED,
+        ContainerAllocation.LOCALITY_SKIPPED.getAllocationState());
+    Assert.assertEquals(AllocationState.PRIORITY_SKIPPED,
+        ContainerAllocation.PRIORITY_SKIPPED.getAllocationState());
+    Assert.assertEquals(AllocationState.QUEUE_SKIPPED,
+        ContainerAllocation.QUEUE_SKIPPED.getAllocationState());
+
+    // init RM & NMs & Nodes
+    final MockRM rm = new MockRM(new CapacitySchedulerConfiguration());
+    CapacityScheduler cs = (CapacityScheduler) rm.getResourceScheduler();
+    rm.start();
+    final MockNM nm1 = rm.registerNode("h1:1234", 4 * GB);
+    final MockNM nm2 = rm.registerNode("h2:1234", 6 * GB); // maximum-allocation-mb = 6GB
+
+    // submit app and request resource
+    // container2 is larger than nm1 total resource, will trigger locality skip
+    final RMApp app = rm.submitApp(1 * GB, "app", "user");
+    final MockAM am = MockRM.launchAndRegisterAM(app, rm, nm1);
+    am.addRequests(new String[] {"*"}, 5 * GB, 1, 1, 2);
+    am.schedule();
+
+    // container1 (am) should be acquired, container2 should not
+    RMNode node1 = rm.getRMContext().getRMNodes().get(nm1.getNodeId());
+    cs.handle(new NodeUpdateSchedulerEvent(node1));
+    ContainerId cid = ContainerId.newContainerId(am.getApplicationAttemptId(), 1l);
+    Assert.assertEquals(cs.getRMContainer(cid).getState(), RMContainerState.ACQUIRED);
+    cid = ContainerId.newContainerId(am.getApplicationAttemptId(), 2l);
+    Assert.assertNull(cs.getRMContainer(cid));
+
+    Assert.assertEquals(AllocationState.APP_SKIPPED,
+        ContainerAllocation.APP_SKIPPED.getAllocationState());
+    Assert.assertEquals(AllocationState.LOCALITY_SKIPPED,
+        ContainerAllocation.LOCALITY_SKIPPED.getAllocationState());
+    Assert.assertEquals(AllocationState.PRIORITY_SKIPPED,
+        ContainerAllocation.PRIORITY_SKIPPED.getAllocationState());
+    Assert.assertEquals(AllocationState.QUEUE_SKIPPED,
+        ContainerAllocation.QUEUE_SKIPPED.getAllocationState());
+  }
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 }

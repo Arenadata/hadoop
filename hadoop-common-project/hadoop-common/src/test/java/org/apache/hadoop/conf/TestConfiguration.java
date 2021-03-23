@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.conf;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -2320,19 +2321,33 @@ public class TestConfiguration {
     FileUtil.fullyDelete(tmpDir);
   }
 
+  @Test
   public void testGettingPropertiesWithPrefix() throws Exception {
     Configuration conf = new Configuration();
     for (int i = 0; i < 10; i++) {
-      conf.set("prefix" + ".name" + i, "value");
+      conf.set("prefix." + "name" + i, "value" + i);
     }
     conf.set("different.prefix" + ".name", "value");
-    Map<String, String> props = conf.getPropsWithPrefix("prefix");
-    assertEquals(props.size(), 10);
+    Map<String, String> prefixedProps = conf.getPropsWithPrefix("prefix.");
+    assertEquals(prefixedProps.size(), 10);
+    for (int i = 0; i < 10; i++) {
+      assertEquals("value" + i, prefixedProps.get("name" + i));
+    }
 
+    // Repeat test with variable substitution
+    conf.set("foo", "bar");
+    for (int i = 0; i < 10; i++) {
+      conf.set("subprefix." + "subname" + i, "value_${foo}" + i);
+    }
+    prefixedProps = conf.getPropsWithPrefix("subprefix.");
+    assertEquals(prefixedProps.size(), 10);
+    for (int i = 0; i < 10; i++) {
+      assertEquals("value_bar" + i, prefixedProps.get("subname" + i));
+    }
     // test call with no properties for a given prefix
-    props = conf.getPropsWithPrefix("none");
-    assertNotNull(props.isEmpty());
-    assertTrue(props.isEmpty());
+    prefixedProps = conf.getPropsWithPrefix("none");
+    assertNotNull(prefixedProps.isEmpty());
+    assertTrue(prefixedProps.isEmpty());
   }
 
   public static void main(String[] argv) throws Exception {
@@ -2418,5 +2433,35 @@ public class TestConfiguration {
     } finally {
       System.setOut(output);
     }
+  }
+
+  /**
+   * Test race conditions between clone() and getProps().
+   * Test for race conditions in the way Hadoop handles the Configuration
+   * class. The scenario is the following. Let's assume that there are two
+   * threads sharing the same Configuration class. One adds some resources
+   * to the configuration, while the other one clones it. Resources are
+   * loaded lazily in a deferred call to loadResources(). If the cloning
+   * happens after adding the resources but before parsing them, some temporary
+   * resources like input stream pointers are cloned. Eventually both copies
+   * will load the same input stream resources.
+   * One parses the input stream XML and closes it updating it's own copy of
+   * the resource. The other one has another pointer to the same input stream.
+   * When it tries to load it, it will crash with a stream closed exception.
+   */
+  @Test
+  public void testResourceRace() {
+    InputStream is =
+        new BufferedInputStream(new ByteArrayInputStream(
+            "<configuration></configuration>".getBytes()));
+    Configuration config = new Configuration();
+    // Thread 1
+    config.addResource(is);
+    // Thread 2
+    Configuration confClone = new Configuration(conf);
+    // Thread 2
+    confClone.get("firstParse");
+    // Thread 1
+    config.get("secondParse");
   }
 }

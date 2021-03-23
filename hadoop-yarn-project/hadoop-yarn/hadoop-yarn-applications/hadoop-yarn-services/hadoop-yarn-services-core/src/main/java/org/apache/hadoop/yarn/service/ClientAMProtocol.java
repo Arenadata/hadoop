@@ -19,12 +19,20 @@
 package org.apache.hadoop.yarn.service;
 
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.CompInstancesUpgradeResponseProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.CompInstancesUpgradeRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.FlexComponentsRequestProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.FlexComponentsResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetStatusResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.GetStatusRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.RestartServiceRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.RestartServiceResponseProto;
+
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.StopResponseProto;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.StopRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.UpgradeServiceRequestProto;
+import org.apache.hadoop.yarn.proto.ClientAMProtocol.UpgradeServiceResponseProto;
+
 
 import java.io.IOException;
 
@@ -37,4 +45,14 @@ public interface ClientAMProtocol {
 
   StopResponseProto stop(StopRequestProto requestProto)
       throws IOException, YarnException;
+
+  UpgradeServiceResponseProto upgrade(UpgradeServiceRequestProto request)
+      throws IOException, YarnException;
+
+  RestartServiceResponseProto restart(RestartServiceRequestProto request)
+      throws IOException, YarnException;
+
+  CompInstancesUpgradeResponseProto upgrade(
+      CompInstancesUpgradeRequestProto request) throws IOException,
+      YarnException;
 }

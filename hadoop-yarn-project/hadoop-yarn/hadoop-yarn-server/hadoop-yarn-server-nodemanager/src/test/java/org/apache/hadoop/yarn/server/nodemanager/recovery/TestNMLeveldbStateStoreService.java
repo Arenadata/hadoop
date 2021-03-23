@@ -28,7 +28,9 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -377,6 +379,11 @@ public class TestNMLeveldbStateStoreService {
     restartStateStore();
     recoveredContainers = stateStore.loadContainersState();
     assertTrue(recoveredContainers.isEmpty());
+    // recover again to check remove clears all containers
+    restartStateStore();
+    NMStateStoreService nmStoreSpy = spy(stateStore);
+    nmStoreSpy.loadContainersState();
+    verify(nmStoreSpy,times(0)).removeContainer(any(ContainerId.class));
   }
 
   private void validateRetryAttempts(ContainerId containerId)
@@ -1214,6 +1221,22 @@ public class TestNMLeveldbStateStoreService {
       stateStore.setDB(keepDB);
     }
     Assert.fail("Expected exception not thrown");
+  }
+
+  @Test
+  public void testEmptyRestartTimes() throws IOException {
+    List<Long> restartTimes = new ArrayList<>();
+    ApplicationId appId = ApplicationId.newInstance(1234, 3);
+    ApplicationAttemptId appAttemptId = ApplicationAttemptId.newInstance(appId,
+        4);
+    ContainerId containerId = ContainerId.newContainerId(appAttemptId, 5);
+    storeMockContainer(containerId);
+    stateStore.storeContainerRestartTimes(containerId,
+        restartTimes);
+    restartStateStore();
+    RecoveredContainerState rcs = stateStore.loadContainersState().get(0);
+    List<Long> recoveredRestartTimes = rcs.getRestartTimes();
+    assertTrue(recoveredRestartTimes.isEmpty());
   }
 
   private StartContainerRequest storeMockContainer(ContainerId containerId)

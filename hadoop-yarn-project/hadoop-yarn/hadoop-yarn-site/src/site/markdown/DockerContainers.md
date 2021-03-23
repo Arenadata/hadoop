@@ -206,7 +206,9 @@ are allowed. It contains the following properties:
 | `docker.allowed.rw-mounts` | Comma separated directories that containers are allowed to mount in read-write mode. By default, no directories are allowed to mounted. |
 | `docker.host-pid-namespace.enabled` | Set to "true" or "false" to enable or disable using the host's PID namespace. Default value is "false". |
 | `docker.privileged-containers.enabled` | Set to "true" or "false" to enable or disable launching privileged containers. Default value is "false". |
-| `docker.privileged-containers.registries` | Comma separated list of trusted docker registries for running trusted privileged docker containers.  By default, no registries are defined. |
+| `docker.trusted.registries` | Comma separated list of trusted docker registries for running trusted privileged docker containers.  By default, no registries are defined. |
+| `docker.inspect.max.retries` | Integer value to check docker container readiness.  Each inspection is set with 3 seconds delay.  Default value of 10 will wait 30 seconds for docker container to become ready before marked as container failed. |
+| `docker.no-new-privileges.enabled` | Enable/disable the no-new-privileges flag for docker run. Set to "true" to enable, disabled by default. |
 
 Please note that if you wish to run Docker containers that require access to the YARN local directories, you must add them to the docker.allowed.rw-mounts list.
 
@@ -228,7 +230,7 @@ yarn.nodemanager.linux-container-executor.group=yarn
 [docker]
   module.enabled=true
   docker.privileged-containers.enabled=true
-  docker.privileged-containers.registries=centos
+  docker.trusted.registries=centos
   docker.allowed.capabilities=SYS_CHROOT,MKNOD,SETFCAP,SETPCAP,FSETID,CHOWN,AUDIT_WRITE,SETGID,NET_RAW,FOWNER,SETUID,DAC_OVERRIDE,KILL,NET_BIND_SERVICE
   docker.allowed.networks=bridge,host,none
   docker.allowed.ro-mounts=/sys/fs/cgroup
@@ -302,7 +304,6 @@ environment variables in the application's environment:
 | `YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_NETWORK` | Sets the network type to be used by the Docker container. It must be a valid value as determined by the yarn.nodemanager.runtime.linux.docker.allowed-container-networks property. |
 | `YARN_CONTAINER_RUNTIME_DOCKER_CONTAINER_PID_NAMESPACE` | Controls which PID namespace will be used by the Docker container. By default, each Docker container has its own PID namespace. To share the namespace of the host, the yarn.nodemanager.runtime.linux.docker.host-pid-namespace.allowed property must be set to true. If the host PID namespace is allowed and this environment variable is set to host, the Docker container will share the host's PID namespace. No other value is allowed. |
 | `YARN_CONTAINER_RUNTIME_DOCKER_RUN_PRIVILEGED_CONTAINER` | Controls whether the Docker container is a privileged container. In order to use privileged containers, the yarn.nodemanager.runtime.linux.docker.privileged-containers.allowed property must be set to true, and the application owner must appear in the value of the yarn.nodemanager.runtime.linux.docker.privileged-containers.acl property. If this environment variable is set to true, a privileged Docker container will be used if allowed. No other value is allowed, so the environment variable should be left unset rather than setting it to false. |
-| `YARN_CONTAINER_RUNTIME_DOCKER_LOCAL_RESOURCE_MOUNTS` | Adds additional volume mounts to the Docker container. The value of the environment variable should be a comma-separated list of mounts. All such mounts must be given as "source:dest", where the source is an absolute path that is not a symlink and that points to a localized resource. Note that as of YARN-5298, localized directories are automatically mounted into the container as volumes. |
 | `YARN_CONTAINER_RUNTIME_DOCKER_MOUNTS` | Adds additional volume mounts to the Docker container. The value of the environment variable should be a comma-separated list of mounts. All such mounts must be given as "source:dest:mode" and the mode must be "ro" (read-only) or "rw" (read-write) to specify the type of access being requested. The requested mounts will be validated by container-executor based on the values set in container-executor.cfg for docker.allowed.ro-mounts and docker.allowed.rw-mounts. |
 | `YARN_CONTAINER_RUNTIME_DOCKER_DELAYED_REMOVAL` | Allows a user to request delayed deletion of the Docker container on a per container basis. If true, Docker containers will not be removed until the duration defined by yarn.nodemanager.delete.debug-delay-sec has elapsed. Administrators can disable this feature through the yarn-site property yarn.nodemanager.runtime.linux.docker.delayed-removal.allowed. This feature is disabled by default. When this feature is disabled or set to false, the container will be removed as soon as it exits. |
 
@@ -371,11 +372,26 @@ Privileged docker container can interact with host system devices.  This can cau
 
 The default behavior is disallow any privileged docker containers.  When `docker.privileged-containers.enabled` is set to enabled, docker image can run with root privileges in the docker container, but access to host level devices are disabled.  This allows developer and tester to run docker images from internet without causing harm to host operating system.
 
-When docker images have been certified by developers and testers to be trustworthy.  The trusted image can be promoted to trusted docker registry.  System administrator can define `docker.privileged-containers.registries`, and setup private docker registry server to promote trusted images.
+When docker images have been certified by developers and testers to be trustworthy.  The trusted image can be promoted to trusted docker registry.  System administrator can define `docker.trusted.registries`, and setup private docker registry server to promote trusted images.
 
 Trusted images are allowed to mount external devices such as HDFS via NFS gateway, or host level Hadoop configuration.  If system administrators allow writing to external volumes using `docker.allow.rw-mounts directive`, privileged docker container can have full control of host level files in the predefined volumes.
 
 For [YARN Service HTTPD example](./yarn-service/Examples.html), container-executor.cfg must define centos docker registry to be trusted for the example to run.
+
+Container Reacquisition Requirements
+------------------------------------
+On restart, the NodeManager, as part of the NodeManager's recovery process, will
+validate that a container is still running by checking for the existence of the
+container's PID directory in the /proc filesystem. For security purposes,
+operating system administrator may enable the _hidepid_ mount option for the
+/proc filesystem. If the _hidepid_ option is enabled, the _yarn_ user's primary
+group must be whitelisted by setting the gid mount flag similar to below.
+Without the _yarn_ user's primary group whitelisted, container reacquisition
+will fail and the container will be killed on NodeManager restart.
+
+```
+proc     /proc     proc     nosuid,nodev,noexec,hidepid=2,gid=yarn     0 0
+```
 
 Connecting to a Secure Docker Repository
 ----------------------------------------
@@ -435,3 +451,30 @@ To run a Spark shell in Docker containers, run the following command:
 
 Note that the application master and executors are configured
 independently. In this example, we are using the hadoop-docker image for both.
+
+Docker Container ENTRYPOINT Support
+------------------------------------
+
+When Docker support was introduced to Hadoop 2.x, the platform was designed to
+run existing Hadoop programs inside Docker container.  Log redirection and
+environment setup are integrated with Node Manager.  In Hadoop 3.x, Hadoop
+Docker support extends beyond running Hadoop workload, and support Docker container
+in Docker native form using ENTRYPOINT from dockerfile.  Application can decide to
+support YARN mode as default or Docker mode as default by defining
+YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE environment variable.
+System administrator can also set as default setting for the cluster to make
+ENTRY_POINT as default mode of operation.
+
+In yarn-site.xml, add YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE to
+node manager environment white list:
+```
+<property>
+        <name>yarn.nodemanager.env-whitelist</name>
+        <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,HADOOP_YARN_HOME,HADOOP_MAPRED_HOME,YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE</value>
+</property>
+```
+
+In yarn-env.sh, define:
+```
+export YARN_CONTAINER_RUNTIME_DOCKER_RUN_OVERRIDE_DISABLE=true
+```

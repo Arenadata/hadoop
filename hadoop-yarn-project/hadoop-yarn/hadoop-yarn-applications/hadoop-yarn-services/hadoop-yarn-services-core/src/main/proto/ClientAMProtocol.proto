@@ -26,6 +26,12 @@ service ClientAMProtocolService {
   rpc flexComponents(FlexComponentsRequestProto) returns (FlexComponentsResponseProto);
   rpc getStatus(GetStatusRequestProto) returns (GetStatusResponseProto);
   rpc stop(StopRequestProto) returns (StopResponseProto);
+  rpc upgradeService(UpgradeServiceRequestProto)
+    returns (UpgradeServiceResponseProto);
+  rpc restartService(RestartServiceRequestProto)
+    returns (RestartServiceResponseProto);
+  rpc upgrade(CompInstancesUpgradeRequestProto) returns
+    (CompInstancesUpgradeResponseProto);
 }
 
 message FlexComponentsRequestProto {
@@ -37,7 +43,7 @@ message ComponentCountProto {
   optional int64 numberOfContainers = 2;
 }
 
-message FlexComponentsResponseProto{
+message FlexComponentsResponseProto {
 }
 
 message GetStatusRequestProto {
@@ -53,4 +59,26 @@ message StopRequestProto {
 
 message StopResponseProto {
 
+}
+
+message UpgradeServiceRequestProto {
+  optional string version = 1;
+  optional bool autoFinalize = 2;
+}
+
+message UpgradeServiceResponseProto {
+  optional string error = 1;
+}
+
+message RestartServiceRequestProto {
+}
+
+message RestartServiceResponseProto {
+}
+
+message CompInstancesUpgradeRequestProto {
+    repeated string containerIds = 1;
+}
+
+message CompInstancesUpgradeResponseProto {
 }

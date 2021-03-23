@@ -339,6 +339,16 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
         return false;
       }
     }
+    // If allocate from reserved container, make sure node is still reserved
+    if (allocation.getAllocateFromReservedContainer() != null
+        && reservedContainerOnNode == null) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Try to allocate from reserved container " + allocation
+            .getAllocateFromReservedContainer().getRmContainer()
+            .getContainerId() + ", but node is not reserved");
+      }
+      return false;
+    }
 
     // Do we have enough space on this node?
     Resource availableResource = Resources.clone(
@@ -351,6 +361,21 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
         .isEmpty()) {
       for (SchedulerContainer<FiCaSchedulerApp, FiCaSchedulerNode>
           releaseContainer : allocation.getToRelease()) {
+        // Make sure to-release reserved containers are not outdated
+        if (releaseContainer.getRmContainer().getState()
+            == RMContainerState.RESERVED
+            && releaseContainer.getRmContainer() != releaseContainer
+            .getSchedulerNode().getReservedContainer()) {
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Failed to accept this proposal because "
+                + "it tries to release an outdated reserved container "
+                + releaseContainer.getRmContainer().getContainerId()
+                + " on node " + releaseContainer.getSchedulerNode().getNodeID()
+                + " whose reserved container is "
+                + releaseContainer.getSchedulerNode().getReservedContainer());
+          }
+          return false;
+        }
         // Only consider non-reserved container (reserved container will
         // not affect available resource of node) on the same node
         if (releaseContainer.getRmContainer().getState()
@@ -597,6 +622,11 @@ public class FiCaSchedulerApp extends SchedulerApplicationAttempt {
               schedulerContainer.getRmContainer(),
               schedulerContainer.getRmContainer().getContainer(),
               reReservation);
+
+          LOG.info("Reserved container=" + rmContainer.getContainerId()
+              + ", on node=" + schedulerContainer.getSchedulerNode()
+              + " with resource=" + rmContainer
+              .getAllocatedOrReservedResource());
         }
       }
     } finally {

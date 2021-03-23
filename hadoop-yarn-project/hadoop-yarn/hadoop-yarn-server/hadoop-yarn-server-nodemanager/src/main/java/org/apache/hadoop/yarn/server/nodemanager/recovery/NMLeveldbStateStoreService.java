@@ -142,9 +142,9 @@ public class NMLeveldbStateStoreService extends NMStateStoreService {
       NM_TOKENS_KEY_PREFIX + PREV_MASTER_KEY_SUFFIX;
   private static final String CONTAINER_TOKENS_KEY_PREFIX =
       "ContainerTokens/";
-  private static final String CONTAINER_TOKENS_CURRENT_MASTER_KEY =
+  private static final String CONTAINER_TOKEN_SECRETMANAGER_CURRENT_MASTER_KEY =
       CONTAINER_TOKENS_KEY_PREFIX + CURRENT_MASTER_KEY_SUFFIX;
-  private static final String CONTAINER_TOKENS_PREV_MASTER_KEY =
+  private static final String CONTAINER_TOKEN_SECRETMANAGER_PREV_MASTER_KEY =
       CONTAINER_TOKENS_KEY_PREFIX + PREV_MASTER_KEY_SUFFIX;
 
   private static final String LOG_DELETER_KEY_PREFIX = "LogDeleters/";
@@ -347,7 +347,9 @@ public class NMLeveldbStateStoreService extends NMStateStoreService {
             value.substring(1, value.length() - 1).split(", ");
         List<Long> restartTimes = new ArrayList<>();
         for (String restartTime : unparsedRestartTimes) {
-          restartTimes.add(Long.parseLong(restartTime));
+          if (!restartTime.isEmpty()) {
+            restartTimes.add(Long.parseLong(restartTime));
+          }
         }
         rcs.setRestartTimes(restartTimes);
       } else if (suffix.equals(CONTAINER_WORK_DIR_KEY_SUFFIX)) {
@@ -650,6 +652,12 @@ public class NMLeveldbStateStoreService extends NMStateStoreService {
         batch.delete(bytes(keyPrefix + CONTAINER_KILLED_KEY_SUFFIX));
         batch.delete(bytes(keyPrefix + CONTAINER_EXIT_CODE_KEY_SUFFIX));
         batch.delete(bytes(keyPrefix + CONTAINER_UPDATE_TOKEN_SUFFIX));
+        batch.delete(bytes(keyPrefix + CONTAINER_START_TIME_KEY_SUFFIX));
+        batch.delete(bytes(keyPrefix + CONTAINER_LOG_DIR_KEY_SUFFIX));
+        batch.delete(bytes(keyPrefix + CONTAINER_VERSION_KEY_SUFFIX));
+        batch.delete(bytes(keyPrefix + CONTAINER_REMAIN_RETRIES_KEY_SUFFIX));
+        batch.delete(bytes(keyPrefix + CONTAINER_RESTART_TIMES_SUFFIX));
+        batch.delete(bytes(keyPrefix + CONTAINER_WORK_DIR_KEY_SUFFIX));
         List<String> unknownKeysForContainer = containerUnknownKeySuffixes
             .removeAll(containerId);
         for (String unknownKeySuffix : unknownKeysForContainer) {
@@ -1161,13 +1169,13 @@ public class NMLeveldbStateStoreService extends NMStateStoreService {
   @Override
   public void storeContainerTokenCurrentMasterKey(MasterKey key)
       throws IOException {
-    storeMasterKey(CONTAINER_TOKENS_CURRENT_MASTER_KEY, key);
+    storeMasterKey(CONTAINER_TOKEN_SECRETMANAGER_CURRENT_MASTER_KEY, key);
   }
 
   @Override
   public void storeContainerTokenPreviousMasterKey(MasterKey key)
       throws IOException {
-    storeMasterKey(CONTAINER_TOKENS_PREV_MASTER_KEY, key);
+    storeMasterKey(CONTAINER_TOKEN_SECRETMANAGER_PREV_MASTER_KEY, key);
   }
 
   @Override
@@ -1529,7 +1537,6 @@ public class NMLeveldbStateStoreService extends NMStateStoreService {
     Path storeRoot = createStorageDir(conf);
     Options options = new Options();
     options.createIfMissing(false);
-    options.logger(new LeveldbLogger());
     LOG.info("Using state database at " + storeRoot + " for recovery");
     File dbfile = new File(storeRoot.toString());
     try {
@@ -1593,17 +1600,6 @@ public class NMLeveldbStateStoreService extends NMStateStoreService {
       LOG.info("Full compaction cycle completed in " + duration + " msec");
     }
   }
-
-  private static class LeveldbLogger implements org.iq80.leveldb.Logger {
-    private static final org.slf4j.Logger LOG =
-        LoggerFactory.getLogger(LeveldbLogger.class);
-
-    @Override
-    public void log(String message) {
-      LOG.info(message);
-    }
-  }
-
 
   Version loadVersion() throws IOException {
     byte[] data = db.get(bytes(DB_SCHEMA_VERSION_KEY));

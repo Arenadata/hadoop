@@ -49,6 +49,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.SchedulingMode;
 import org.apache.hadoop.yarn.server.scheduler.SchedulerRequestKey;
+import org.apache.hadoop.yarn.util.UnitsConversionUtil;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
@@ -186,19 +187,33 @@ public class SchedulerUtils {
       ResourceRequest resReq, QueueInfo queueInfo) {
 
     String labelExp = resReq.getNodeLabelExpression();
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Requested Node Label Expression : " + labelExp);
+      LOG.debug("Queue Info : " + queueInfo);
+    }
 
     // if queue has default label expression, and RR doesn't have, use the
     // default label expression of queue
     if (labelExp == null && queueInfo != null && ResourceRequest.ANY
         .equals(resReq.getResourceName())) {
+      if ( LOG.isDebugEnabled()) {
+        LOG.debug("Setting default node label expression : " + queueInfo
+            .getDefaultNodeLabelExpression());
+      }
       labelExp = queueInfo.getDefaultNodeLabelExpression();
     }
 
-    // If labelExp still equals to null, set it to be NO_LABEL
-    if (labelExp == null) {
+    // If labelExp still equals to null, it could either be a dynamic queue
+    // or the label is not configured
+    // set it to be NO_LABEL in case of a pre-configured queue. Dynamic
+    // queues are handled in RMAppAttemptImp.ScheduledTransition
+    if (labelExp == null && queueInfo != null) {
       labelExp = RMNodeLabelsManager.NO_LABEL;
     }
-    resReq.setNodeLabelExpression(labelExp);
+
+    if ( labelExp != null) {
+      resReq.setNodeLabelExpression(labelExp);
+    }
   }
 
   public static void normalizeAndValidateRequest(ResourceRequest resReq,
@@ -208,6 +223,7 @@ public class SchedulerUtils {
     normalizeAndValidateRequest(resReq, maximumResource, queueName, scheduler,
         isRecovery, rmContext, null);
   }
+
 
   public static void normalizeAndValidateRequest(ResourceRequest resReq,
       Resource maximumResource, String queueName, YarnScheduler scheduler,
@@ -233,11 +249,12 @@ public class SchedulerUtils {
       try {
         queueInfo = scheduler.getQueueInfo(queueName, false, false);
       } catch (IOException e) {
-        // it is possible queue cannot get when queue mapping is set, just ignore
-        // the queueInfo here, and move forward
+        //Queue may not exist since it could be auto-created in case of
+        // dynamic queues
       }
     }
     SchedulerUtils.normalizeNodeLabelExpressionInRequest(resReq, queueInfo);
+
     if (!isRecovery) {
       validateResourceRequest(resReq, maximumResource, queueInfo, rmContext);
     }
@@ -245,8 +262,7 @@ public class SchedulerUtils {
 
   public static void normalizeAndvalidateRequest(ResourceRequest resReq,
       Resource maximumResource, String queueName, YarnScheduler scheduler,
-      RMContext rmContext)
-      throws InvalidResourceRequestException {
+      RMContext rmContext) throws InvalidResourceRequestException {
     normalizeAndvalidateRequest(resReq, maximumResource, queueName, scheduler,
         rmContext, null);
   }
@@ -268,24 +284,10 @@ public class SchedulerUtils {
   private static void validateResourceRequest(ResourceRequest resReq,
       Resource maximumResource, QueueInfo queueInfo, RMContext rmContext)
       throws InvalidResourceRequestException {
-    Resource requestedResource = resReq.getCapability();
-    for (int i = 0; i < ResourceUtils.getNumberOfKnownResourceTypes(); i++) {
-      ResourceInformation reqRI = requestedResource.getResourceInformation(i);
-      ResourceInformation maxRI = maximumResource.getResourceInformation(i);
-      if (reqRI.getValue() < 0 || reqRI.getValue() > maxRI.getValue()) {
-        throw new InvalidResourceRequestException(
-            "Invalid resource request, requested resource type=[" + reqRI
-                .getName()
-                + "] < 0 or greater than maximum allowed allocation. Requested "
-                + "resource=" + requestedResource
-                + ", maximum allowed allocation=" + maximumResource
-                + ", please note that maximum allowed allocation is calculated "
-                + "by scheduler based on maximum resource of registered "
-                + "NodeManagers, which might be less than configured "
-                + "maximum allocation=" + ResourceUtils
-                .getResourceTypesMaximumAllocation());
-      }
-    }
+    final Resource requestedResource = resReq.getCapability();
+    checkResourceRequestAgainstAvailableResource(requestedResource,
+        maximumResource);
+
     String labelExp = resReq.getNodeLabelExpression();
     // we don't allow specify label expression other than resourceName=ANY now
     if (!ResourceRequest.ANY.equals(resReq.getResourceName())
@@ -296,7 +298,7 @@ public class SchedulerUtils {
               + "resource request has resource name = "
               + resReq.getResourceName());
     }
-    
+
     // we don't allow specify label expression with more than one node labels now
     if (labelExp != null && labelExp.contains("&&")) {
       throw new InvalidLabelResourceRequestException(
@@ -305,7 +307,7 @@ public class SchedulerUtils {
               + "in a node label expression, node label expression = "
               + labelExp);
     }
-    
+
     if (labelExp != null && !labelExp.trim().isEmpty() && queueInfo != null) {
       if (!checkQueueLabelExpression(queueInfo.getAccessibleNodeLabels(),
           labelExp, rmContext)) {
@@ -321,6 +323,78 @@ public class SchedulerUtils {
         checkQueueLabelInLabelManager(labelExp, rmContext);
       }
     }
+  }
+
+  @Private
+  @VisibleForTesting
+  static void checkResourceRequestAgainstAvailableResource(Resource reqResource,
+      Resource availableResource) throws InvalidResourceRequestException {
+    for (int i = 0; i < ResourceUtils.getNumberOfKnownResourceTypes(); i++) {
+      final ResourceInformation requestedRI =
+          reqResource.getResourceInformation(i);
+      final String reqResourceName = requestedRI.getName();
+
+      if (requestedRI.getValue() < 0) {
+        throwInvalidResourceException(reqResource, availableResource,
+            reqResourceName);
+      }
+
+      final ResourceInformation availableRI =
+          availableResource.getResourceInformation(reqResourceName);
+
+      long requestedResourceValue = requestedRI.getValue();
+      long availableResourceValue = availableRI.getValue();
+      int unitsRelation = UnitsConversionUtil
+          .compareUnits(requestedRI.getUnits(), availableRI.getUnits());
+
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Requested resource information: " + requestedRI);
+        LOG.debug("Available resource information: " + availableRI);
+        LOG.debug("Relation of units: " + unitsRelation);
+      }
+
+      // requested resource unit is less than available resource unit
+      // e.g. requestedUnit: "m", availableUnit: "K")
+      if (unitsRelation < 0) {
+        availableResourceValue =
+            UnitsConversionUtil.convert(availableRI.getUnits(),
+                requestedRI.getUnits(), availableRI.getValue());
+
+        // requested resource unit is greater than available resource unit
+        // e.g. requestedUnit: "G", availableUnit: "M")
+      } else if (unitsRelation > 0) {
+        requestedResourceValue =
+            UnitsConversionUtil.convert(requestedRI.getUnits(),
+                availableRI.getUnits(), requestedRI.getValue());
+      }
+
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Requested resource value after conversion: " +
+                requestedResourceValue);
+        LOG.info("Available resource value after conversion: " +
+                availableResourceValue);
+      }
+
+      if (requestedResourceValue > availableResourceValue) {
+        throwInvalidResourceException(reqResource, availableResource,
+            reqResourceName);
+      }
+    }
+  }
+
+  private static void throwInvalidResourceException(Resource reqResource,
+      Resource availableResource, String reqResourceName)
+      throws InvalidResourceRequestException {
+    throw new InvalidResourceRequestException(
+        "Invalid resource request, requested resource type=[" + reqResourceName
+            + "] < 0 or greater than maximum allowed allocation. Requested "
+            + "resource=" + reqResource + ", maximum allowed allocation="
+            + availableResource
+            + ", please note that maximum allowed allocation is calculated "
+            + "by scheduler based on maximum resource of registered "
+            + "NodeManagers, which might be less than configured "
+            + "maximum allocation="
+            + ResourceUtils.getResourceTypesMaximumAllocation());
   }
 
   private static void checkQueueLabelInLabelManager(String labelExpression,

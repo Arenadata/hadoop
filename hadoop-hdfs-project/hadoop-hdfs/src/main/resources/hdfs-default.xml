@@ -327,6 +327,20 @@
 </property>
 
 <property>
+  <name>dfs.datanode.du.reserved.calculator</name>
+  <value>org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.ReservedSpaceCalculator$ReservedSpaceCalculatorAbsolute</value>
+  <description>Determines the class of ReservedSpaceCalculator to be used for
+    calculating disk space reservedfor non-HDFS data. The default calculator is
+    ReservedSpaceCalculatorAbsolute which will use dfs.datanode.du.reserved
+    for a static reserved number of bytes. ReservedSpaceCalculatorPercentage
+    will use dfs.datanode.du.reserved.pct to calculate the reserved number
+    of bytes based on the size of the storage. ReservedSpaceCalculatorConservative and
+    ReservedSpaceCalculatorAggressive will use their combination, Conservative will use
+    maximum, Aggressive minimum. For more details see ReservedSpaceCalculator.
+  </description>
+</property>
+
+<property>
   <name>dfs.datanode.du.reserved</name>
   <value>0</value>
   <description>Reserved space in bytes per volume. Always leave this much space free for non dfs use.
@@ -335,6 +349,20 @@
       For example, reserved space for RAM_DISK storage can be configured using property
       'dfs.datanode.du.reserved.ram_disk'. If specific storage type reservation is not configured
       then dfs.datanode.du.reserved will be used.
+  </description>
+</property>
+
+<property>
+  <name>dfs.datanode.du.reserved.pct</name>
+  <value>0</value>
+  <description>Reserved space in percentage. Read dfs.datanode.du.reserved.calculator to see
+    when this takes effect. The actual number of bytes reserved will be calculated by using the
+    total capacity of the data directory in question. Specific storage type based reservation
+    is also supported. The property can be followed with corresponding storage types
+    ([ssd]/[disk]/[archive]/[ram_disk]) for cluster with heterogeneous storage.
+    For example, reserved percentage space for RAM_DISK storage can be configured using property
+    'dfs.datanode.du.reserved.pct.ram_disk'. If specific storage type reservation is not configured
+    then dfs.datanode.du.reserved.pct will be used.
   </description>
 </property>
 
@@ -1258,11 +1286,10 @@
   <name>dfs.image.transfer.timeout</name>
   <value>60000</value>
   <description>
-        Socket timeout for image transfer in milliseconds. This timeout and the related
-        dfs.image.transfer.bandwidthPerSec parameter should be configured such
-        that normal image transfer can complete successfully.
-        This timeout prevents client hangs when the sender fails during
-        image transfer. This is socket timeout during image transfer.
+        Socket timeout for the HttpURLConnection instance used in the image
+        transfer. This is measured in milliseconds.
+        This timeout prevents client hangs if the connection is idle
+        for this configured timeout, during image transfer.
   </description>
 </property>
 
@@ -1273,9 +1300,7 @@
         Maximum bandwidth used for regular image transfers (instead of
         bootstrapping the standby namenode), in bytes per second.
         This can help keep normal namenode operations responsive during
-        checkpointing. The maximum bandwidth and timeout in
-        dfs.image.transfer.timeout should be set such that normal image
-        transfers can complete successfully.
+        checkpointing.
         A default value of 0 indicates that throttling is disabled.
         The maximum bandwidth used for bootstrapping standby namenode is
         configured with dfs.image.transfer-bootstrap-standby.bandwidthPerSec.
@@ -2168,6 +2193,17 @@
 </property>
 
 <property>
+  <name>dfs.journalnode.rpc-bind-host</name>
+  <value></value>
+  <description>
+    The actual address the RPC server will bind to. If this optional address is
+    set, it overrides only the hostname portion of dfs.journalnode.rpc-address.
+    This is useful for making the JournalNode listen on all interfaces by
+    setting it to 0.0.0.0.
+  </description>
+</property>
+
+<property>
   <name>dfs.journalnode.http-address</name>
   <value>0.0.0.0:8480</value>
   <description>
@@ -2177,11 +2213,33 @@
 </property>
 
 <property>
+  <name>dfs.journalnode.http-bind-host</name>
+  <value></value>
+  <description>
+    The actual address the HTTP server will bind to. If this optional address
+    is set, it overrides only the hostname portion of
+    dfs.journalnode.http-address. This is useful for making the JournalNode
+    HTTP server listen on allinterfaces by setting it to 0.0.0.0.
+  </description>
+</property>
+
+<property>
   <name>dfs.journalnode.https-address</name>
   <value>0.0.0.0:8481</value>
   <description>
     The address and port the JournalNode HTTPS server listens on.
     If the port is 0 then the server will start on a free port.
+  </description>
+</property>
+
+<property>
+  <name>dfs.journalnode.https-bind-host</name>
+  <value></value>
+  <description>
+    The actual address the HTTP server will bind to. If this optional address
+    is set, it overrides only the hostname portion of
+    dfs.journalnode.https-address. This is useful for making the JournalNode
+    HTTP server listen on all interfaces by setting it to 0.0.0.0.
   </description>
 </property>
 
@@ -3477,6 +3535,16 @@
 </property>
 
 <property>
+  <name>dfs.balancer.max-iteration-time</name>
+  <value>1200000</value>
+  <description>
+    Maximum amount of time while an iteration can be run by the Balancer. After
+    this time the Balancer will stop the iteration, and reevaluate the work
+    needs to be done to Balance the cluster. The default value is 20 minutes.
+  </description>
+</property>
+
+<property>
   <name>dfs.block.invalidate.limit</name>
   <value>1000</value>
   <description>
@@ -3541,6 +3609,17 @@
 </property>
 
 <property>
+  <name>dfs.checksum.combine.mode</name>
+  <value>MD5MD5CRC</value>
+  <description>
+    Defines how lower-level chunk/block checksums are combined into file-level
+    checksums; the original MD5MD5CRC mode is not comparable between files
+    with different block layouts, while modes like COMPOSITE_CRC are
+    comparable independently of block layout.
+  </description>
+</property>
+
+<property>
   <name>dfs.client.block.write.locateFollowingBlock.retries</name>
   <value>5</value>
   <description>
@@ -3556,6 +3635,18 @@
     configured Failover proxy provider for the host.  For more detailed
     information, please consult the "Configuration Details" section of
     the HDFS High Availability documentation.
+  </description>
+</property>
+
+<property>
+  <name>dfs.client.failover.random.order</name>
+  <value>false</value>
+  <description>
+    Determines if the failover proxies are picked in random order instead of the
+    configured order. The prefix can be used with an optional nameservice ID
+    (of form dfs.client.failover.random.order[.nameservice]) in case multiple
+    nameservices exist and random order should be enabled for specific
+    nameservices.
   </description>
 </property>
 
@@ -4848,6 +4939,20 @@
     <value>true</value>
     <description>
       Enables DFSNetworkTopology to choose nodes for placing replicas.
+      When enabled, NetworkTopology will be instantiated as class defined in
+      property dfs.net.topology.impl, otherwise NetworkTopology will be
+      instantiated as class defined in property net.topology.impl.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.net.topology.impl</name>
+    <value>org.apache.hadoop.hdfs.net.DFSNetworkTopology</value>
+    <description>
+      The implementation class of NetworkTopology used in HDFS. By default,
+      the class org.apache.hadoop.hdfs.net.DFSNetworkTopology is specified and
+      used in block placement.
+      This property only works when dfs.use.dfs.network.topology is true.
     </description>
   </property>
 

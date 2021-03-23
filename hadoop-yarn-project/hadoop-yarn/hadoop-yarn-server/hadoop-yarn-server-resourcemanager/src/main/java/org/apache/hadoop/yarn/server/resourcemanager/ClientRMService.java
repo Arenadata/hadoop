@@ -216,7 +216,7 @@ public class ClientRMService extends AbstractService implements
   private ReservationSystem reservationSystem;
   private ReservationInputValidator rValidator;
 
-  private boolean displayPerUserApps = false;
+  private boolean filterAppsByUser = false;
 
   private static final EnumSet<RMAppState> ACTIVE_APP_STATES = EnumSet.of(
       RMAppState.ACCEPTED, RMAppState.RUNNING);
@@ -265,6 +265,10 @@ public class ClientRMService extends AbstractService implements
             conf.getInt(YarnConfiguration.RM_CLIENT_THREAD_COUNT, 
                 YarnConfiguration.DEFAULT_RM_CLIENT_THREAD_COUNT));
     
+    this.server.addTerseExceptions(ApplicationNotFoundException.class,
+        ApplicationAttemptNotFoundException.class,
+        ContainerNotFoundException.class);
+
     // Enable service authorization?
     if (conf.getBoolean(
         CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, 
@@ -279,8 +283,8 @@ public class ClientRMService extends AbstractService implements
       refreshServiceAcls(conf, RMPolicyProvider.getInstance());
     }
 
-    this.displayPerUserApps  = conf.getBoolean(
-        YarnConfiguration.DISPLAY_APPS_FOR_LOGGED_IN_USER,
+    this.filterAppsByUser  = conf.getBoolean(
+        YarnConfiguration.FILTER_ENTITY_LIST_BY_USER,
         YarnConfiguration.DEFAULT_DISPLAY_APPS_FOR_LOGGED_IN_USER);
 
     this.server.start();
@@ -918,7 +922,7 @@ public class ClientRMService extends AbstractService implements
 
       // Given RM is configured to display apps per user, skip apps to which
       // this caller doesn't have access to view.
-      if (displayPerUserApps && !allowAccess) {
+      if (filterAppsByUser && !allowAccess) {
         continue;
       }
 
@@ -1836,6 +1840,6 @@ public class ClientRMService extends AbstractService implements
 
   @VisibleForTesting
   public void setDisplayPerUserApps(boolean displayPerUserApps) {
-    this.displayPerUserApps = displayPerUserApps;
+    this.filterAppsByUser = displayPerUserApps;
   }
 }

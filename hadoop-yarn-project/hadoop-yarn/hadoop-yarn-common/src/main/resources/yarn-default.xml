@@ -1787,6 +1787,20 @@
   </property>
 
   <property>
+    <description>The default list of read-only mounts to be bind-mounted
+      into all Docker containers that use DockerContainerRuntime.</description>
+    <name>yarn.nodemanager.runtime.linux.docker.default-ro-mounts</name>
+    <value></value>
+  </property>
+
+  <property>
+    <description>The default list of read-write mounts to be bind-mounted
+      into all Docker containers that use DockerContainerRuntime.</description>
+    <name>yarn.nodemanager.runtime.linux.docker.default-rw-mounts</name>
+    <value></value>
+  </property>
+
+  <property>
     <description>The mode in which the Java Container Sandbox should run detailed by
       the JavaSandboxLinuxContainerRuntime.</description>
     <name>yarn.nodemanager.runtime.linux.sandbox-mode</name>
@@ -2491,7 +2505,7 @@
     <description>Time period till which the application collector will be alive
      in NM, after the  application master container finishes.</description>
     <name>yarn.timeline-service.app-collector.linger-period.ms</name>
-    <value>1000</value>
+    <value>60000</value>
   </property>
 
   <property>
@@ -3012,6 +3026,15 @@
   </property>
 
   <property>
+    <description>Define how many aggregated log files per application per NM
+    we can have in remote file system. By default, the total number of
+    aggregated log files per application per NM is 30.
+    </description>
+    <name>yarn.nodemanager.log-aggregation.num-log-files-per-app</name>
+    <value>30</value>
+  </property>
+
+  <property>
     <description>
     Enable/disable intermediate-data encryption at YARN level. For now,
     this only is used by the FileSystemRMStateStore to setup right
@@ -3504,7 +3527,7 @@
   </property>
  
   <property>
-    <name>yarn.resourcemanager.display.per-user-apps</name>
+    <name>yarn.webapp.filter-entity-list-by-user</name>
     <value>false</value>
       <description>
         Flag to enable display of applications per user as an admin

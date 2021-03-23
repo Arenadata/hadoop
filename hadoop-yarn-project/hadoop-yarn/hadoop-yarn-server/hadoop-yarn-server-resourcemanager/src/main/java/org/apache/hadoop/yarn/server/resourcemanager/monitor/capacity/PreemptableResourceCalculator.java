@@ -41,8 +41,6 @@ public class PreemptableResourceCalculator
   private static final Log LOG =
       LogFactory.getLog(PreemptableResourceCalculator.class);
 
-  private boolean isReservedPreemptionCandidatesSelector;
-
   /**
    * PreemptableResourceCalculator constructor
    *
@@ -50,11 +48,14 @@ public class PreemptableResourceCalculator
    * @param isReservedPreemptionCandidatesSelector this will be set by
    * different implementation of candidate selectors, please refer to
    * TempQueuePerPartition#offer for details.
+   * @param allowQueuesBalanceAfterAllQueuesSatisfied
    */
   public PreemptableResourceCalculator(
       CapacitySchedulerPreemptionContext preemptionContext,
-      boolean isReservedPreemptionCandidatesSelector) {
-    super(preemptionContext, isReservedPreemptionCandidatesSelector);
+      boolean isReservedPreemptionCandidatesSelector,
+      boolean allowQueuesBalanceAfterAllQueuesSatisfied) {
+    super(preemptionContext, isReservedPreemptionCandidatesSelector,
+        allowQueuesBalanceAfterAllQueuesSatisfied);
   }
 
   /**
@@ -95,8 +96,8 @@ public class PreemptableResourceCalculator
     }
 
     // first compute the allocation as a fixpoint based on guaranteed capacity
-    computeFixpointAllocation(tot_guarant, nonZeroGuarQueues, unassigned,
-        false);
+    computeFixpointAllocation(tot_guarant, new HashSet<>(nonZeroGuarQueues),
+        unassigned, false);
 
     // if any capacity is left unassigned, distributed among zero-guarantee
     // queues uniformly (i.e., not based on guaranteed capacity, as this is zero)
@@ -197,8 +198,11 @@ public class PreemptableResourceCalculator
            */
           Resource resToObtain = qT.toBePreempted;
           if (!isReservedPreemptionCandidatesSelector) {
-            resToObtain = Resources.multiply(qT.toBePreempted,
-                context.getNaturalTerminationFactor());
+            if (Resources.greaterThan(rc, clusterResource, resToObtain,
+                Resource.newInstance(0, 0))) {
+              resToObtain = Resources.multiplyAndNormalizeUp(rc, qT.toBePreempted,
+                  context.getNaturalTerminationFactor(), Resource.newInstance(1, 1));
+            }
           }
 
           // Only add resToObtain when it >= 0

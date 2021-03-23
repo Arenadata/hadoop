@@ -30,6 +30,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -101,9 +102,13 @@ import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing;
 import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
 import org.apache.hadoop.hdfs.protocol.ZoneReencryptionStatus;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.ClientNamenodeProtocol;
+import org.apache.hadoop.hdfs.protocol.proto.NamenodeProtocolProtos.NamenodeProtocolService;
 import org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolPB;
 import org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolServerSideTranslatorPB;
+import org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolPB;
+import org.apache.hadoop.hdfs.protocolPB.NamenodeProtocolServerSideTranslatorPB;
 import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
+import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.hdfs.server.federation.metrics.FederationRPCMetrics;
 import org.apache.hadoop.hdfs.server.federation.resolver.ActiveNamenodeResolver;
@@ -113,11 +118,18 @@ import org.apache.hadoop.hdfs.server.federation.resolver.MountTableResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.PathLocation;
 import org.apache.hadoop.hdfs.server.federation.resolver.RemoteLocation;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
+import org.apache.hadoop.hdfs.server.namenode.CheckpointSignature;
 import org.apache.hadoop.hdfs.server.namenode.LeaseExpiredException;
 import org.apache.hadoop.hdfs.server.namenode.NameNode.OperationCategory;
 import org.apache.hadoop.hdfs.server.namenode.NotReplicatedYetException;
 import org.apache.hadoop.hdfs.server.namenode.SafeModeException;
+import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
+import org.apache.hadoop.hdfs.server.protocol.NamenodeCommand;
+import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
+import org.apache.hadoop.hdfs.server.protocol.NamenodeRegistration;
+import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
+import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.ProtobufRpcEngine;
@@ -145,7 +157,8 @@ import com.google.protobuf.BlockingService;
  * the requests to the active
  * {@link org.apache.hadoop.hdfs.server.namenode.NameNode NameNode}.
  */
-public class RouterRpcServer extends AbstractService implements ClientProtocol {
+public class RouterRpcServer extends AbstractService
+    implements ClientProtocol, NamenodeProtocol {
 
   private static final Logger LOG =
       LoggerFactory.getLogger(RouterRpcServer.class);
@@ -180,9 +193,6 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
   /** Interface to map global name space to HDFS subcluster name spaces. */
   private final FileSubclusterResolver subclusterResolver;
 
-  /** If we are in safe mode, fail requests as if a standby NN. */
-  private volatile boolean safeMode;
-
   /** Category of the operation that a thread is executing. */
   private final ThreadLocal<OperationCategory> opCategory = new ThreadLocal<>();
 
@@ -191,6 +201,8 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
   private final Quota quotaCall;
   /** Erasure coding calls. */
   private final ErasureCoding erasureCoding;
+  /** NamenodeProtocol calls. */
+  private final RouterNamenodeProtocol nnProto;
 
 
   /**
@@ -243,6 +255,11 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
     BlockingService clientNNPbService = ClientNamenodeProtocol
         .newReflectiveBlockingService(clientProtocolServerTranslator);
 
+    NamenodeProtocolServerSideTranslatorPB namenodeProtocolXlator =
+        new NamenodeProtocolServerSideTranslatorPB(this);
+    BlockingService nnPbService = NamenodeProtocolService
+        .newReflectiveBlockingService(namenodeProtocolXlator);
+
     InetSocketAddress confRpcAddress = conf.getSocketAddr(
         RBFConfigKeys.DFS_ROUTER_RPC_BIND_HOST_KEY,
         RBFConfigKeys.DFS_ROUTER_RPC_ADDRESS_KEY,
@@ -261,10 +278,14 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
         .setQueueSizePerHandler(handlerQueueSize)
         .setVerbose(false)
         .build();
+
+    // Add all the RPC protocols that the Router implements
+    DFSUtil.addPBProtocol(
+        conf, NamenodeProtocolPB.class, nnPbService, this.rpcServer);
+
     // We don't want the server to log the full stack trace for some exceptions
     this.rpcServer.addTerseExceptions(
         RemoteException.class,
-        StandbyException.class,
         SafeModeException.class,
         FileNotFoundException.class,
         FileAlreadyExistsException.class,
@@ -272,6 +293,9 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
         LeaseExpiredException.class,
         NotReplicatedYetException.class,
         IOException.class);
+
+    this.rpcServer.addSuppressedLoggingExceptions(
+        StandbyException.class);
 
     // The RPC-server port can be ephemeral... ensure we have the correct info
     InetSocketAddress listenAddress = this.rpcServer.getListenerAddress();
@@ -292,6 +316,7 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
     // Initialize modules
     this.quotaCall = new Quota(this.router, this);
     this.erasureCoding = new ErasureCoding(this);
+    this.nnProto = new RouterNamenodeProtocol(this);
   }
 
   @Override
@@ -337,6 +362,15 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
   }
 
   /**
+   * Get the subcluster resolver.
+   *
+   * @return Subcluster resolver.
+   */
+  public FileSubclusterResolver getSubclusterResolver() {
+    return subclusterResolver;
+  }
+
+  /**
    * Get the RPC monitor and metrics.
    *
    * @return RPC monitor and metrics.
@@ -378,7 +412,7 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
    * @throws UnsupportedOperationException If the operation is not supported.
    */
   protected void checkOperation(OperationCategory op, boolean supported)
-      throws RouterSafeModeException, UnsupportedOperationException {
+      throws StandbyException, UnsupportedOperationException {
     checkOperation(op);
 
     if (!supported) {
@@ -400,7 +434,7 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
    *                           client requests.
    */
   protected void checkOperation(OperationCategory op)
-      throws RouterSafeModeException {
+      throws StandbyException {
     // Log the function we are currently calling.
     if (rpcMonitor != null) {
       rpcMonitor.startOp();
@@ -419,33 +453,15 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
       return;
     }
 
-    if (safeMode) {
+    RouterSafemodeService safemodeService = router.getSafemodeService();
+    if (safemodeService != null && safemodeService.isInSafeMode()) {
       // Throw standby exception, router is not available
       if (rpcMonitor != null) {
         rpcMonitor.routerFailureSafemode();
       }
-      throw new RouterSafeModeException(router.getRouterId(), op);
+      throw new StandbyException("Router " + router.getRouterId() +
+          " is in safe mode and cannot handle " + op + " requests");
     }
-  }
-
-  /**
-   * In safe mode all RPC requests will fail and return a standby exception.
-   * The client will try another Router, similar to the client retry logic for
-   * HA.
-   *
-   * @param mode True if enabled, False if disabled.
-   */
-  public void setSafeMode(boolean mode) {
-    this.safeMode = mode;
-  }
-
-  /**
-   * Check if the Router is in safe mode and cannot serve RPC calls.
-   *
-   * @return If the Router is in safe mode.
-   */
-  public boolean isInSafeMode() {
-    return this.safeMode;
   }
 
   @Override // ClientProtocol
@@ -866,7 +882,8 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
       throws IOException {
     checkOperation(OperationCategory.WRITE);
 
-    final List<RemoteLocation> srcLocations = getLocationsForPath(src, true);
+    final List<RemoteLocation> srcLocations =
+        getLocationsForPath(src, true, false);
     // srcLocations may be trimmed by getRenameDestinations()
     final List<RemoteLocation> locs = new LinkedList<>(srcLocations);
     RemoteParam dstParam = getRenameDestinations(locs, dst);
@@ -887,7 +904,8 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
       final Options.Rename... options) throws IOException {
     checkOperation(OperationCategory.WRITE);
 
-    final List<RemoteLocation> srcLocations = getLocationsForPath(src, true);
+    final List<RemoteLocation> srcLocations =
+        getLocationsForPath(src, true, false);
     // srcLocations may be trimmed by getRenameDestinations()
     final List<RemoteLocation> locs = new LinkedList<>(srcLocations);
     RemoteParam dstParam = getRenameDestinations(locs, dst);
@@ -964,7 +982,8 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
   public boolean delete(String src, boolean recursive) throws IOException {
     checkOperation(OperationCategory.WRITE);
 
-    final List<RemoteLocation> locations = getLocationsForPath(src, true);
+    final List<RemoteLocation> locations =
+        getLocationsForPath(src, true, false);
     RemoteMethod method = new RemoteMethod("delete",
         new Class<?>[] {String.class, boolean.class}, new RemoteParam(),
         recursive);
@@ -1349,7 +1368,8 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
         action, isChecked);
     Set<FederationNamespaceInfo> nss = namenodeResolver.getNamespaces();
     Map<FederationNamespaceInfo, Boolean> results =
-        rpcClient.invokeConcurrent(nss, method, true, true, boolean.class);
+        rpcClient.invokeConcurrent(
+            nss, method, true, !isChecked, Boolean.class);
 
     // We only report true if all the name space are in safe mode
     int numSafemode = 0;
@@ -1369,7 +1389,7 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
         new Class<?>[] {String.class}, arg);
     final Set<FederationNamespaceInfo> nss = namenodeResolver.getNamespaces();
     Map<FederationNamespaceInfo, Boolean> ret =
-        rpcClient.invokeConcurrent(nss, method, true, false, boolean.class);
+        rpcClient.invokeConcurrent(nss, method, true, false, Boolean.class);
 
     boolean success = true;
     for (boolean s : ret.values()) {
@@ -1437,6 +1457,13 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
         new Class<?>[] {});
     final Set<FederationNamespaceInfo> nss = namenodeResolver.getNamespaces();
     rpcClient.invokeConcurrent(nss, method, true, false);
+  }
+
+  @Override // ClientProtocol
+  public boolean upgradeStatus() throws IOException {
+    String methodName = getMethodName();
+    throw new UnsupportedOperationException(
+        "Operation \"" + methodName + "\" is not supported");
   }
 
   @Override // ClientProtocol
@@ -1947,7 +1974,6 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
 
   @Override // ClientProtocol
   public QuotaUsage getQuotaUsage(String path) throws IOException {
-    checkOperation(OperationCategory.READ);
     return this.quotaCall.getQuotaUsage(path);
   }
 
@@ -2070,6 +2096,77 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
     return null;
   }
 
+  @Override // NamenodeProtocol
+  public BlocksWithLocations getBlocks(DatanodeInfo datanode, long size,
+      long minBlockSize) throws IOException {
+    return nnProto.getBlocks(datanode, size, minBlockSize);
+  }
+
+  @Override // NamenodeProtocol
+  public ExportedBlockKeys getBlockKeys() throws IOException {
+    return nnProto.getBlockKeys();
+  }
+
+  @Override // NamenodeProtocol
+  public long getTransactionID() throws IOException {
+    return nnProto.getTransactionID();
+  }
+
+  @Override // NamenodeProtocol
+  public long getMostRecentCheckpointTxId() throws IOException {
+    return nnProto.getMostRecentCheckpointTxId();
+  }
+
+  @Override // NamenodeProtocol
+  public CheckpointSignature rollEditLog() throws IOException {
+    return nnProto.rollEditLog();
+  }
+
+  @Override // NamenodeProtocol
+  public NamespaceInfo versionRequest() throws IOException {
+    return nnProto.versionRequest();
+  }
+
+  @Override // NamenodeProtocol
+  public void errorReport(NamenodeRegistration registration, int errorCode,
+      String msg) throws IOException {
+    nnProto.errorReport(registration, errorCode, msg);
+  }
+
+  @Override // NamenodeProtocol
+  public NamenodeRegistration registerSubordinateNamenode(
+      NamenodeRegistration registration) throws IOException {
+    return nnProto.registerSubordinateNamenode(registration);
+  }
+
+  @Override // NamenodeProtocol
+  public NamenodeCommand startCheckpoint(NamenodeRegistration registration)
+      throws IOException {
+    return nnProto.startCheckpoint(registration);
+  }
+
+  @Override // NamenodeProtocol
+  public void endCheckpoint(NamenodeRegistration registration,
+      CheckpointSignature sig) throws IOException {
+    nnProto.endCheckpoint(registration, sig);
+  }
+
+  @Override // NamenodeProtocol
+  public RemoteEditLogManifest getEditLogManifest(long sinceTxId)
+      throws IOException {
+    return nnProto.getEditLogManifest(sinceTxId);
+  }
+
+  @Override // NamenodeProtocol
+  public boolean isUpgradeFinalized() throws IOException {
+    return nnProto.isUpgradeFinalized();
+  }
+
+  @Override // NamenodeProtocol
+  public boolean isRollingUpgrade() throws IOException {
+    return nnProto.isRollingUpgrade();
+  }
+
   /**
    * Locate the location with the matching block pool id.
    *
@@ -2108,14 +2205,29 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
 
   /**
    * Get the possible locations of a path in the federated cluster.
+   * During the get operation, it will do the quota verification.
    *
    * @param path Path to check.
    * @param failIfLocked Fail the request if locked (top mount point).
    * @return Prioritized list of locations in the federated cluster.
    * @throws IOException If the location for this path cannot be determined.
    */
-  protected List<RemoteLocation> getLocationsForPath(
-      String path, boolean failIfLocked) throws IOException {
+  protected List<RemoteLocation> getLocationsForPath(String path,
+      boolean failIfLocked) throws IOException {
+    return getLocationsForPath(path, failIfLocked, true);
+  }
+
+  /**
+   * Get the possible locations of a path in the federated cluster.
+   *
+   * @param path Path to check.
+   * @param failIfLocked Fail the request if locked (top mount point).
+   * @param needQuotaVerify If need to do the quota verification.
+   * @return Prioritized list of locations in the federated cluster.
+   * @throws IOException If the location for this path cannot be determined.
+   */
+  protected List<RemoteLocation> getLocationsForPath(String path,
+      boolean failIfLocked, boolean needQuotaVerify) throws IOException {
     try {
       // Check the location for this path
       final PathLocation location =
@@ -2136,7 +2248,7 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
         }
 
         // Check quota
-        if (this.router.isQuotaEnabled()) {
+        if (this.router.isQuotaEnabled() && needQuotaVerify) {
           RouterQuotaUsage quotaUsage = this.router.getQuotaManager()
               .getQuotaUsage(path);
           if (quotaUsage != null) {
@@ -2146,7 +2258,15 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
         }
       }
 
-      return location.getDestinations();
+      // Filter disabled subclusters
+      Set<String> disabled = namenodeResolver.getDisabledNamespaces();
+      List<RemoteLocation> locs = new ArrayList<>();
+      for (RemoteLocation loc : location.getDestinations()) {
+        if (!disabled.contains(loc.getNameserviceId())) {
+          locs.add(loc);
+        }
+      }
+      return locs;
     } catch (IOException ioe) {
       if (this.rpcMonitor != null) {
         this.rpcMonitor.routerFailureStateStore();
@@ -2170,7 +2290,11 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
           return entry.isAll();
         }
       } catch (IOException e) {
+<<<<<<< HEAD
         LOG.error("Cannot get mount point: {}", e.getMessage());
+=======
+        LOG.error("Cannot get mount point", e);
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
       }
     }
     return false;
@@ -2191,7 +2315,7 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
           return true;
         }
       } catch (IOException e) {
-        LOG.error("Cannot get mount point: {}", e.getMessage());
+        LOG.error("Cannot get mount point", e);
       }
     }
     return false;
@@ -2205,8 +2329,62 @@ public class RouterRpcServer extends AbstractService implements ClientProtocol {
    */
   private Map<String, Long> getMountPointDates(String path) {
     Map<String, Long> ret = new TreeMap<>();
-    // TODO add when we have a Mount Table
+    if (subclusterResolver instanceof MountTableResolver) {
+      try {
+        final List<String> children = subclusterResolver.getMountPoints(path);
+        for (String child : children) {
+          Long modTime = getModifiedTime(ret, path, child);
+          ret.put(child, modTime);
+        }
+      } catch (IOException e) {
+        LOG.error("Cannot get mount point", e);
+      }
+    }
     return ret;
+  }
+
+  /**
+   * Get modified time for child. If the child is present in mount table it
+   * will return the modified time. If the child is not present but subdirs of
+   * this child are present then it will return latest modified subdir's time
+   * as modified time of the requested child.
+   * @param ret contains children and modified times.
+   * @param mountTable.
+   * @param path Name of the path to start checking dates from.
+   * @param child child of the requested path.
+   * @return modified time.
+   */
+  private long getModifiedTime(Map<String, Long> ret, String path,
+      String child) {
+    MountTableResolver mountTable = (MountTableResolver)subclusterResolver;
+    String srcPath;
+    if (path.equals(Path.SEPARATOR)) {
+      srcPath = Path.SEPARATOR + child;
+    } else {
+      srcPath = path + Path.SEPARATOR + child;
+    }
+    Long modTime = 0L;
+    try {
+      // Get mount table entry for the srcPath
+      MountTable entry = mountTable.getMountPoint(srcPath);
+      // if srcPath is not in mount table but its subdirs are in mount
+      // table we will display latest modified subdir date/time.
+      if (entry == null) {
+        List<MountTable> entries = mountTable.getMounts(srcPath);
+        for (MountTable eachEntry : entries) {
+          // Get the latest date
+          if (ret.get(child) == null ||
+              ret.get(child) < eachEntry.getDateModified()) {
+            modTime = eachEntry.getDateModified();
+          }
+        }
+      } else {
+        modTime = entry.getDateModified();
+      }
+    } catch (IOException e) {
+      LOG.error("Cannot get mount point", e);
+    }
+    return modTime;
   }
 
   /**

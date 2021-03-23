@@ -542,7 +542,7 @@ public class CommonConfigurationKeysPublic {
    * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
    * core-default.xml</a>
    */
-  public static final String HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_SECS =
+  public static final String HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_KEY =
       "hadoop.security.groups.shell.command.timeout";
   /**
    * @see
@@ -550,7 +550,7 @@ public class CommonConfigurationKeysPublic {
    * core-default.xml</a>
    */
   public static final long
-          HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_SECS_DEFAULT =
+          HADOOP_SECURITY_GROUP_SHELL_COMMAND_TIMEOUT_DEFAULT =
           0L;
   /**
    * @see
@@ -662,6 +662,13 @@ public class CommonConfigurationKeysPublic {
    * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
    * core-default.xml</a>
    */
+  public static final String HADOOP_SECURITY_CRYPTO_JCEKS_KEY_SERIALFILTER =
+      "hadoop.security.crypto.jceks.key.serialfilter";
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
   public static final String HADOOP_SECURITY_CRYPTO_BUFFER_SIZE_KEY = 
     "hadoop.security.crypto.buffer.size";
   /** Defalt value for HADOOP_SECURITY_CRYPTO_BUFFER_SIZE_KEY */
@@ -677,6 +684,27 @@ public class CommonConfigurationKeysPublic {
    */
   public static final String HADOOP_SECURITY_KEY_PROVIDER_PATH =
       "hadoop.security.key.provider.path";
+
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
+  public static final String HADOOP_SECURITY_KEY_DEFAULT_BITLENGTH_KEY =
+      "hadoop.security.key.default.bitlength";
+  /** Defalt value for HADOOP_SECURITY_KEY_DEFAULT_BITLENGTH_KEY. */
+  public static final int HADOOP_SECURITY_KEY_DEFAULT_BITLENGTH_DEFAULT = 128;
+
+  /**
+   * @see
+   * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
+   * core-default.xml</a>
+   */
+  public static final String HADOOP_SECURITY_KEY_DEFAULT_CIPHER_KEY =
+      "hadoop.security.key.default.cipher";
+  /** Defalt value for HADOOP_SECURITY_KEY_DEFAULT_CIPHER_KEY. */
+  public static final String HADOOP_SECURITY_KEY_DEFAULT_CIPHER_DEFAULT =
+      "AES/CTR/NoPadding";
 
   //  <!-- KMSClientProvider configurations -->
   /**

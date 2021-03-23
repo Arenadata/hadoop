@@ -27,8 +27,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.google.common.base.Preconditions;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.google.common.collect.Lists;
 import com.google.common.primitives.Shorts;
 import com.google.protobuf.ByteString;
@@ -61,6 +65,8 @@ import org.apache.hadoop.hdfs.inotify.EventBatch;
 import org.apache.hadoop.hdfs.inotify.EventBatchList;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockChecksumOptions;
+import org.apache.hadoop.hdfs.protocol.BlockChecksumType;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.protocol.CacheDirectiveEntry;
@@ -226,6 +232,49 @@ public class PBHelperClient {
   private static final FsAction[] FSACTION_VALUES =
       FsAction.values();
 
+  /**
+   * Map used to cache fixed strings to ByteStrings. Since there is no
+   * automatic expiration policy, only use this for strings from a fixed, small
+   * set.
+   * <p/>
+   * This map should not be accessed directly. Used the getFixedByteString
+   * methods instead.
+   */
+  private static ConcurrentHashMap<Object, ByteString> fixedByteStringCache =
+      new ConcurrentHashMap<>();
+
+  private static ByteString getFixedByteString(Text key) {
+    ByteString value = fixedByteStringCache.get(key);
+    if (value == null) {
+      value = ByteString.copyFromUtf8(key.toString());
+      fixedByteStringCache.put(new Text(key.copyBytes()), value);
+    }
+    return value;
+  }
+
+  private static ByteString getFixedByteString(String key) {
+    ByteString value = fixedByteStringCache.get(key);
+    if (value == null) {
+      value = ByteString.copyFromUtf8(key);
+      fixedByteStringCache.put(key, value);
+    }
+    return value;
+  }
+
+  /**
+   * Guava cache for caching String to ByteString encoding. Use this when the
+   * set of Strings is large, mutable, or unknown.
+   */
+  private static LoadingCache<String, ByteString> bytestringCache =
+      CacheBuilder.newBuilder()
+          .maximumSize(10000)
+          .build(
+              new CacheLoader<String, ByteString>() {
+                public ByteString load(String key) {
+                  return ByteString.copyFromUtf8(key);
+                }
+              });
+
   private PBHelperClient() {
     /** Hidden constructor */
   }
@@ -247,10 +296,52 @@ public class PBHelperClient {
     return HdfsProtos.ChecksumTypeProto.valueOf(type.id);
   }
 
+  public static HdfsProtos.BlockChecksumTypeProto convert(
+      BlockChecksumType type) {
+    switch(type) {
+    case MD5CRC:
+      return HdfsProtos.BlockChecksumTypeProto.MD5CRC;
+    case COMPOSITE_CRC:
+      return HdfsProtos.BlockChecksumTypeProto.COMPOSITE_CRC;
+    default:
+      throw new IllegalStateException(
+          "BUG: BlockChecksumType not found, type=" + type);
+    }
+  }
+
+  public static BlockChecksumType convert(
+      HdfsProtos.BlockChecksumTypeProto blockChecksumTypeProto) {
+    switch(blockChecksumTypeProto) {
+    case MD5CRC:
+      return BlockChecksumType.MD5CRC;
+    case COMPOSITE_CRC:
+      return BlockChecksumType.COMPOSITE_CRC;
+    default:
+      throw new IllegalStateException(
+          "BUG: BlockChecksumTypeProto not found, type="
+          + blockChecksumTypeProto);
+    }
+  }
+
+  public static HdfsProtos.BlockChecksumOptionsProto convert(
+      BlockChecksumOptions options) {
+    return HdfsProtos.BlockChecksumOptionsProto.newBuilder()
+        .setBlockChecksumType(convert(options.getBlockChecksumType()))
+        .setStripeLength(options.getStripeLength())
+        .build();
+  }
+
+  public static BlockChecksumOptions convert(
+      HdfsProtos.BlockChecksumOptionsProto options) {
+    return new BlockChecksumOptions(
+        convert(options.getBlockChecksumType()),
+        options.getStripeLength());
+  }
+
   public static ExtendedBlockProto convert(final ExtendedBlock b) {
     if (b == null) return null;
     return ExtendedBlockProto.newBuilder().
-        setPoolId(b.getBlockPoolId()).
+        setPoolIdBytes(getFixedByteString(b.getBlockPoolId())).
         setBlockId(b.getBlockId()).
         setNumBytes(b.getNumBytes()).
         setGenerationStamp(b.getGenerationStamp()).
@@ -261,8 +352,8 @@ public class PBHelperClient {
     return TokenProto.newBuilder().
         setIdentifier(getByteString(tok.getIdentifier())).
         setPassword(getByteString(tok.getPassword())).
-        setKind(tok.getKind().toString()).
-        setService(tok.getService().toString()).build();
+        setKindBytes(getFixedByteString(tok.getKind())).
+        setServiceBytes(getFixedByteString(tok.getService())).build();
   }
 
   public static ShortCircuitShmIdProto convert(ShmId shmId) {
@@ -285,11 +376,10 @@ public class PBHelperClient {
     // which is the same as the DatanodeUuid. Since StorageID is a required
     // field we pass the empty string if the DatanodeUuid is not yet known.
     return DatanodeIDProto.newBuilder()
-        .setIpAddr(dn.getIpAddr())
-        .setHostName(dn.getHostName())
+        .setIpAddrBytes(dn.getIpAddrBytes())
+        .setHostNameBytes(dn.getHostNameBytes())
         .setXferPort(dn.getXferPort())
-        .setDatanodeUuid(dn.getDatanodeUuid() != null ?
-            dn.getDatanodeUuid() : "")
+        .setDatanodeUuidBytes(dn.getDatanodeUuidBytes())
         .setInfoPort(dn.getInfoPort())
         .setInfoSecurePort(dn.getInfoSecurePort())
         .setIpcPort(dn.getIpcPort()).build();
@@ -313,7 +403,8 @@ public class PBHelperClient {
   public static DatanodeInfoProto convert(DatanodeInfo info) {
     DatanodeInfoProto.Builder builder = DatanodeInfoProto.newBuilder();
     if (info.getNetworkLocation() != null) {
-      builder.setLocation(info.getNetworkLocation());
+      builder.setLocationBytes(
+          bytestringCache.getUnchecked(info.getNetworkLocation()));
     }
     if (info.getUpgradeDomain() != null) {
       builder.setUpgradeDomain(info.getUpgradeDomain());
@@ -2216,8 +2307,8 @@ public class PBHelperClient {
             setModificationTime(fs.getModificationTime()).
             setAccessTime(fs.getAccessTime()).
             setPermission(convert(fs.getPermission())).
-            setOwner(fs.getOwner()).
-            setGroup(fs.getGroup()).
+            setOwnerBytes(getFixedByteString(fs.getOwner())).
+            setGroupBytes(getFixedByteString(fs.getGroup())).
             setFileId(fs.getFileId()).
             setChildrenNum(fs.getChildrenNum()).
             setPath(getByteString(fs.getLocalNameInBytes())).

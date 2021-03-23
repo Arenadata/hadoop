@@ -43,11 +43,14 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.logaggregation.LogAggregationUtils;
 import org.apache.hadoop.yarn.webapp.View.ViewContext;
@@ -95,13 +98,6 @@ public abstract class LogAggregationFileController {
   protected static final FsPermission APP_LOG_FILE_UMASK = FsPermission
       .createImmutable((short) (0640 ^ 0777));
 
-  // This is temporary solution. The configuration will be deleted once
-  // we find a more scalable method to only write a single log file per LRS.
-  private static final String NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP
-      = YarnConfiguration.NM_PREFIX + "log-aggregation.num-log-files-per-app";
-  private static final int
-      DEFAULT_NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP = 30;
-
   // This is temporary solution. The configuration will be deleted once we have
   // the FileSystem API to check whether append operation is supported or not.
   public static final String LOG_AGGREGATION_FS_SUPPORT_APPEND
@@ -122,12 +118,14 @@ public abstract class LogAggregationFileController {
    */
   public void initialize(Configuration conf, String controllerName) {
     this.conf = conf;
-    int configuredRentionSize =
-        conf.getInt(NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP,
-            DEFAULT_NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP);
+    int configuredRentionSize = conf.getInt(
+        YarnConfiguration.NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP,
+        YarnConfiguration
+            .DEFAULT_NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP);
     if (configuredRentionSize <= 0) {
       this.retentionSize =
-        DEFAULT_NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP;
+          YarnConfiguration
+              .DEFAULT_NM_LOG_AGGREGATION_NUM_LOG_FILES_SIZE_PER_APP;
     } else {
       this.retentionSize = configuredRentionSize;
     }
@@ -368,6 +366,10 @@ public abstract class LogAggregationFileController {
         }
       });
     } catch (Exception e) {
+      if (e instanceof RemoteException) {
+        throw new YarnRuntimeException(((RemoteException) e)
+            .unwrapRemoteException(SecretManager.InvalidToken.class));
+      }
       throw new YarnRuntimeException(e);
     }
   }

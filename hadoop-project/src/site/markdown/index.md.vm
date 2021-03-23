@@ -54,7 +54,14 @@ For example, it may be beneficial to co-locate the allocations of a job on the s
 
 See the [user documentation](./hadoop-yarn/hadoop-yarn-site/PlacementConstraints.html) for more details.
 
+<<<<<<< HEAD
 #### Add Absolute Resource Configuration to CapacityScheduler
+=======
+See [HDFS-10467](https://issues.apache.org/jira/browse/HDFS-10467) and the
+HDFS Router-based Federation
+[documentation](./hadoop-project-dist/hadoop-hdfs-rbf/HDFSRouterFederation.html) for
+more details.
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 
 Support administrators to specify absolute resources (X Memory, Y VCores, Z GPUs, etc.) to a queue instead of providing percentage based values. This provides better control for admins to configure required amount of resources for a given queue.
 

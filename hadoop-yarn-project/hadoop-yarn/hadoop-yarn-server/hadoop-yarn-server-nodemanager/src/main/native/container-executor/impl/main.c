@@ -31,12 +31,13 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 
 static void display_usage(FILE *stream) {
   fprintf(stream,
     "Usage: container-executor --checksetup\n"
     "       container-executor --mount-cgroups <hierarchy> "
-    "<controller=path>...\n" );
+    "<controller=path>\n" );
 
   if(is_tc_support_enabled()) {
     fprintf(stream,
@@ -52,10 +53,15 @@ static void display_usage(FILE *stream) {
 
   if(is_docker_support_enabled()) {
     fprintf(stream,
-      "       container-executor --run-docker <command-file>\n");
+      "       container-executor --run-docker <command-file>\n"
+      "       container-executor --remove-docker-container <container_id>\n"
+      "       container-executor --inspect-docker-container <container_id>\n");
   } else {
     fprintf(stream,
-      "[DISABLED] container-executor --run-docker <command-file>\n");
+      "[DISABLED] container-executor --run-docker <command-file>\n"
+      "[DISABLED] container-executor --remove-docker-container <container_id>\n"
+      "[DISABLED] container-executor --inspect-docker-container "
+      "<format> ... <container_id>\n");
   }
 
   fprintf(stream,
@@ -107,6 +113,11 @@ static void open_log_files() {
   if (ERRORFILE == NULL) {
     ERRORFILE = stderr;
   }
+
+  // There may be a process reading from stdout/stderr, and if it
+  // exits, we will crash on a SIGPIPE when we try to write to them.
+  // By ignoring SIGPIPE, we can handle the EPIPE instead of crashing.
+  signal(SIGPIPE, SIG_IGN);
 }
 
 /* Flushes and closes log files */
@@ -117,11 +128,13 @@ static void flush_and_close_log_files() {
     LOGFILE = NULL;
   }
 
-if (ERRORFILE != NULL) {
+  if (ERRORFILE != NULL) {
     fflush(ERRORFILE);
     fclose(ERRORFILE);
     ERRORFILE = NULL;
   }
+
+  free_executor_configurations();
 }
 
 /** Validates the current container-executor setup. Causes program exit
@@ -257,14 +270,19 @@ static int validate_arguments(int argc, char **argv , int *operation) {
   }
 
   if (strcmp("--mount-cgroups", argv[1]) == 0) {
-    if (argc < 4) {
-      display_usage(stdout);
-      return INVALID_ARGUMENT_NUMBER;
+    if (is_mount_cgroups_support_enabled()) {
+      if (argc < 4) {
+        display_usage(stdout);
+        return INVALID_ARGUMENT_NUMBER;
+      }
+      optind++;
+      cmd_input.cgroups_hierarchy = argv[optind++];
+      *operation = MOUNT_CGROUPS;
+      return 0;
+    } else {
+      display_feature_disabled_message("mount cgroup");
+      return FEATURE_DISABLED;
     }
-    optind++;
-    cmd_input.cgroups_hierarchy = argv[optind++];
-    *operation = MOUNT_CGROUPS;
-    return 0;
   }
 
   if (strcmp("--tc-modify-state", argv[1]) == 0) {
@@ -324,6 +342,36 @@ static int validate_arguments(int argc, char **argv , int *operation) {
       optind++;
       cmd_input.docker_command_file = argv[optind++];
       *operation = RUN_DOCKER;
+      return 0;
+    } else {
+        display_feature_disabled_message("docker");
+        return FEATURE_DISABLED;
+    }
+  }
+
+  if (strcmp("--remove-docker-container", argv[1]) == 0) {
+    if(is_docker_support_enabled()) {
+      if (argc != 3) {
+        display_usage(stdout);
+        return INVALID_ARGUMENT_NUMBER;
+      }
+      optind++;
+      *operation = REMOVE_DOCKER_CONTAINER;
+      return 0;
+    } else {
+        display_feature_disabled_message("docker");
+        return FEATURE_DISABLED;
+    }
+  }
+
+  if (strcmp("--inspect-docker-container", argv[1]) == 0) {
+    if(is_docker_support_enabled()) {
+      if (argc != 4) {
+        display_usage(stdout);
+        return INVALID_ARGUMENT_NUMBER;
+      }
+      optind++;
+      *operation = INSPECT_DOCKER_CONTAINER;
       return 0;
     } else {
         display_feature_disabled_message("docker");
@@ -560,6 +608,12 @@ int main(int argc, char **argv) {
     break;
   case RUN_DOCKER:
     exit_code = run_docker(cmd_input.docker_command_file);
+    break;
+  case REMOVE_DOCKER_CONTAINER:
+    exit_code = exec_docker_command("rm", argv, argc, optind);
+    break;
+  case INSPECT_DOCKER_CONTAINER:
+    exit_code = exec_docker_command("inspect", argv, argc, optind);
     break;
   case RUN_AS_USER_INITIALIZE_CONTAINER:
     exit_code = set_user(cmd_input.run_as_user_name);

@@ -17,6 +17,7 @@
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.docker;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperation;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.privileged.PrivilegedOperationExecutor;
@@ -76,14 +77,11 @@ public final class DockerCommandExecutor {
   public static String executeDockerCommand(DockerCommand dockerCommand,
       String containerId, Map<String, String> env, Configuration conf,
       PrivilegedOperationExecutor privilegedOperationExecutor,
-      boolean disableFailureLogging)
+      boolean disableFailureLogging, Context nmContext)
       throws ContainerExecutionException {
-    DockerClient dockerClient = new DockerClient(conf);
-    String commandFile =
-        dockerClient.writeCommandToTempFile(dockerCommand, containerId);
-    PrivilegedOperation dockerOp = new PrivilegedOperation(
-        PrivilegedOperation.OperationType.RUN_DOCKER_CMD);
-    dockerOp.appendArgs(commandFile);
+    PrivilegedOperation dockerOp = dockerCommand.preparePrivilegedOperation(
+        dockerCommand, containerId, env, conf, nmContext);
+
     if (disableFailureLogging) {
       dockerOp.disableFailureLogging();
     }
@@ -116,11 +114,13 @@ public final class DockerCommandExecutor {
    */
   public static DockerContainerStatus getContainerStatus(String containerId,
       Configuration conf,
-      PrivilegedOperationExecutor privilegedOperationExecutor) {
+      PrivilegedOperationExecutor privilegedOperationExecutor,
+      Context nmContext) {
     try {
       DockerContainerStatus dockerContainerStatus;
       String currentContainerStatus =
-          executeStatusCommand(containerId, conf, privilegedOperationExecutor);
+          executeStatusCommand(containerId, conf,
+          privilegedOperationExecutor, nmContext);
       if (currentContainerStatus == null) {
         dockerContainerStatus = DockerContainerStatus.UNKNOWN;
       } else if (currentContainerStatus
@@ -177,13 +177,15 @@ public final class DockerCommandExecutor {
    */
   private static String executeStatusCommand(String containerId,
       Configuration conf,
-      PrivilegedOperationExecutor privilegedOperationExecutor)
+      PrivilegedOperationExecutor privilegedOperationExecutor,
+      Context nmContext)
       throws ContainerExecutionException {
     DockerInspectCommand dockerInspectCommand =
         new DockerInspectCommand(containerId).getContainerStatus();
     try {
       return DockerCommandExecutor.executeDockerCommand(dockerInspectCommand,
-          containerId, null, conf, privilegedOperationExecutor, true);
+          containerId, null, conf, privilegedOperationExecutor, true,
+          nmContext);
     } catch (ContainerExecutionException e) {
       throw new ContainerExecutionException(e);
     }
@@ -224,5 +226,19 @@ public final class DockerCommandExecutor {
         && !containerStatus.equals(DockerContainerStatus.UNKNOWN)
         && !containerStatus.equals(DockerContainerStatus.REMOVING)
         && !containerStatus.equals(DockerContainerStatus.RUNNING);
+  }
+
+  /**
+   * Is the container in a startable state?
+   *
+   * @param containerStatus   the container's {@link DockerContainerStatus}.
+   * @return                  is the container in a startable state.
+   */
+  public static boolean isStartable(DockerContainerStatus containerStatus) {
+    if (containerStatus.equals(DockerContainerStatus.EXITED)
+        || containerStatus.equals(DockerContainerStatus.STOPPED)) {
+      return true;
+    }
+    return false;
   }
 }

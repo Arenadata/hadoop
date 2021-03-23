@@ -20,11 +20,19 @@
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
+<<<<<<< HEAD
     <version>3.1.0</version>
     <relativePath>../../hadoop-project</relativePath>
   </parent>
   <artifactId>hadoop-nfs</artifactId>
   <version>3.1.0</version>
+=======
+    <version>3.1.1</version>
+    <relativePath>../../hadoop-project</relativePath>
+  </parent>
+  <artifactId>hadoop-nfs</artifactId>
+  <version>3.1.1</version>
+>>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
   <packaging>jar</packaging>
 
   <name>Apache Hadoop NFS</name>
@@ -56,10 +64,12 @@
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-all</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>commons-logging</groupId>

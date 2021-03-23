@@ -28,13 +28,17 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.URISyntaxException;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
+import org.apache.hadoop.hdfs.tools.federation.RouterAdmin;
+import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.service.Service.STATE;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.ToolRunner;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -59,12 +63,12 @@ public class TestRouterSafemode {
     // 2 sec startup standby
     conf.setTimeDuration(DFS_ROUTER_SAFEMODE_EXTENSION,
         TimeUnit.SECONDS.toMillis(2), TimeUnit.MILLISECONDS);
-    // 1 sec cache refresh
+    // 200 ms cache refresh
     conf.setTimeDuration(DFS_ROUTER_CACHE_TIME_TO_LIVE_MS,
-        TimeUnit.SECONDS.toMillis(1), TimeUnit.MILLISECONDS);
-    // 2 sec post cache update before entering safemode (2 intervals)
+        200, TimeUnit.MILLISECONDS);
+    // 1 sec post cache update before entering safemode (2 intervals)
     conf.setTimeDuration(DFS_ROUTER_SAFEMODE_EXPIRATION,
-        TimeUnit.SECONDS.toMillis(2), TimeUnit.MILLISECONDS);
+        TimeUnit.SECONDS.toMillis(1), TimeUnit.MILLISECONDS);
 
     conf.set(RBFConfigKeys.DFS_ROUTER_RPC_BIND_HOST_KEY, "0.0.0.0");
     conf.set(RBFConfigKeys.DFS_ROUTER_RPC_ADDRESS_KEY, "127.0.0.1:0");
@@ -76,6 +80,7 @@ public class TestRouterSafemode {
     // RPC + State Store + Safe Mode only
     conf = new RouterConfigBuilder(conf)
         .rpc()
+        .admin()
         .safemode()
         .stateStore()
         .metrics()
@@ -117,7 +122,7 @@ public class TestRouterSafemode {
   public void testRouterExitSafemode()
       throws InterruptedException, IllegalStateException, IOException {
 
-    assertTrue(router.getRpcServer().isInSafeMode());
+    assertTrue(router.getSafemodeService().isInSafeMode());
     verifyRouter(RouterServiceState.SAFEMODE);
 
     // Wait for initial time in milliseconds
@@ -128,7 +133,7 @@ public class TestRouterSafemode {
             TimeUnit.SECONDS.toMillis(1), TimeUnit.MILLISECONDS);
     Thread.sleep(interval);
 
-    assertFalse(router.getRpcServer().isInSafeMode());
+    assertFalse(router.getSafemodeService().isInSafeMode());
     verifyRouter(RouterServiceState.RUNNING);
   }
 
@@ -137,7 +142,7 @@ public class TestRouterSafemode {
       throws IllegalStateException, IOException, InterruptedException {
 
     // Verify starting state
-    assertTrue(router.getRpcServer().isInSafeMode());
+    assertTrue(router.getSafemodeService().isInSafeMode());
     verifyRouter(RouterServiceState.SAFEMODE);
 
     // We should be in safe mode for DFS_ROUTER_SAFEMODE_EXTENSION time
@@ -156,7 +161,7 @@ public class TestRouterSafemode {
     Thread.sleep(interval1);
 
     // Running
-    assertFalse(router.getRpcServer().isInSafeMode());
+    assertFalse(router.getSafemodeService().isInSafeMode());
     verifyRouter(RouterServiceState.RUNNING);
 
     // Disable cache
@@ -166,12 +171,12 @@ public class TestRouterSafemode {
     long interval2 =
         conf.getTimeDuration(DFS_ROUTER_SAFEMODE_EXPIRATION,
             TimeUnit.SECONDS.toMillis(2), TimeUnit.MILLISECONDS) +
-        conf.getTimeDuration(DFS_ROUTER_CACHE_TIME_TO_LIVE_MS,
+        2 * conf.getTimeDuration(DFS_ROUTER_CACHE_TIME_TO_LIVE_MS,
             TimeUnit.SECONDS.toMillis(1), TimeUnit.MILLISECONDS);
     Thread.sleep(interval2);
 
     // Safemode
-    assertTrue(router.getRpcServer().isInSafeMode());
+    assertTrue(router.getSafemodeService().isInSafeMode());
     verifyRouter(RouterServiceState.SAFEMODE);
   }
 
@@ -179,7 +184,7 @@ public class TestRouterSafemode {
   public void testRouterRpcSafeMode()
       throws IllegalStateException, IOException {
 
-    assertTrue(router.getRpcServer().isInSafeMode());
+    assertTrue(router.getSafemodeService().isInSafeMode());
     verifyRouter(RouterServiceState.SAFEMODE);
 
     // If the Router is in Safe Mode, we should get a SafeModeException
@@ -187,10 +192,42 @@ public class TestRouterSafemode {
     try {
       router.getRpcServer().delete("/testfile.txt", true);
       fail("We should have thrown a safe mode exception");
-    } catch (RouterSafeModeException sme) {
+    } catch (StandbyException sme) {
       exception = true;
     }
     assertTrue("We should have thrown a safe mode exception", exception);
+  }
+
+  @Test
+  public void testRouterManualSafeMode() throws Exception {
+    InetSocketAddress adminAddr = router.getAdminServerAddress();
+    conf.setSocketAddr(RBFConfigKeys.DFS_ROUTER_ADMIN_ADDRESS_KEY, adminAddr);
+    RouterAdmin admin = new RouterAdmin(conf);
+
+    assertTrue(router.getSafemodeService().isInSafeMode());
+    verifyRouter(RouterServiceState.SAFEMODE);
+
+    // Wait until the Router exit start up safe mode
+    long interval = conf.getTimeDuration(DFS_ROUTER_SAFEMODE_EXTENSION,
+        TimeUnit.SECONDS.toMillis(2), TimeUnit.MILLISECONDS) + 300;
+    Thread.sleep(interval);
+    verifyRouter(RouterServiceState.RUNNING);
+
+    // Now enter safe mode via Router admin command - it should work
+    assertEquals(0, ToolRunner.run(admin, new String[] {"-safemode", "enter"}));
+    verifyRouter(RouterServiceState.SAFEMODE);
+
+    // Wait for update interval of the safe mode service, it should still in
+    // safe mode.
+    interval = 2 * conf.getTimeDuration(
+        DFS_ROUTER_CACHE_TIME_TO_LIVE_MS, TimeUnit.SECONDS.toMillis(1),
+        TimeUnit.MILLISECONDS);
+    Thread.sleep(interval);
+    verifyRouter(RouterServiceState.SAFEMODE);
+
+    // Exit safe mode via admin command
+    assertEquals(0, ToolRunner.run(admin, new String[] {"-safemode", "leave"}));
+    verifyRouter(RouterServiceState.RUNNING);
   }
 
   private void verifyRouter(RouterServiceState status)

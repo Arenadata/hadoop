@@ -970,7 +970,8 @@ class FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl> {
    * @return newReplicaInfo
    * @throws IOException
    */
-  private ReplicaInfo moveBlock(ExtendedBlock block, ReplicaInfo replicaInfo,
+  @VisibleForTesting
+  ReplicaInfo moveBlock(ExtendedBlock block, ReplicaInfo replicaInfo,
       FsVolumeReference volumeRef) throws IOException {
     ReplicaInfo newReplicaInfo = copyReplicaToVolume(block, replicaInfo,
         volumeRef);
@@ -1926,6 +1927,10 @@ class FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl> {
    */
   @Override // FsDatasetSpi
   public boolean isValidBlock(ExtendedBlock b) {
+    // If block passed is null, we should return false.
+    if (b == null) {
+      return false;
+    }
     return isValid(b, ReplicaState.FINALIZED);
   }
   
@@ -1934,6 +1939,10 @@ class FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl> {
    */
   @Override // {@link FsDatasetSpi}
   public boolean isValidRbw(final ExtendedBlock b) {
+    // If block passed is null, we should return false.
+    if (b == null) {
+      return false;
+    }
     return isValid(b, ReplicaState.RBW);
   }
 
@@ -2302,10 +2311,8 @@ class FsDatasetImpl implements FsDatasetSpi<FsVolumeImpl> {
    * the disk, update {@link ReplicaInfo} with the correct file</li>
    * </ul>
    *
-   * @param blockId Block that differs
-   * @param diskFile Block file on the disk
-   * @param diskMetaFile Metadata file from on the disk
-   * @param vol Volume of the block file
+   * @param bpid block pool ID
+   * @param scanInfo {@link ScanInfo} for a given block
    */
   @Override
   public void checkAndUpdate(String bpid, ScanInfo scanInfo)

@@ -1045,6 +1045,12 @@
     <value></value>
     <description> Tags for the job that will be passed to YARN at submission
       time. Queries to YARN for applications can filter on these tags.
+      If these tags are intended to be used with The YARN Timeline Service v.2,
+      prefix them with the appropriate tag names for flow name, flow version and
+      flow run id. Example:
+      timeline_flow_name_tag:foo,
+      timeline_flow_version_tag:3df8b0d6100530080d2e0decf9e528e57c42a90a,
+      timeline_flow_run_id_tag:1465246348599
     </description>
   </property>
 
@@ -1720,6 +1726,15 @@
   <description>The permissions of the user directories in
   ${mapreduce.jobhistory.intermediate-done-dir}. The user and the group
   permission must be 7, this is enforced.
+  </description>
+</property>
+
+<property>
+  <name>mapreduce.jobhistory.always-scan-user-dir</name>
+  <value>false</value>
+  <description>Some Cloud FileSystems do not currently update the
+  modification time of directories. To support these filesystems, this
+  configuration value should be set to 'true'.
   </description>
 </property>
 

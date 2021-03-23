@@ -31,6 +31,7 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
@@ -41,6 +42,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEven
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
+import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.NodeType;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
@@ -592,6 +594,184 @@ public class TestCapacitySchedulerAsyncScheduling {
     public void setShouldStop() {
       shouldStop = true;
     }
+  }
+
+  // Testcase for YARN-8127
+  @Test (timeout = 30000)
+  public void testCommitDuplicatedAllocateFromReservedProposals()
+      throws Exception {
+    // disable async-scheduling for simulating complex scene
+    Configuration disableAsyncConf = new Configuration(conf);
+    disableAsyncConf.setBoolean(
+        CapacitySchedulerConfiguration.SCHEDULE_ASYNCHRONOUSLY_ENABLE, false);
+
+    // init RM & NMs
+    final MockRM rm = new MockRM(disableAsyncConf);
+    rm.start();
+    final MockNM nm1 = rm.registerNode("192.168.0.1:1234", 8 * GB);
+    rm.registerNode("192.168.0.2:2234", 8 * GB);
+
+    // init scheduler & nodes
+    while (
+        ((CapacityScheduler) rm.getRMContext().getScheduler()).getNodeTracker()
+            .nodeCount() < 2) {
+      Thread.sleep(10);
+    }
+    Assert.assertEquals(2,
+        ((AbstractYarnScheduler) rm.getRMContext().getScheduler())
+            .getNodeTracker().nodeCount());
+    CapacityScheduler cs =
+        (CapacityScheduler) rm.getRMContext().getScheduler();
+    SchedulerNode sn1 = cs.getSchedulerNode(nm1.getNodeId());
+
+    // launch app
+    RMApp app = rm.submitApp(1 * GB, "app", "user", null, false, "default",
+        YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS, null, null, true, true);
+    MockAM am = MockRM.launchAndRegisterAM(app, rm, nm1);
+    FiCaSchedulerApp schedulerApp =
+        cs.getApplicationAttempt(am.getApplicationAttemptId());
+
+    // app asks 1 * 6G container
+    // nm1 runs 2 container(container_01/AM, container_02)
+    allocateAndLaunchContainers(am, nm1, rm, 1,
+        Resources.createResource(6 * GB), 0, 2);
+    Assert.assertEquals(2, sn1.getNumContainers());
+    Assert.assertEquals(1 * GB, sn1.getUnallocatedResource().getMemorySize());
+
+    // app asks 5 * 2G container
+    // nm1 reserves 1 * 2G containers
+    am.allocate(Arrays.asList(ResourceRequest
+        .newInstance(Priority.newInstance(0), "*",
+            Resources.createResource(2 * GB), 5)), null);
+    cs.handle(new NodeUpdateSchedulerEvent(sn1.getRMNode()));
+    Assert.assertEquals(1, schedulerApp.getReservedContainers().size());
+
+    // rm kills 1 * 6G container_02
+    for (RMContainer rmContainer : sn1.getCopiedListOfRunningContainers()) {
+      if (rmContainer.getContainerId().getContainerId() != 1) {
+        cs.completedContainer(rmContainer, ContainerStatus
+                .newInstance(rmContainer.getContainerId(),
+                    ContainerState.COMPLETE, "",
+                    ContainerExitStatus.KILLED_BY_RESOURCEMANAGER),
+            RMContainerEventType.KILL);
+      }
+    }
+    Assert.assertEquals(7 * GB, sn1.getUnallocatedResource().getMemorySize());
+
+    final CapacityScheduler spyCs = Mockito.spy(cs);
+    // handle CapacityScheduler#tryCommit, submit duplicated proposals
+    // that do allocation for reserved container for three times,
+    // to simulate that case in YARN-8127
+    Mockito.doAnswer(new Answer<Object>() {
+      public Boolean answer(InvocationOnMock invocation) throws Exception {
+        ResourceCommitRequest request =
+            (ResourceCommitRequest) invocation.getArguments()[1];
+        if (request.getFirstAllocatedOrReservedContainer()
+            .getAllocateFromReservedContainer() != null) {
+          for (int i=0; i<3; i++) {
+            cs.tryCommit((Resource) invocation.getArguments()[0],
+                (ResourceCommitRequest) invocation.getArguments()[1],
+                (Boolean) invocation.getArguments()[2]);
+          }
+          Assert.assertEquals(2, sn1.getCopiedListOfRunningContainers().size());
+          Assert.assertEquals(5 * GB,
+              sn1.getUnallocatedResource().getMemorySize());
+        }
+        return true;
+      }
+    }).when(spyCs).tryCommit(Mockito.any(Resource.class),
+        Mockito.any(ResourceCommitRequest.class), Mockito.anyBoolean());
+
+    spyCs.handle(new NodeUpdateSchedulerEvent(sn1.getRMNode()));
+
+    rm.stop();
+  }
+
+
+  @Test(timeout = 60000)
+  public void testReleaseOutdatedReservedContainer() throws Exception {
+    /*
+     * Submit a application, reserved container_02 on nm1,
+     * submit two allocate proposals which contain the same reserved
+     * container_02 as to-released container.
+     * First proposal should be accepted, second proposal should be rejected
+     * because it try to release an outdated reserved container
+     */
+    MockRM rm1 = new MockRM();
+    rm1.getRMContext().setNodeLabelManager(mgr);
+    rm1.start();
+    MockNM nm1 = rm1.registerNode("h1:1234", 8 * GB);
+    MockNM nm2 = rm1.registerNode("h2:1234", 8 * GB);
+    MockNM nm3 = rm1.registerNode("h3:1234", 8 * GB);
+    rm1.drainEvents();
+
+    CapacityScheduler cs = (CapacityScheduler) rm1.getResourceScheduler();
+    RMNode rmNode1 = rm1.getRMContext().getRMNodes().get(nm1.getNodeId());
+    LeafQueue defaultQueue = (LeafQueue) cs.getQueue("default");
+    SchedulerNode sn1 = cs.getSchedulerNode(nm1.getNodeId());
+    SchedulerNode sn2 = cs.getSchedulerNode(nm2.getNodeId());
+    SchedulerNode sn3 = cs.getSchedulerNode(nm3.getNodeId());
+
+    // launch another app to queue, AM container should be launched in nm1
+    RMApp app1 = rm1.submitApp(4 * GB, "app", "user", null, "default");
+    MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
+    Resource allocateResource = Resources.createResource(5 * GB);
+    am1.allocate("*", (int) allocateResource.getMemorySize(), 3, 0,
+        new ArrayList<ContainerId>(), "");
+    FiCaSchedulerApp schedulerApp1 =
+        cs.getApplicationAttempt(am1.getApplicationAttemptId());
+
+    cs.handle(new NodeUpdateSchedulerEvent(rmNode1));
+    Assert.assertEquals(1, schedulerApp1.getReservedContainers().size());
+    Assert.assertEquals(9 * GB,
+        defaultQueue.getQueueResourceUsage().getUsed().getMemorySize());
+
+    RMContainer reservedContainer =
+        schedulerApp1.getReservedContainers().get(0);
+    ResourceCommitRequest allocateFromSameReservedContainerProposal1 =
+        createAllocateFromReservedProposal(3, allocateResource, schedulerApp1,
+            sn2, sn1, cs.getRMContext(), reservedContainer);
+    boolean tryCommitResult = cs.tryCommit(cs.getClusterResource(),
+        allocateFromSameReservedContainerProposal1, true);
+    Assert.assertTrue(tryCommitResult);
+    ResourceCommitRequest allocateFromSameReservedContainerProposal2 =
+        createAllocateFromReservedProposal(4, allocateResource, schedulerApp1,
+            sn3, sn1, cs.getRMContext(), reservedContainer);
+    tryCommitResult = cs.tryCommit(cs.getClusterResource(),
+        allocateFromSameReservedContainerProposal2, true);
+    Assert.assertFalse("This proposal should be rejected because "
+        + "it try to release an outdated reserved container", tryCommitResult);
+
+    rm1.close();
+  }
+
+  private ResourceCommitRequest createAllocateFromReservedProposal(
+      int containerId, Resource allocateResource, FiCaSchedulerApp schedulerApp,
+      SchedulerNode allocateNode, SchedulerNode reservedNode,
+      RMContext rmContext, RMContainer reservedContainer) {
+    Container container = Container.newInstance(
+        ContainerId.newContainerId(schedulerApp.getApplicationAttemptId(), containerId),
+        allocateNode.getNodeID(), allocateNode.getHttpAddress(), allocateResource,
+        Priority.newInstance(0), null);
+    RMContainer rmContainer = new RMContainerImpl(container, SchedulerRequestKey
+        .create(ResourceRequest
+            .newInstance(Priority.newInstance(0), "*", allocateResource, 1)),
+        schedulerApp.getApplicationAttemptId(), allocateNode.getNodeID(), "user",
+        rmContext);
+    SchedulerContainer allocateContainer =
+        new SchedulerContainer(schedulerApp, allocateNode, rmContainer, "", true);
+    SchedulerContainer reservedSchedulerContainer =
+        new SchedulerContainer(schedulerApp, reservedNode, reservedContainer, "",
+            false);
+    List<SchedulerContainer> toRelease = new ArrayList<>();
+    toRelease.add(reservedSchedulerContainer);
+    ContainerAllocationProposal allocateFromReservedProposal =
+        new ContainerAllocationProposal(allocateContainer, toRelease, null,
+            NodeType.OFF_SWITCH, NodeType.OFF_SWITCH,
+            SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY, allocateResource);
+    List<ContainerAllocationProposal> allocateProposals = new ArrayList<>();
+    allocateProposals.add(allocateFromReservedProposal);
+    return new ResourceCommitRequest(allocateProposals, null, null);
   }
 
   private void keepNMHeartbeat(List<MockNM> mockNMs, int interval) {
