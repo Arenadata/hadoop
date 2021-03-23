@@ -19,11 +19,7 @@
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
 <<<<<<< HEAD
-<<<<<<< HEAD
     <version>3.1.0</version>
-=======
-    <version>3.1.1</version>
->>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     <version>3.1.1</version>
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
@@ -32,11 +28,7 @@
   <modelVersion>4.0.0</modelVersion>
   <artifactId>hadoop-minikdc</artifactId>
 <<<<<<< HEAD
-<<<<<<< HEAD
   <version>3.1.0</version>
-=======
-  <version>3.1.1</version>
->>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
   <version>3.1.1</version>
 >>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d

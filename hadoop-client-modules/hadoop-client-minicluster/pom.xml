@@ -19,19 +19,11 @@
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
 <<<<<<< HEAD
-<<<<<<< HEAD
     <version>3.1.0</version>
     <relativePath>../../hadoop-project</relativePath>
   </parent>
   <artifactId>hadoop-client-minicluster</artifactId>
   <version>3.1.0</version>
-=======
-    <version>3.1.1</version>
-    <relativePath>../../hadoop-project</relativePath>
-  </parent>
-  <artifactId>hadoop-client-minicluster</artifactId>
-  <version>3.1.1</version>
->>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
     <version>3.1.1</version>
     <relativePath>../../hadoop-project</relativePath>
@@ -767,7 +759,6 @@
                         <exclude>capacity-scheduler.xml</exclude>
                         <exclude>krb5.conf</exclude>
                         <exclude>.keep</exclude>
-<<<<<<< HEAD
                       </excludes>
                     </filter>
 
@@ -792,32 +783,6 @@
                       </excludes>
                     </filter>
 
-=======
-                      </excludes>
-                    </filter>
-
-                    <!-- remove .xsd from ehcache -->
-                    <filter>
-                      <artifact>org.ehcache</artifact>
-                      <excludes>
-                        <exclude>ehcache-107ext.xsd</exclude>
-                        <exclude>ehcache-core.xsd</exclude>
-                      </excludes>
-                    </filter>
-
-                   <!-- remove utility classes which are not required from
-                        dnsjava -->
-                    <filter>
-                      <artifact>dnsjava:dnsjava</artifact>
-                      <excludes>
-                        <excldue>dig*</excldue>
-                        <exclude>jnamed*</exclude>
-                        <exlcude>lookup*</exlcude>
-                        <exclude>update*</exclude>
-                      </excludes>
-                    </filter>
-
->>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
                   </filters>
 
                   <!-- relocate classes from mssql-jdbc -->

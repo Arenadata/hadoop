@@ -2848,12 +2848,6 @@ public class CapacityScheduler extends
         if (app.accept(cluster, request, updatePending)
             && app.apply(cluster, request, updatePending)) {
 <<<<<<< HEAD
-<<<<<<< HEAD
-=======
-          long commitSuccess = System.nanoTime() - commitStart;
-          CapacitySchedulerMetrics.getMetrics()
-              .addCommitSuccess(commitSuccess);
->>>>>>> 7caf768a8c9a639b6139b2cae8656c89e3d8c58d
 =======
           long commitSuccess = System.nanoTime() - commitStart;
           CapacitySchedulerMetrics.getMetrics()
