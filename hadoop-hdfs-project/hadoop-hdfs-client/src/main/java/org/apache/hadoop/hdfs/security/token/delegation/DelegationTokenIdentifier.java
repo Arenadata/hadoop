@@ -92,13 +92,12 @@ public class DelegationTokenIdentifier
   @Override
   public String toString() {
     StringBuilder sbld = new StringBuilder();
-    String username;
+    String username = "Unknown";
     try {
       username = getUser().getShortUserName();
     }
     catch (Exception ex) {
       LOG.warn("Failed to extract username", ex);
-      username = "Unknown";
     }
 
     sbld
