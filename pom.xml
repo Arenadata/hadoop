@@ -722,9 +722,9 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/x
               <includeSystemScope>true</includeSystemScope>
               <includeTestScope>false</includeTestScope>
               <includeLicenseText>false</includeLicenseText>
-              <outputReactorProjects>false</outputReactorProjects>
+              <outputReactorProjects>true</outputReactorProjects>
               <outputFormat>all</outputFormat>
-              <outputName>sbom-report</outputName>
+              <outputName>CycloneDX-Sbom-${project.artifactId}-${project.version}</outputName>
             </configuration>
           </plugin>
         </plugins>
