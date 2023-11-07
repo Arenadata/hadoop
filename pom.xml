@@ -116,7 +116,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/x
     <spotbugs.version>4.2.2</spotbugs.version>
     <spotbugs-maven-plugin.version>4.2.0</spotbugs-maven-plugin.version>
     <shell-executable>bash</shell-executable>
-    <cyclonedx.maven.plugin.version>2.7.1</cyclonedx.maven.plugin.version>
+    <cyclonedx.maven.plugin.version>2.7.9</cyclonedx.maven.plugin.version>
   </properties>
 
   <modules>
