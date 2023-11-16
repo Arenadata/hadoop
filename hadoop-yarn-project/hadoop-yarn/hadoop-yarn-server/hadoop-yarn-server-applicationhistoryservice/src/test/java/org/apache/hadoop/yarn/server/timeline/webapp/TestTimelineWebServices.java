@@ -19,7 +19,6 @@
 package org.apache.hadoop.yarn.server.timeline.webapp;
 
 import static org.apache.hadoop.yarn.webapp.WebServicesTestUtils.assertResponseStatusCode;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.doNothing;
@@ -1047,7 +1046,7 @@ public class TestTimelineWebServices extends JerseyTestBase {
           Collections.EMPTY_MAP);
       Assert.fail("Expected JAXBException");
     } catch(Exception e) {
-      assertThat(e).isExactlyInstanceOf(JAXBException.class);
+      Assert.assertEquals(JAXBException.class, e.getClass());
     }
   }
 
