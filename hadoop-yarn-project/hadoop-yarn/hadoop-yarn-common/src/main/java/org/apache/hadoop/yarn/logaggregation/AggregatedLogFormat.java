@@ -571,7 +571,7 @@ public class AggregatedLogFormat {
 
   @Public
   @Evolving
-  public static class LogReader {
+  public static class LogReader implements AutoCloseable {
 
     private final FSDataInputStream fsDataIStream;
     private final TFile.Reader.Scanner scanner;

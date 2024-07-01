@@ -391,7 +391,9 @@ public class TestLogsCLI {
     ContainerId containerId1 = ContainerId.newContainerId(appAttemptId, 1);
     ContainerId containerId2 = ContainerId.newContainerId(appAttemptId, 2);
     ContainerId containerId3 = ContainerId.newContainerId(appAttemptId, 3);
-    final NodeId nodeId = NodeId.newInstance("localhost", 1234);
+    ContainerId containerId4 = ContainerId.newContainerId(appAttemptId, 4);
+      final NodeId nodeId = NodeId.newInstance("localhost", 1234);
+    final NodeId badNodeId = NodeId.newInstance("badhost", 5678);
 
     // create local logs
     String rootLogDir = "target/LocalLogs";
@@ -444,6 +446,8 @@ public class TestLogsCLI {
       containerId2, path, fs);
     uploadContainerLogIntoRemoteDir(ugi, conf, rootLogDirs, nodeId,
       containerId3, path, fs);
+    uploadTruncatedTFileIntoRemoteDir(ugi, conf, badNodeId,
+        containerId4, fs);
 
     YarnClient mockYarnClient =
         createMockYarnClient(
@@ -756,6 +760,17 @@ public class TestLogsCLI {
     assertTrue(exitCode == -1);
     assertTrue(sysErrStream.toString().contains(
         "Invalid ContainerId specified"));
+    sysErrStream.reset();
+
+    // Uploaded the empty log for container4. We should see a message
+    // showing the log for container4 is not present.
+    exitCode =
+        cli.run(new String[] {"-applicationId", appId.toString(),
+            "-nodeAddress", badNodeId.toString(), "-containerId",
+            containerId4.toString()});
+    assertTrue(exitCode == -1);
+    assertTrue(sysErrStream.toString().contains(
+        "Can not find any log file matching the pattern"));
     sysErrStream.reset();
 
     fs.delete(new Path(remoteLogRootDir), true);
@@ -1790,4 +1805,19 @@ public class TestLogsCLI {
       return yarnClient;
     }
   }
+
+    private static void uploadTruncatedTFileIntoRemoteDir(
+            UserGroupInformation ugi, Configuration configuration,
+            NodeId nodeId, ContainerId containerId,
+            FileSystem fs) throws Exception {
+        LogAggregationFileControllerFactory factory
+                = new LogAggregationFileControllerFactory(configuration);
+        LogAggregationFileController fileFormat = factory
+                .getFileControllerForWrite();
+        ApplicationId appId = containerId.getApplicationAttemptId()
+                .getApplicationId();
+        Path path = fileFormat.getRemoteNodeLogFileForApp(
+                appId, ugi.getCurrentUser().getShortUserName(), nodeId);
+        fs.create(path, true).close();
+    }
 }
