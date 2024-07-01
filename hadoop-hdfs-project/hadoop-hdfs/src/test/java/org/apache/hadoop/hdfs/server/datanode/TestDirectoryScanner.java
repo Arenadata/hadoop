@@ -106,6 +106,16 @@ public class TestDirectoryScanner {
   private final Random r = new Random();
   private static final int BLOCK_LENGTH = 100;
 
+  public Configuration getConfiguration() {
+    Configuration configuration = new HdfsConfiguration();
+    configuration.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_LENGTH);
+    configuration.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, 1);
+    configuration.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
+    configuration.setLong(DFSConfigKeys.DFS_DATANODE_MAX_LOCKED_MEMORY_KEY,
+            getMemlockLimit(Long.MAX_VALUE));
+    return configuration;
+  }
+
   static {
     CONF.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_LENGTH);
     CONF.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, 1);
