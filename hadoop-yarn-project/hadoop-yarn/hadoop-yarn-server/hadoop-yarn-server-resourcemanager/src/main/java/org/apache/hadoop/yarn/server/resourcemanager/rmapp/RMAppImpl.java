@@ -1084,8 +1084,10 @@ public class RMAppImpl implements RMApp, Recoverable {
       // otherwise, add it to ranNodes for further process
       app.ranNodes.add(nodeAddedEvent.getNodeId());
 
-      app.logAggregation.addReportIfNecessary(
-          nodeAddedEvent.getNodeId(), app.getApplicationId());
+      if (!nodeAddedEvent.getFromAcquiredState()) {
+        app.logAggregation.addReportIfNecessary(
+                nodeAddedEvent.getNodeId(), app.getApplicationId());
+      }
     }
   }
 
